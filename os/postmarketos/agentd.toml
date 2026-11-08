@@ -23,6 +23,8 @@ model_wait_secs = 20
 # reserve_cpus = [0]              # cores kept for calls and the system; default: the slowest core
 hot_c = 80.0                      # drop the boost above this, restore below cool_c
 cool_c = 70.0
+coder_attempts = 3                # write -> test in the sandbox -> show the model what failed
+coder_timeout_secs = 300
 
 [[models]]                        # always loaded: answers chat
 name = "qwen2.5-0.5b"
@@ -34,12 +36,12 @@ port = 8080
 ctx = 4096
 gpu_layers = 99                   # all layers on the GPU via Vulkan when there is one
 
-[[models]]                        # loaded on the charger (Deep stage): harder jobs
-name = "qwen2.5-3b"
+[[models]]                        # loaded on the charger (Deep stage): harder jobs and writing functions
+name = "qwen2.5-coder-3b"
 role = "large"
-file = "qwen2.5-3b-instruct-q4_k_m.gguf"
-url = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
-sha256 = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d"
+file = "qwen2.5-coder-3b-instruct-q4_k_m.gguf"
+url = "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
+sha256 = "724fb256bec1ff062b2f65e4569e871ad2e95ab2a3989723d1769c54294730b7"
 port = 8081
 ctx = 4096
 gpu_layers = 99

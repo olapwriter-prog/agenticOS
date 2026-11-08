@@ -29,6 +29,7 @@ agentos-update = { path = "../update" }
 agentos-phone = { path = "../phone" }
 agentos-prio = { path = "../prio" }
 agentos-models = { path = "../models" }
+agentos-scripts = { path = "../scripts" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

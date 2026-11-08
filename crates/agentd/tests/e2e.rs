@@ -208,8 +208,13 @@ fn plugging_in_enters_deep_and_chat_still_wins() {
     ctl_send(&r.ctl_path, "power 80 charger").unwrap();
     assert_eq!(ctl_send(&r.ctl_path, "stage").unwrap(), "Deep");
     let p = ctl_send(&r.ctl_path, "prio").unwrap();
-    assert!(p.starts_with("mode Training"), "the boost follows the stage at once: {p}");
-    let w = std::fs::read_to_string(d.join("sim/cgroup/agentos.slice/agentos-llm.slice/cpu.weight")).unwrap();
+    assert!(
+        p.starts_with("mode Training"),
+        "the boost follows the stage at once: {p}"
+    );
+    let w =
+        std::fs::read_to_string(d.join("sim/cgroup/agentos.slice/agentos-llm.slice/cpu.weight"))
+            .unwrap();
     assert_eq!(w.trim(), "10000");
     assert!(ctl_send(&r.ctl_path, "status")
         .unwrap()
@@ -497,6 +502,144 @@ fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
         "4096",
         "the loaded weights are protected from reclaim"
     );
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A fake coding model: its first function has a wrong example; shown the failure report, it
+/// fixes it. It records how many code requests it got.
+fn fake_coder(dir: &std::path::Path) -> PathBuf {
+    let p = dir.join("llama-server");
+    let script = r#"#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--port" ] && PORT=$2; shift; done
+exec python3 - "$PORT" "$(dirname "$0")/coder-requests" <<'PY'
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+CODE = "let each = (parse_float(args.total) * 100.0 / parse_int(args.people)).round() / 100.0;\n`${each}`"
+def answer(expect3):
+    return json.dumps({"name": "split_bill", "description": "share of a bill", "args": ["total", "people"],
+        "code": CODE, "examples": [
+            {"args": {"total": "900", "people": "3"}, "expect": "300.0"},
+            {"args": {"total": "100", "people": "4"}, "expect": "25.0"},
+            {"args": {"total": "10", "people": "3"}, "expect": expect3}]})
+class H(BaseHTTPRequestHandler):
+    def do_GET(s):
+        s.send_response(200); s.send_header("Content-Length", "15"); s.end_headers(); s.wfile.write(b'{"status":"ok"}')
+    def do_POST(s):
+        req = json.loads(s.rfile.read(int(s.headers.get("Content-Length", 0))))
+        if "json_schema" in req:
+            open(sys.argv[2], "a").write("x")
+            fixed = any("did not work" in m["content"] for m in req["messages"])
+            content = answer("3.33" if fixed else "3.3")
+        else:
+            content = json.dumps({"tool": "list_functions", "args": {}})
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]}).encode()
+        s.send_response(200); s.send_header("Content-Type", "application/json")
+        s.send_header("Content-Length", str(len(body))); s.end_headers(); s.wfile.write(body)
+    def log_message(s, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+"#;
+    std::fs::write(&p, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn the_agent_writes_tests_repairs_and_runs_its_own_functions() {
+    if std::process::Command::new("python3")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: needs python3 for the fake model");
+        return;
+    }
+    let d = dir("forge");
+    std::fs::create_dir_all(d.join("models")).unwrap();
+    std::fs::write(d.join("models/small.gguf"), vec![0u8; 16]).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut c = cfg(&d);
+    c.llama_server = fake_coder(&d);
+    c.models = vec![toml::from_str(&format!(
+        "name = \"small\"\nrole = \"small\"\nfile = \"small.gguf\"\nport = {port}"
+    ))
+    .unwrap()];
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let tok = s.gateway_token.clone();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+
+    // written, tested in the sandbox, repaired once
+    let a = ctl("chat make a function that splits a bill between people");
+    assert!(
+        a.starts_with("done (attempt 2)") && a.contains("split_bill v1 passed all 3"),
+        "{a}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.join("coder-requests")).unwrap(),
+        "xx"
+    );
+    assert!(ctl("show split_bill").contains("parse_float(args.total)"));
+    assert!(ctl("chat run split_bill with total=900; people=3").contains("not installed"));
+
+    // installing needs the key, for that exact version
+    assert!(ctl("chat install function split_bill version 1").contains("approval required"));
+    assert!(ctl("pending").contains("install_function name=split_bill version=1"));
+    ctl("press 1");
+    assert!(ctl("chat install function split_bill version 1").contains("split_bill v1 installed"));
+    assert_eq!(
+        ctl("chat run split_bill with total=1250; people=4"),
+        "done: 312.5"
+    );
+
+    // a Claude client writes one that asks the phone to text: the text still needs the key
+    let code = r#"phone("send_sms", #{to: args.who, text: `Running ${args.mins} min late`}); "told " + args.who"#;
+    let examples = json!([
+        {"args": {"who": "Mum", "mins": "10"}, "expect": "told Mum"},
+        {"args": {"who": "Ravi", "mins": "5"}, "expect": "told Ravi"},
+        {"args": {"who": "Asha", "mins": "1"}, "expect": "told Asha"}
+    ])
+    .to_string();
+    let v = call(
+        &r.http_addr,
+        &tok,
+        "write_function",
+        json!({"name": "tell_late", "description": "say I am late",
+        "args": "who,mins", "code": code, "examples": examples}),
+    );
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("tell_late v1 passed"),
+        "{v}"
+    );
+    let install = json!({"name": "tell_late", "version": "1"});
+    assert_eq!(
+        call(&r.http_addr, &tok, "install_function", install.clone())["result"]["isError"],
+        true
+    );
+    ctl("press 2");
+    assert_eq!(
+        call(&r.http_addr, &tok, "install_function", install)["result"]["isError"],
+        false
+    );
+    ctl("chat save Mum as +919876543210");
+    let a = ctl("chat run tell_late with who=Mum; mins=10");
+    assert!(
+        a.starts_with("done: told Mum") && a.contains("send_sms: not done: approval required"),
+        "{a}"
+    );
+
+    assert!(ctl("functions").contains("split_bill(total, people) v1"));
+    let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap();
+    assert!(ledger.contains("function written: split_bill"));
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }

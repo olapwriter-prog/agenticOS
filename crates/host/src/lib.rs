@@ -75,6 +75,40 @@ impl LlamaHost {
     }
 }
 
+/// One chat turn whose answer must match a JSON schema (llama-server turns it into a grammar).
+/// `messages` are (role, content) pairs. Used for code generation, which can take minutes on a
+/// phone, so callers run it off the daemon's main thread.
+pub fn chat_json(
+    url: &str,
+    messages: &[(String, String)],
+    schema: &serde_json::Value,
+    max_tokens: u32,
+    timeout: Duration,
+) -> Result<String, String> {
+    let msgs: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|(r, c)| json!({"role": r, "content": c}))
+        .collect();
+    let body = json!({
+        "messages": msgs,
+        "json_schema": schema,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+        "cache_prompt": true
+    });
+    let resp = ureq::AgentBuilder::new()
+        .timeout(timeout)
+        .build()
+        .post(&format!("{url}/v1/chat/completions"))
+        .send_json(body)
+        .map_err(|e| e.to_string())?;
+    let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+    v["choices"][0]["message"]["content"]
+        .as_str()
+        .map(String::from)
+        .ok_or_else(|| "no message content".to_string())
+}
+
 impl Model for LlamaHost {
     /// A failed call returns an empty string. Empty fails the registry, so the engine counts
     /// it as a local failure and escalates, which is the behaviour we want from a dead server.
@@ -173,6 +207,21 @@ mod tests {
         assert!(req.starts_with("POST /completion"));
         assert!(req.contains("remind me at 6"));
         assert!(req.contains("root ::= action"));
+    }
+    #[test]
+    fn chat_json_sends_the_schema_and_the_conversation() {
+        let (url, rx) = fake_server(r#"{"choices":[{"message":{"content":"{\"name\":\"f\"}"}}]}"#);
+        let schema = serde_json::json!({"type": "object", "required": ["name"]});
+        let msgs = vec![
+            ("system".to_string(), "write code".to_string()),
+            ("user".to_string(), "add".to_string()),
+        ];
+        let out = chat_json(&url, &msgs, &schema, 256, Duration::from_secs(5)).unwrap();
+        assert_eq!(out, r#"{"name":"f"}"#);
+        let req = rx.recv().unwrap();
+        assert!(
+            req.contains("json_schema") && req.contains("write code") && req.contains("max_tokens")
+        );
     }
     #[test]
     fn a_dead_server_returns_empty_not_a_panic() {

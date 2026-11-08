@@ -8,6 +8,7 @@ use agentos_action::{Registry, Tier};
 use agentos_brain::{Engine, Model, Outcome};
 use agentos_commercial::CommercialClient;
 use agentos_connectors::{Calendar, Messenger, Reminders};
+use agentos_executor::Connector;
 use agentos_executor::Executor;
 use agentos_firewall::Firewall;
 use agentos_freeze::{Freezer, FREEZABLE};
@@ -22,6 +23,7 @@ use agentos_phone::{Contacts, Linux, Phone, PhoneEvent, PhoneTools, Sim};
 use agentos_power::ModelBudget;
 use agentos_prio::{Limits, Mode, Prio, SysPaths};
 use agentos_router::{Job, JobKind, Policy, Sensitivity};
+use agentos_scripts::{FunctionStore, FunctionTools};
 use agentos_stage::{Event, Stage};
 use agentos_status::{line, Facts};
 use agentos_store::Store;
@@ -45,6 +47,12 @@ pub struct Core {
     last_phone_poll_ms: u64,
     prio: Prio,
     models: Supervisor,
+    functions: agentos_scripts::Shared,
+    /// Functions being written by the local model, each for someone waiting on the control socket.
+    coder_jobs: Vec<crate::coder::Job>,
+    coder_prompt: String,
+    small_url: Option<String>,
+    large_url: Option<String>,
     /// Set if the priority manager could not set up its cgroups (not fatal).
     prio_error: Option<String>,
     anchor_key: Vec<u8>,
@@ -147,13 +155,21 @@ impl Core {
         };
         let phone = Phone::new(backend, Contacts::load(dir.join("contacts.json"))?).shared();
         let tools_store = Store::open(&dir.join("tools.db")).map_err(io)?;
+        let mut connectors: Vec<Box<dyn Connector>> = vec![
+            Box::new(Calendar::default()),
+            Box::new(Reminders::default()),
+            Box::new(Messenger::default()),
+            Box::new(PhoneTools(phone.clone())),
+        ];
+        // What a function may ask the phone to do: every tool except the function tools.
+        let phone_tools: Vec<agentos_action::Tool> =
+            connectors.iter().flat_map(|c| c.tools()).collect();
+        let reserved: Vec<&str> = phone_tools.iter().map(|t| t.name).collect();
+        let functions = FunctionStore::open(dir.join("functions"), &reserved)?.shared();
+        connectors.push(Box::new(FunctionTools(functions.clone())));
+        let coder_prompt = crate::coder::system_prompt(&phone_tools);
         let exec = Executor::new(
-            vec![
-                Box::new(Calendar::default()),
-                Box::new(Reminders::default()),
-                Box::new(Messenger::default()),
-                Box::new(PhoneTools(phone.clone())),
-            ],
+            connectors,
             tools_store,
             clock.clone(),
             Gate::new(&secrets.gate_secret, clock.clone(), 10 * 60_000),
@@ -257,6 +273,11 @@ impl Core {
             prio,
             models,
             prio_error,
+            functions,
+            coder_jobs: Vec::new(),
+            coder_prompt,
+            small_url: small_url.clone(),
+            large_url: large_url.clone(),
             anchor_key: secrets.anchor_key,
             ledger_path,
             last_activity_ms: now,
@@ -330,7 +351,10 @@ impl Core {
 
     /// Long jobs get the chip in the Deep stage; otherwise the model idles until asked.
     fn baseline_mode(&self) -> Mode {
-        if self.kernel.stage == Stage::Deep {
+        if !self.coder_jobs.is_empty() {
+            // the model is writing code in the background: it gets the chip meanwhile
+            Mode::Inference
+        } else if self.kernel.stage == Stage::Deep {
             Mode::Training
         } else {
             Mode::Idle
@@ -370,23 +394,180 @@ impl Core {
         };
         match self.engine.handle(job, text, self.model.as_mut()) {
             Outcome::Run(a) | Outcome::NeedsApproval(a) => {
-                let args: serde_json::Map<String, Value> =
-                    a.args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-                let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":a.tool,"arguments":args}});
-                let resp = self.gateway.handle(&req.to_string()).unwrap_or_default();
-                let v: Value = serde_json::from_str(&resp).unwrap_or(Value::Null);
-                let text = v["result"]["content"][0]["text"]
-                    .as_str()
-                    .unwrap_or("no answer")
-                    .to_string();
-                if v["result"]["isError"] == json!(true) {
-                    format!("not done: {text}")
-                } else {
-                    format!("done: {text}")
+                let (ok, text) = self.call_tool(&a.tool, &a.args);
+                if !ok {
+                    return format!("not done: {text}");
                 }
+                if a.tool == "run_function" {
+                    if let Some(out) = self.carry_out_requests(&text) {
+                        return out;
+                    }
+                }
+                format!("done: {text}")
             }
             Outcome::Blocked(why) => format!("blocked: {why}"),
             Outcome::GaveUp => "I could not turn that into something I am allowed to do.".into(),
+        }
+    }
+
+    /// One tool call through the gateway, so tiers and the approval key apply. (ok, text)
+    fn call_tool(&mut self, tool: &str, args: &[(String, String)]) -> (bool, String) {
+        let args: serde_json::Map<String, Value> =
+            args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+        let req = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":args}});
+        let resp = self.gateway.handle(&req.to_string()).unwrap_or_default();
+        let v: Value = serde_json::from_str(&resp).unwrap_or(Value::Null);
+        let text = v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("no answer")
+            .to_string();
+        (v["result"]["isError"] != json!(true), text)
+    }
+
+    /// A function asked the phone to do things: do each through the executor, so a text it asks
+    /// for still waits for the key. Functions cannot write, install or run functions.
+    fn carry_out_requests(&mut self, output: &str) -> Option<String> {
+        let v: Value = serde_json::from_str(output).ok()?;
+        let calls = v["calls"].as_array()?;
+        let mut lines = vec![format!(
+            "done: {}",
+            v["result"].as_str().unwrap_or_default()
+        )];
+        for c in calls {
+            let tool = c["tool"].as_str().unwrap_or_default().to_string();
+            if agentos_scripts::is_function_tool(&tool) {
+                lines.push(format!(
+                    "  {tool}: refused (a function cannot manage functions)"
+                ));
+                continue;
+            }
+            let args: Vec<(String, String)> = c["args"]
+                .as_object()
+                .map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (ok, text) = self.call_tool(&tool, &args);
+            lines.push(format!(
+                "  {tool}: {}{text}",
+                if ok { "" } else { "not done: " }
+            ));
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// The control socket's entry point. Most commands answer at once; asking the local model
+    /// to write a function answers later, from `poll_jobs`, so the daemon is never blocked.
+    pub fn ctl_reply(&mut self, line: &str, reply: std::sync::mpsc::Sender<String>) {
+        let t = line.trim();
+        if let Some(request) = t.strip_prefix("chat ").and_then(crate::coder::request_of) {
+            if let Err(e) = self.start_coder(&request, reply.clone()) {
+                let _ = reply.send(e);
+            }
+            return;
+        }
+        let _ = reply.send(self.ctl(line));
+    }
+
+    fn start_coder(
+        &mut self,
+        request: &str,
+        reply: std::sync::mpsc::Sender<String>,
+    ) -> Result<(), String> {
+        self.touch();
+        self.sync_models();
+        // the large model writes better code; use it if it is running
+        let large_up = self.models.spec(Role::Large).is_some_and(|s| {
+            matches!(
+                self.models.state(&s.name),
+                agentos_models::State::Running { .. }
+            )
+        });
+        let url = if large_up { self.large_url.clone() } else { None }
+            .or_else(|| self.small_url.clone())
+            .ok_or("no local model is set up. A Claude client can write functions over MCP with write_function.")?;
+        let role = if large_up { Role::Large } else { Role::Small };
+        if self.models.spec(role).is_some() {
+            self.models
+                .wait_ready(role, Duration::from_secs(self.cfg.model_wait_secs));
+        }
+        let messages = vec![
+            ("system".to_string(), self.coder_prompt.clone()),
+            ("user".to_string(), request.to_string()),
+        ];
+        let timeout = Duration::from_secs(self.cfg.coder_timeout_secs);
+        let rx = crate::coder::generate(&url, &messages, timeout);
+        self.coder_jobs.push(crate::coder::Job {
+            reply,
+            url,
+            messages,
+            attempt: 1,
+            rx,
+            timeout,
+        });
+        self.prio.set_mode(self.baseline_mode());
+        Ok(())
+    }
+
+    /// Test what the model wrote; on failure show it the report and ask again. Call often.
+    pub fn poll_jobs(&mut self) {
+        let mut i = 0;
+        while i < self.coder_jobs.len() {
+            let answer = match self.coder_jobs[i].rx.try_recv() {
+                Ok(a) => a,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    i += 1;
+                    continue;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err("the model thread died".into())
+                }
+            };
+            let mut job = self.coder_jobs.remove(i);
+            let report = match answer {
+                Err(e) => Err(format!("the model did not answer: {e}")),
+                Ok(text) => {
+                    job.messages.push(("assistant".into(), text.clone()));
+                    match crate::coder::write_args(&text) {
+                        Err(e) => Err(e),
+                        Ok(args) => match self.call_tool("write_function", &args) {
+                            (true, ok) => Ok(ok),
+                            (false, why) => Err(why),
+                        },
+                    }
+                }
+            };
+            match report {
+                Ok(ok) => {
+                    let name = ok.split_whitespace().next().unwrap_or("").to_string();
+                    let _ = self.kernel.record(&format!("function written: {name}"));
+                    let _ = job.reply.send(format!(
+                        "done (attempt {}): {ok}\nRead it first: agentd ctl show {name}",
+                        job.attempt
+                    ));
+                }
+                Err(why) if job.attempt >= self.cfg.coder_attempts => {
+                    let _ = job.reply.send(format!(
+                        "not done: no working function after {} attempts. Last problem:\n{why}",
+                        job.attempt
+                    ));
+                }
+                Err(why) => {
+                    job.messages.push((
+                        "user".into(),
+                        format!("That did not work:\n{why}\nFix the code (or an example that was wrong) and answer again with the whole function."),
+                    ));
+                    job.attempt += 1;
+                    job.rx = crate::coder::generate(&job.url, &job.messages, job.timeout);
+                    self.coder_jobs.insert(i, job);
+                    i += 1;
+                }
+            }
+        }
+        if self.coder_jobs.is_empty() && self.prio.mode() == Mode::Inference {
+            self.prio.set_mode(self.baseline_mode());
         }
     }
 
@@ -464,6 +645,13 @@ impl Core {
                 self.models.refresh_health();
                 self.models.report()
             }
+            "functions" => self.functions.borrow().list(),
+            "show" => {
+                let mut it = rest.split_whitespace();
+                let name = it.next().unwrap_or("");
+                let v = it.next().and_then(|v| v.trim_start_matches('v').parse().ok());
+                self.functions.borrow().show(name, v).unwrap_or_else(|e| e)
+            }
             "tools" => self
                 .gateway
                 .executor()
@@ -472,7 +660,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status stage chat pending press decline power anchor verify notify digest tools phone sim-call sim-sms prio models".into(),
+            "" => "commands: status stage chat pending press decline power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
             other => format!("unknown command: {other}"),
         }
     }

@@ -33,6 +33,13 @@ pub fn describe(tool: &str) -> &'static str {
         "flashlight" => "turn the flashlight (torch) on or off",
         "set_volume" => "set the sound volume, 0 to 100",
         "ring_phone" => "make this phone ring loudly so the user can find it",
+        "list_functions" => "list the functions the agent has written",
+        "show_function" => "show a function's code and examples",
+        "write_function" => "write and test a new function (code in Rhai)",
+        "install_function" => "install a tested function version",
+        "rollback_function" => "go back to an earlier installed version of a function",
+        "remove_function" => "stop using a function",
+        "run_function" => "run an installed function; args like a=1; b=2",
         _ => "",
     }
 }
@@ -152,6 +159,17 @@ pub fn default_intents() -> IntentTable {
     t.add("torch {on}", "flashlight");
     t.add("volume {percent}", "set_volume");
     t.add("find my phone", "ring_phone");
+    // functions the agent wrote
+    t.add("list functions", "list_functions");
+    t.add("my functions", "list_functions");
+    t.add("show function {name}", "show_function");
+    t.add(
+        "install function {name} version {version}",
+        "install_function",
+    );
+    t.add("roll back {name} to version {version}", "rollback_function");
+    t.add("remove function {name}", "remove_function");
+    t.add("run {name} with {args}", "run_function");
     t
 }
 

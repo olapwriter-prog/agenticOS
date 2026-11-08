@@ -73,6 +73,19 @@ check "MCP lists tools with the token" 'curl -s -H "Authorization: Bearer $T" -d
 check "chat runs a tool and wakes the phone" '$C "chat add dentist to my calendar on monday" | grep -q "^done" && [ "$($C stage)" = Active ]'
 check "background is frozen while Active" '[ "$(cat $G/agentos-agents.slice/cgroup.freeze)" = 1 ]'
 check "a call waits for the approval key" '$C "chat call mum" | grep -q "approval required"'
+cat > /tmp/write_fn.py <<'PY'
+import json, sys, urllib.request
+code = 'let each = (parse_float(args.total) * 100.0 / parse_int(args.people)).round() / 100.0;\n`${each}`'
+ex = [{"args": {"total": t, "people": p}, "expect": e} for t, p, e in [("900", "3", "300.0"), ("100", "4", "25.0"), ("10", "3", "3.33")]]
+body = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "write_function", "arguments": {
+    "name": "split_bill", "description": "share of a bill", "args": "total,people", "code": code, "examples": json.dumps(ex)}}}
+req = urllib.request.Request("http://127.0.0.1:8765/mcp", json.dumps(body).encode(), {"Authorization": "Bearer " + sys.argv[1]})
+print(json.load(urllib.request.urlopen(req))["result"]["content"][0]["text"])
+PY
+check "a function is written and tested in the sandbox" 'python3 /tmp/write_fn.py "$T" | grep -q "passed all 3"'
+check "installing it waits for the approval key" '$C "chat install function split_bill version 1" | grep -q "approval required"'
+id=$($C pending | sed -n "s/^#\([0-9]*\) install_function.*/\1/p" | tail -1)
+check "after the key it installs and runs" '$C "press $id" >/dev/null; $C "chat install function split_bill version 1" | grep -q installed && [ "$($C "chat run split_bill with total=1250; people=4")" = "done: 312.5" ]'
 if sudo test -f /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf; then
 	sleep 3
 	check "llama-server is running and ready" '$C models | grep -q "small.*ready"'

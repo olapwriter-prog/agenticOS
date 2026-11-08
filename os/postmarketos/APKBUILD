@@ -29,7 +29,8 @@ depends="
 case "$CARCH" in
 	aarch64|x86_64) depends="$depends llama-server libggml-cpu libggml-vulkan" ;;
 esac
-makedepends="cargo cargo-auditable"
+# rust-wasm: the script runtime (Rhai) is compiled to WebAssembly and embedded in agentd.
+makedepends="cargo cargo-auditable rust-wasm"
 subpackages="$pkgname-openrc"
 source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
 	agentd.initd
@@ -44,14 +45,19 @@ prepare() {
 	# Alpine ships its own rustc; the pinned toolchain file is for developer machines.
 	rm -f rust-toolchain.toml
 	cargo fetch --target="$CTARGET" --locked
+	cargo fetch --target=wasm32-unknown-unknown --locked
 }
 
 build() {
+	# the script runtime is built by a nested cargo, which must stay offline too
+	export CARGO_NET_OFFLINE=true
 	cargo auditable build --release --frozen -p agentd
 }
 
 check() {
-	cargo test --frozen -p agentos-phone -p agentos-prio -p agentos-models -p agentd
+	export CARGO_NET_OFFLINE=true
+	cargo test --frozen -p agentos-phone -p agentos-prio -p agentos-models \
+		-p agentos-script-guest -p agentos-scripts -p agentd
 }
 
 package() {

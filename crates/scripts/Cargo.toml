@@ -1,0 +1,12 @@
+[package]
+name = "agentos-scripts"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[dependencies]
+agentos-action = { path = "../action" }
+agentos-executor = { path = "../executor" }
+agentos-sandbox = { path = "../sandbox" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

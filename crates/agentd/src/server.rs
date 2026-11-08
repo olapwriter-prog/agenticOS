@@ -145,13 +145,12 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
                 Ok(Cmd::Mcp(b, r)) => {
                     let _ = r.send(core.mcp(&b));
                 }
-                Ok(Cmd::Ctl(l, r)) => {
-                    let _ = r.send(core.ctl(&l));
-                }
+                Ok(Cmd::Ctl(l, r)) => core.ctl_reply(&l, r),
                 Ok(Cmd::Stop) => break,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => core.tick(),
                 Err(_) => break,
             }
+            core.poll_jobs();
         }
     });
     match ready_rx.recv() {
@@ -172,7 +171,8 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
 /// Client side of the control socket, used by `agentd ctl` and by tests.
 pub fn ctl_send(path: &std::path::Path, line: &str) -> std::io::Result<String> {
     let mut s = std::os::unix::net::UnixStream::connect(path)?;
-    s.set_read_timeout(Some(Duration::from_secs(30)))?;
+    // long enough for the local model to write and test a function on a phone
+    s.set_read_timeout(Some(Duration::from_secs(1800)))?;
     writeln!(s, "{line}")?;
     let mut out = String::new();
     BufReader::new(s).read_line(&mut out)?;

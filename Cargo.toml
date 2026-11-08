@@ -14,3 +14,11 @@ opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true
+
+# Dependencies are built optimized even in dev builds: the sandbox's interpreter (wasmi) is
+# ~40x slower unoptimized. wasmi overflows the stack when optimized with debug assertions on,
+# so they are off for dependencies (as in release builds).
+[profile.dev.package."*"]
+opt-level = 2
+debug-assertions = false
+overflow-checks = false

@@ -381,6 +381,17 @@ pub fn healthy(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Free bytes on the filesystem holding `dir`.
+pub fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some(st.f_bavail as u64 * st.f_frsize as u64)
+}
+
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -400,25 +411,44 @@ pub fn pull(
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
     let resp = ureq::get(url).call().map_err(|e| format!("{url}: {e}"))?;
-    let total = resp.header("Content-Length").and_then(|v| v.parse().ok());
-    let part = dest.with_extension("part");
-    let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-    let mut body = resp.into_reader();
-    let mut hasher = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    let mut done = 0u64;
-    loop {
-        let n = body.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
+    let total: Option<u64> = resp.header("Content-Length").and_then(|v| v.parse().ok());
+    // Refuse before writing a byte if it cannot fit, keeping some room for the system.
+    if let (Some(t), Some(free)) = (total, dest.parent().and_then(free_bytes)) {
+        let keep = 512 << 20;
+        if t + keep > free {
+            return Err(format!(
+                "not enough space for {}: needs {} MiB plus {} MiB to spare, {} MiB free",
+                s.name,
+                t >> 20,
+                keep >> 20,
+                free >> 20
+            ));
         }
-        hasher.update(&buf[..n]);
-        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        done += n as u64;
-        progress(done, total);
     }
-    out.sync_all().map_err(|e| e.to_string())?;
-    drop(out);
+    let part = dest.with_extension("part");
+    let mut hasher = Sha256::new();
+    let mut done = 0u64;
+    let written = (|| -> Result<(), String> {
+        let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+        let mut body = resp.into_reader();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            done += n as u64;
+            progress(done, total);
+        }
+        out.sync_all().map_err(|e| e.to_string())
+    })();
+    if let Err(e) = written {
+        // never leave a partial file behind: on a full disk it is what filled it
+        let _ = std::fs::remove_file(&part);
+        return Err(format!("download of {} failed: {e}", s.name));
+    }
     let got = hex(&hasher.finalize());
     if let Some(want) = &s.sha256 {
         if !want.eq_ignore_ascii_case(&got) {
@@ -655,5 +685,25 @@ mod tests {
         let e = pull(&s, &bad, &mut |_, _| {}).unwrap_err();
         assert!(e.contains("checksum mismatch"), "{e}");
         assert!(!bad.exists() && !bad.with_extension("part").exists());
+    }
+    #[test]
+    fn a_file_that_cannot_fit_is_refused_before_downloading() {
+        let d = dir("full");
+        // a server that claims an enormous file and sends nothing
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut c)) = l.incoming().next() {
+                let mut req = [0u8; 1024];
+                let _ = c.read(&mut req);
+                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Length: 999999999999999\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let mut s = spec("huge", Role::Large, 1);
+        s.url = Some(format!("http://127.0.0.1:{port}/m.gguf"));
+        let e = pull(&s, &d.join("huge.gguf"), &mut |_, _| {}).unwrap_err();
+        assert!(e.contains("not enough space"), "{e}");
+        assert!(!d.join("huge.part").exists());
+        assert!(free_bytes(&d).unwrap() > 0);
     }
 }

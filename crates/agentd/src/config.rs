@@ -58,6 +58,10 @@ pub struct Config {
     /// Above this temperature the model's boost is dropped; it returns below cool_c.
     pub hot_c: f32,
     pub cool_c: f32,
+    /// How many times the local model may try to write a working function.
+    pub coder_attempts: u32,
+    /// How long one attempt may take (a phone writing code is slow).
+    pub coder_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -92,6 +96,8 @@ impl Default for Config {
             reserve_cpus: vec![],
             hot_c: 80.0,
             cool_c: 70.0,
+            coder_attempts: 3,
+            coder_timeout_secs: 300,
         }
     }
 }
