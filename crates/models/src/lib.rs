@@ -403,7 +403,10 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 /// Download a model to `dest`, through a `.part` file, checking SHA-256 if the spec has one.
-/// `progress(done, total)` is called as bytes arrive. Returns the file's SHA-256.
+/// Mobile networks drop: a broken connection keeps the partial file and resumes it with an HTTP
+/// Range request (up to five tries here, and again on the next `pull`). A disk error deletes it,
+/// since a full disk is usually what broke it. `progress(done, total)` is called as bytes arrive.
+/// Returns the file's SHA-256.
 pub fn pull(
     s: &ModelSpec,
     dest: &Path,
@@ -416,61 +419,118 @@ pub fn pull(
     if let Some(dir) = dest.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let resp = ureq::get(url).call().map_err(|e| format!("{url}: {e}"))?;
-    let total: Option<u64> = resp.header("Content-Length").and_then(|v| v.parse().ok());
-    // Refuse before writing a byte if it cannot fit, keeping some room for the system.
-    if let (Some(t), Some(free)) = (total, dest.parent().and_then(free_bytes)) {
-        let keep = 512 << 20;
-        if t + keep > free {
-            return Err(format!(
-                "not enough space for {}: needs {} MiB plus {} MiB to spare, {} MiB free",
-                s.name,
-                t >> 20,
-                keep >> 20,
-                free >> 20
-            ));
-        }
-    }
     let part = dest.with_extension("part");
-    let mut hasher = Sha256::new();
-    let mut done = 0u64;
-    let written = (|| -> Result<(), String> {
-        let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    let mut tries = 0u32;
+    let total = loop {
+        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+        let mut req = ureq::get(url);
+        if have > 0 {
+            req = req.set("Range", &format!("bytes={have}-"));
+        }
+        let resp = match req.call() {
+            Ok(r) => r,
+            // the file is already complete: the server has nothing past its end
+            Err(ureq::Error::Status(416, _)) if have > 0 => break have,
+            Err(e) => {
+                tries += 1;
+                if tries >= 5 {
+                    return Err(format!(
+                        "{url}: {e} (partial download kept; pull again to resume)"
+                    ));
+                }
+                std::thread::sleep(Duration::from_secs(1 << tries));
+                continue;
+            }
+        };
+        let resumed = resp.status() == 206;
+        let len: Option<u64> = resp.header("Content-Length").and_then(|v| v.parse().ok());
+        let (start, total) = if resumed {
+            (have, len.map(|l| have + l))
+        } else {
+            (0, len)
+        };
+        // refuse before writing a byte if the rest cannot fit, keeping room for the system
+        if let (Some(t), Some(free)) = (total, dest.parent().and_then(free_bytes)) {
+            let keep = 512 << 20;
+            if t - start + keep > free {
+                return Err(format!(
+                    "not enough space for {}: needs {} MiB more plus {} MiB to spare, {} MiB free",
+                    s.name,
+                    (t - start) >> 20,
+                    keep >> 20,
+                    free >> 20
+                ));
+            }
+        }
+        let mut out = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(resumed)
+            .truncate(!resumed)
+            .open(&part)
+            .map_err(|e| e.to_string())?;
         let mut body = resp.into_reader();
         let mut buf = vec![0u8; 1 << 20];
+        let mut done = start;
+        let mut net_err: Option<String> = None;
         loop {
-            let n = body.read(&mut buf).map_err(|e| e.to_string())?;
+            let n = match body.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    net_err = Some(e.to_string());
+                    break;
+                }
+            };
             if n == 0 {
                 break;
             }
-            hasher.update(&buf[..n]);
-            out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
+            if let Err(e) = out.write_all(&buf[..n]) {
+                let _ = std::fs::remove_file(&part);
+                return Err(format!(
+                    "download of {} failed writing: {e} (partial file removed)",
+                    s.name
+                ));
+            }
             done += n as u64;
             progress(done, total);
         }
-        out.sync_all().map_err(|e| e.to_string())
-    })();
-    if let Err(e) = written {
-        // never leave a partial file behind: on a full disk it is what filled it
-        let _ = std::fs::remove_file(&part);
-        return Err(format!("download of {} failed: {e}", s.name));
+        out.sync_all().map_err(|e| e.to_string())?;
+        let short = total.is_some_and(|t| done < t);
+        if net_err.is_none() && !short {
+            break done;
+        }
+        tries += 1;
+        if tries >= 5 {
+            return Err(format!(
+                "download of {} broke at {} of {} MiB: {} (partial download kept; pull again to resume)",
+                s.name,
+                done >> 20,
+                total.unwrap_or(0) >> 20,
+                net_err.unwrap_or_else(|| "connection closed early".into())
+            ));
+        }
+        std::thread::sleep(Duration::from_secs(1 << tries));
+    };
+    // hash the whole file: a resumed download is checked exactly like a fresh one
+    let mut f = std::fs::File::open(&part).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
     }
     let got = hex(&hasher.finalize());
     if let Some(want) = &s.sha256 {
         if !want.eq_ignore_ascii_case(&got) {
             let _ = std::fs::remove_file(&part);
             return Err(format!(
-                "checksum mismatch for {}: expected {want}, got {got}",
+                "checksum mismatch for {}: expected {want}, got {got} ({total} bytes)",
                 s.name
             ));
         }
-    }
-    if total.is_some_and(|t| t != done) {
-        let _ = std::fs::remove_file(&part);
-        return Err(format!(
-            "download cut short: {done} of {} bytes",
-            total.unwrap()
-        ));
     }
     std::fs::rename(&part, dest).map_err(|e| e.to_string())?;
     Ok(got)
@@ -691,6 +751,56 @@ mod tests {
         let e = pull(&s, &bad, &mut |_, _| {}).unwrap_err();
         assert!(e.contains("checksum mismatch"), "{e}");
         assert!(!bad.exists() && !bad.with_extension("part").exists());
+    }
+    #[test]
+    fn a_dropped_connection_is_resumed_with_a_range_request() {
+        let d = dir("resume");
+        let data: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        let sum = hex(&Sha256::digest(&data));
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let served = data.clone();
+        let ranges = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = ranges.clone();
+        std::thread::spawn(move || {
+            for (i, c) in l.incoming().take(2).enumerate() {
+                let mut c = c.unwrap();
+                let mut req = vec![0u8; 2048];
+                let n = c.read(&mut req).unwrap();
+                let text = String::from_utf8_lossy(&req[..n]).to_lowercase();
+                let from: usize = text
+                    .lines()
+                    .find_map(|l| l.strip_prefix("range: bytes="))
+                    .and_then(|r| r.trim_end_matches('-').parse().ok())
+                    .unwrap_or(0);
+                seen.lock().unwrap().push(from);
+                if i == 0 {
+                    // promise everything, send half, hang up
+                    let _ = write!(
+                        c,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        served.len()
+                    );
+                    let _ = c.write_all(&served[..served.len() / 2]);
+                } else {
+                    let rest = &served[from..];
+                    let _ = write!(c, "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", rest.len());
+                    let _ = c.write_all(rest);
+                }
+            }
+        });
+        let mut s = spec("small", Role::Small, 1);
+        s.url = Some(format!("http://127.0.0.1:{port}/m.gguf"));
+        s.sha256 = Some(sum.clone());
+        let dest = d.join("small.gguf");
+        assert_eq!(pull(&s, &dest, &mut |_, _| {}).unwrap(), sum);
+        assert_eq!(std::fs::read(&dest).unwrap(), data);
+        assert_eq!(
+            *ranges.lock().unwrap(),
+            vec![0, data.len() / 2],
+            "the second request resumed"
+        );
+        assert!(!dest.with_extension("part").exists());
     }
     #[test]
     fn a_file_that_cannot_fit_is_refused_before_downloading() {

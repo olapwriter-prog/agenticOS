@@ -117,6 +117,12 @@ impl Model for LlamaHost {
     /// it as a local failure and escalates, which is the behaviour we want from a dead server.
     fn complete(&mut self, brain: Brain, prompt: &str) -> String {
         match self.url_for(brain) {
+            // The large model is only loaded on the charger and may not be there (stopped,
+            // still downloading): fall back to the small one rather than fail the request.
+            Some(url) if brain == Brain::LocalLarge && url != self.small_url => self
+                .call(url, prompt)
+                .or_else(|_| self.call(&self.small_url, prompt))
+                .unwrap_or_default(),
             Some(url) => self.call(url, prompt).unwrap_or_default(),
             // The commercial client is added in Volume 7, behind the same trait.
             None => String::new(),
@@ -236,6 +242,17 @@ mod tests {
         let (url, _rx) = fake_server(r#"{"oops":1}"#);
         let mut h = host(&url);
         assert_eq!(h.complete(Brain::LocalSmall, "x"), "");
+    }
+    #[test]
+    fn a_missing_large_model_falls_back_to_the_small_one() {
+        let (url, rx) = fake_server(r#"{"content":"{\"tool\":\"hangup\"}"}"#);
+        let mut h = host(&url);
+        h.large_url = "http://127.0.0.1:9".into(); // nothing listening
+        assert_eq!(
+            h.complete(Brain::LocalLarge, "cut the call"),
+            r#"{"tool":"hangup"}"#
+        );
+        assert!(rx.recv().unwrap().contains("cut the call"));
     }
     #[test]
     fn the_host_never_answers_for_the_commercial_brain() {
