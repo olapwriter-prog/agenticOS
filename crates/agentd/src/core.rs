@@ -518,6 +518,9 @@ impl Core {
         } else if !ready && self.kernel.stage == Stage::Deep {
             let _ = self.kernel.handle(Event::PowerLost);
         }
+        // follow the stage at once: models to load, and whether the model gets the chip
+        self.sync_models();
+        self.prio.set_mode(self.baseline_mode());
     }
 
     fn notify(&mut self, rest: &str) -> String {

@@ -207,6 +207,10 @@ fn plugging_in_enters_deep_and_chat_still_wins() {
     let (d, r, _t) = boot("deep");
     ctl_send(&r.ctl_path, "power 80 charger").unwrap();
     assert_eq!(ctl_send(&r.ctl_path, "stage").unwrap(), "Deep");
+    let p = ctl_send(&r.ctl_path, "prio").unwrap();
+    assert!(p.starts_with("mode Training"), "the boost follows the stage at once: {p}");
+    let w = std::fs::read_to_string(d.join("sim/cgroup/agentos.slice/agentos-llm.slice/cpu.weight")).unwrap();
+    assert_eq!(w.trim(), "10000");
     assert!(ctl_send(&r.ctl_path, "status")
         .unwrap()
         .contains("charging"));
