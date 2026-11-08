@@ -18,6 +18,7 @@ use agentos_gateway::Gateway;
 use agentos_hal::{Clock, FakePower, PowerSource};
 use agentos_host::LlamaHost;
 use agentos_kerneld::{Kernel, Paths};
+use agentos_learn::Learner;
 use agentos_models::{Role, Supervisor};
 use agentos_notify::{Decision, Note, Notifier, Policy as NotifyPolicy, Priority};
 use agentos_phone::{Contacts, Linux, Phone, PhoneEvent, PhoneTools, Sim};
@@ -48,6 +49,13 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// Episodes and rewards: what the human approved, declined and corrected.
+    learner: Learner,
+    /// The phrase table, to tell an intent from a request the model must answer.
+    intents: agentos_intents::IntentTable,
+    /// For judging a model on held-out episodes (`learn eval`).
+    grammar: String,
+    system: String,
     /// Functions being written by the local model, each for someone waiting on the control socket.
     coder_jobs: Vec<crate::coder::Job>,
     coder_prompt: String,
@@ -231,6 +239,7 @@ impl Core {
         };
         let small_url = cfg.small_url.clone().or_else(|| models.url(Role::Small));
         let large_url = cfg.large_url.clone().or_else(|| models.url(Role::Large));
+        let (grammar_copy, system_copy) = (grammar.clone(), system.clone());
         let host = match (&small_url, &large_url) {
             (None, None) => None,
             (s, l) => {
@@ -278,6 +287,10 @@ impl Core {
             models,
             prio_error,
             functions,
+            learner: Learner::open(dir.join("experience.jsonl"))?,
+            intents: default_intents(),
+            grammar: grammar_copy,
+            system: system_copy,
             coder_jobs: Vec::new(),
             coder_prompt,
             phone_tool_names,
@@ -394,6 +407,27 @@ impl Core {
     }
 
     fn chat_inner(&mut self, text: &str) -> String {
+        let now = self.clock.now_ms();
+        if let Some(good) = feedback_of(text) {
+            return match self.learner.feedback(good, now) {
+                Some(p) if good => format!("noted: {p:?} was right"),
+                Some(p) => format!(
+                    "noted: {p:?} was wrong. Do it the right way now (say it differently) and I will learn from that"
+                ),
+                None => "nothing to give feedback on yet".into(),
+            };
+        }
+        let is_intent = self.intents.resolve(text).is_some();
+        // a request the human approved before goes straight to the same action (through the tiers)
+        if !is_intent {
+            if let Some(a) = self
+                .learner
+                .shortcut(text)
+                .and_then(|j| self.engine.registry.parse(&j).ok())
+            {
+                return self.act(text, a, "shortcut", now);
+            }
+        }
         let job = Job {
             kind: JobKind::Chat,
             sensitivity: Sensitivity::Normal,
@@ -401,22 +435,54 @@ impl Core {
             on_charger: self.power.on_charger(),
             local_failures: 0,
         };
-        match self.engine.handle(job, text, self.model.as_mut()) {
-            Outcome::Run(a) | Outcome::NeedsApproval(a) => {
-                let (ok, text) = self.call_tool(&a.tool, &a.args);
-                if !ok {
-                    return format!("not done: {text}");
-                }
-                if a.tool == "run_function" {
-                    if let Some(out) = self.carry_out_requests(&text) {
-                        return out;
-                    }
-                }
-                format!("done: {text}")
+        // show the model what this person meant by similar requests before
+        let examples = if is_intent {
+            vec![]
+        } else {
+            self.learner.examples(text, 4)
+        };
+        let prompt = if examples.is_empty() {
+            text.to_string()
+        } else {
+            let mut p =
+                String::from("Requests this person made before, and the action they wanted:\n");
+            for (q, a) in &examples {
+                p.push_str(&format!("User: {q}\n{a}\n"));
             }
+            p.push_str(&format!("\nThe request now:\n{text}"));
+            p
+        };
+        let source = if is_intent { "intent" } else { "model" };
+        match self.engine.handle(job, &prompt, self.model.as_mut()) {
+            Outcome::Run(a) | Outcome::NeedsApproval(a) => self.act(text, a, source, now),
             Outcome::Blocked(why) => format!("blocked: {why}"),
-            Outcome::GaveUp => "I could not turn that into something I am allowed to do.".into(),
+            Outcome::GaveUp => {
+                let ep = self.learner.begin(now, text, "", source);
+                self.learner.gave_up(ep);
+                "I could not turn that into something I am allowed to do.".into()
+            }
         }
+    }
+
+    /// Carry out a chosen action and record how it went, for learning.
+    fn act(&mut self, prompt: &str, a: agentos_action::Action, source: &str, now: u64) -> String {
+        let ep = self
+            .learner
+            .begin(now, prompt, &crate::model::action_json(&a), source);
+        let (ok, text) = self.call_tool(&a.tool, &a.args);
+        match approval_id(&text) {
+            Some(q) if !ok => self.learner.waiting(ep, q),
+            _ => self.learner.ran(ep, now, ok),
+        }
+        if !ok {
+            return format!("not done: {text}");
+        }
+        if a.tool == "run_function" {
+            if let Some(out) = self.carry_out_requests(&text) {
+                return out;
+            }
+        }
+        format!("done: {text}")
     }
 
     /// One tool call through the gateway, so tiers and the approval key apply. (ok, text)
@@ -593,6 +659,64 @@ impl Core {
         }
     }
 
+    /// Write the training data next to the experience log, and say what there is.
+    fn export_learning(&mut self) -> String {
+        let (sft, dpo) = self.learner.datasets(&self.system);
+        let eval = self.learner.eval_set(5);
+        let dir = self.cfg.data_dir.join("learn");
+        let write = |name: &str, rows: &[Value]| -> Result<(), String> {
+            std::fs::create_dir_all(&dir).map_err(io)?;
+            let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+            std::fs::write(dir.join(name), text).map_err(io)
+        };
+        let eval_rows: Vec<Value> = eval
+            .iter()
+            .map(|(p, a)| json!({"prompt": p, "expect": a}))
+            .collect();
+        if let Err(e) = write("sft.jsonl", &sft)
+            .and_then(|_| write("dpo.jsonl", &dpo))
+            .and_then(|_| write("eval.jsonl", &eval_rows))
+        {
+            return format!("export failed: {e}");
+        }
+        format!(
+            "{}\nexported {} SFT chats, {} DPO pairs, {} eval cases to {}",
+            self.learner.stats(),
+            sft.len(),
+            dpo.len(),
+            eval.len(),
+            dir.display()
+        )
+    }
+
+    /// Score the local small model on held-out episodes (what a retrained model must beat).
+    fn evaluate_model(&mut self) -> String {
+        let cases = self.learner.eval_set(1);
+        let Some(url) = self.small_url.clone() else {
+            return "no local model".into();
+        };
+        if cases.is_empty() {
+            return "no labelled episodes yet: approve, decline or correct some answers first"
+                .into();
+        }
+        let mut host = LlamaHost {
+            small_url: url.clone(),
+            large_url: url,
+            grammar: self.grammar.clone(),
+            max_tokens: 128,
+            timeout: Duration::from_secs(60),
+            system: Some(self.system.clone()),
+        };
+        let score = agentos_learn::evaluate(&cases, &mut |p| {
+            host.complete(agentos_router::Brain::LocalSmall, p)
+        });
+        format!(
+            "small model scores {:.0}% on {} held-out requests",
+            score * 100.0,
+            cases.len()
+        )
+    }
+
     /// The control channel: the approval key and operator commands.
     pub fn ctl(&mut self, line_in: &str) -> String {
         let line_in = line_in.trim();
@@ -613,11 +737,17 @@ impl Core {
                 }
             }
             "press" => match rest.trim().trim_start_matches('#').parse::<u64>() {
-                Ok(id) if self.gateway.press_key(id) => format!("approved #{id}; ask again within 10 minutes"),
+                Ok(id) if self.gateway.press_key(id) => {
+                    self.learner.approved(id, self.clock.now_ms());
+                    format!("approved #{id}; ask again within 10 minutes")
+                }
                 _ => "no such pending item".into(),
             },
             "decline" => match rest.trim().trim_start_matches('#').parse::<u64>() {
-                Ok(id) if self.gateway.decline(id) => format!("declined #{id}"),
+                Ok(id) if self.gateway.decline(id) => {
+                    self.learner.declined(id);
+                    format!("declined #{id}")
+                }
                 _ => "no such pending item".into(),
             },
             "power" => self.set_power(rest),
@@ -667,6 +797,12 @@ impl Core {
                 self.models.refresh_health();
                 self.models.report()
             }
+            "good" => self.chat_inner("that was right"),
+            "bad" => self.chat_inner("that was wrong"),
+            "learn" => match rest.trim() {
+                "eval" => self.evaluate_model(),
+                _ => self.export_learning(),
+            },
             "functions" => {
                 let f = self.functions.borrow();
                 let compiler = match f.compiler.check() {
@@ -689,7 +825,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status stage chat pending press decline power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
+            "" => "commands: status stage chat pending press decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
             other => format!("unknown command: {other}"),
         }
     }
@@ -855,4 +991,22 @@ impl Core {
     pub fn tier_of(&self, tool: &str) -> Option<Tier> {
         self.engine.registry.tier_of(tool)
     }
+}
+
+/// "That was right" / "that was wrong" and the like: feedback on the last answer.
+fn feedback_of(text: &str) -> Option<bool> {
+    let t = agentos_learn::words(text).join(" ");
+    match t.as_str() {
+        "that was right" | "that s right" | "thats right" | "correct" | "good" | "right"
+        | "yes that s right" | "well done" => Some(true),
+        "that was wrong" | "that s wrong" | "thats wrong" | "wrong" | "no that s wrong"
+        | "not that" | "that is wrong" | "bad" => Some(false),
+        _ => None,
+    }
+}
+
+/// The queue id in "approval required (id 3): ...".
+fn approval_id(text: &str) -> Option<u64> {
+    let i = text.find("approval required (id ")?;
+    text[i + 22..].split(')').next()?.trim().parse().ok()
 }

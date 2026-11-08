@@ -584,3 +584,57 @@ fn the_agent_writes_compiles_repairs_and_runs_its_own_rust_functions() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn it_learns_from_corrections_and_approvals() {
+    let d = dir("learn");
+    let (models, model) = fake_model(&d, "tools"); // answers everything with read_calendar(friday)
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama_bin();
+    c.models = models;
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+
+    // the model guesses friday; the human says it was wrong and does it the right way
+    assert!(ctl("chat is anything on at the weekend").starts_with("done:"));
+    assert!(ctl("chat that was wrong").contains("was wrong"));
+    assert!(ctl("chat what's on saturday").starts_with("done:"));
+
+    // the same request now goes straight to the corrected action, without the model
+    let before = std::fs::metadata(format!("{}.last.json", model.display()))
+        .unwrap()
+        .modified()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(ctl("chat Is anything on at the weekend?").starts_with("done:"));
+    let after = std::fs::metadata(format!("{}.last.json", model.display()))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(before, after, "the model was not asked");
+
+    // a similar request: the model is shown the correction as an example
+    ctl("chat anything on at the weekend for the kids");
+    let req = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
+    assert!(req.contains("Requests this person made before"), "{req}");
+    assert!(req.contains("saturday"), "{req}");
+
+    // an approved call is rewarded; a declined one is not repeated as a shortcut
+    assert!(ctl("chat call mum").contains("approval required"));
+    ctl("press 1");
+    let stats = ctl("learn");
+    assert!(
+        stats.contains("1 corrections") && stats.contains("shortcut 1/1"),
+        "{stats}"
+    );
+    assert!(stats.contains("1 DPO pairs"), "{stats}");
+    let dpo = std::fs::read_to_string(d.join("learn/dpo.jsonl")).unwrap();
+    assert!(dpo.contains("saturday") && dpo.contains("friday"), "{dpo}");
+
+    // the eval gate: the fake model still says friday, so the right tool with the wrong day
+    let e = ctl("learn eval");
+    assert!(e.contains("scores 50%"), "{e}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

@@ -18,7 +18,7 @@ commercial_enabled = false
 # agentd runs llama-server for each model itself, puts it in the model's cgroup and gives it the
 # chip. Download the files once with:   agentd models pull -c /etc/agentd/agentd.toml
 llama_server = "/usr/bin/llama-server"
-keep_small_loaded = true          # always ready: about 0.5 GB of RAM held for the small model
+keep_small_loaded = true          # always ready: about 3 GB of RAM held for the small model
 model_wait_secs = 20
 # reserve_cpus = [0]              # cores kept for calls and the system; default: the slowest core
 hot_c = 80.0                      # drop the boost above this, restore below cool_c
@@ -26,29 +26,25 @@ cool_c = 70.0
 coder_attempts = 3                # write -> test in the sandbox -> show the model what failed
 coder_timeout_secs = 300
 
-[[models]]                        # always loaded: answers chat
-name = "qwen2.5-0.5b"
+# Memory: the 4B needs about 3 GB and the 9B about 6 GB. Both are loaded only on the charger;
+# on a phone with less than 12 GB of RAM, delete the 9B table (the 4B then does everything).
+
+[[models]]                        # always loaded: chat, tool choice, small functions
+name = "qwen3.5-4b"
 role = "small"
-file = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
-url = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-sha256 = "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+file = "Qwen3.5-4B-Q4_K_M.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+sha256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
 port = 8080
-ctx = 4096
+ctx = 8192
 gpu_layers = 99                   # all layers on the GPU via Vulkan when there is one
 
-[[models]]                        # loaded on the charger (Deep stage): harder jobs and writing functions
-name = "qwen2.5-coder-3b"
+[[models]]                        # on the charger: harder requests and writing functions
+name = "qwen3.5-9b"
 role = "large"
-file = "qwen2.5-coder-3b-instruct-q4_k_m.gguf"
-url = "https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct-GGUF/resolve/main/qwen2.5-coder-3b-instruct-q4_k_m.gguf"
-sha256 = "724fb256bec1ff062b2f65e4569e871ad2e95ab2a3989723d1769c54294730b7"
+file = "Qwen3.5-9B-Q4_K_M.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+sha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 port = 8081
-ctx = 4096
+ctx = 8192
 gpu_layers = 99
-
-idle_secs = 120
-anchor_secs = 600
-utc_offset_minutes = 330
-quiet_start_min = 1320
-quiet_end_min = 420
-daily_budget = 5

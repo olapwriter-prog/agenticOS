@@ -60,7 +60,9 @@ impl LlamaHost {
             "grammar": self.grammar,
             "max_tokens": self.max_tokens,
             "temperature": 0.2,
-            "cache_prompt": true
+            "cache_prompt": true,
+            // Qwen3-family templates think aloud by default; the grammar wants the answer at once
+            "chat_template_kwargs": {"enable_thinking": false}
         });
         let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
         let resp = agent
@@ -94,7 +96,8 @@ pub fn chat_json(
         "json_schema": schema,
         "max_tokens": max_tokens,
         "temperature": 0.2,
-        "cache_prompt": true
+        "cache_prompt": true,
+        "chat_template_kwargs": {"enable_thinking": false}
     });
     let resp = ureq::AgentBuilder::new()
         .timeout(timeout)

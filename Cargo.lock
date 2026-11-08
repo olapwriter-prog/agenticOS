@@ -36,6 +36,7 @@ dependencies = [
  "agentos-host",
  "agentos-intents",
  "agentos-kerneld",
+ "agentos-learn",
  "agentos-ledger",
  "agentos-models",
  "agentos-notify",
@@ -202,6 +203,14 @@ dependencies = [
  "agentos-power",
  "agentos-stage",
  "agentos-wake",
+]
+
+[[package]]
+name = "agentos-learn"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
