@@ -16,8 +16,11 @@ use agentos_gateway::Gateway;
 use agentos_hal::{Clock, FakePower, PowerSource};
 use agentos_host::LlamaHost;
 use agentos_kerneld::{Kernel, Paths};
+use agentos_models::{Role, Supervisor};
 use agentos_notify::{Decision, Note, Notifier, Policy as NotifyPolicy, Priority};
 use agentos_phone::{Contacts, Linux, Phone, PhoneEvent, PhoneTools, Sim};
+use agentos_power::ModelBudget;
+use agentos_prio::{Limits, Mode, Prio, SysPaths};
 use agentos_router::{Job, JobKind, Policy, Sensitivity};
 use agentos_stage::{Event, Stage};
 use agentos_status::{line, Facts};
@@ -40,6 +43,10 @@ pub struct Core {
     notifier: Notifier,
     phone: agentos_phone::Shared,
     last_phone_poll_ms: u64,
+    prio: Prio,
+    models: Supervisor,
+    /// Set if the priority manager could not set up its cgroups (not fatal).
+    prio_error: Option<String>,
     anchor_key: Vec<u8>,
     ledger_path: PathBuf,
     last_activity_ms: u64,
@@ -150,9 +157,43 @@ impl Core {
         );
         let registry = Registry::new(exec.tools().to_vec());
         let grammar = registry.gbnf();
+        let system = crate::model::system_prompt(exec.tools());
         let gateway = Gateway::new(exec, clock.clone());
 
-        // 4. The thinking engine and its model.
+        // 4. The chip goes to the model first; the supervisor keeps the model servers running.
+        let sys_paths = if cfg.real_hardware {
+            SysPaths::system()
+        } else {
+            let sim = SysPaths::under(&dir.join("sim"));
+            let n = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            for i in 0..n {
+                std::fs::create_dir_all(sim.cpu.join(format!("cpu{i}"))).map_err(io)?;
+            }
+            sim
+        };
+        let mut prio = Prio::new(
+            sys_paths,
+            &cfg.reserve_cpus,
+            Limits {
+                hot_c: cfg.hot_c,
+                cool_c: cfg.cool_c,
+            },
+        );
+        let prio_error = prio.setup().err();
+        if cfg.real_hardware {
+            prio.evict();
+        }
+        let models = Supervisor::new(
+            cfg.llama_server.clone(),
+            cfg.models_path(),
+            dir.join("logs"),
+            cfg.models.clone(),
+            prio.threads(),
+        );
+
+        // 5. The thinking engine and its model.
         let commercial_on = cfg.commercial_enabled && secrets.commercial_key.is_some();
         let engine = Engine {
             registry,
@@ -165,7 +206,9 @@ impl Core {
             clock: clock.clone(),
             gate: Gate::new(&secrets.gate_secret, clock.clone(), 10 * 60_000),
         };
-        let host = match (&cfg.small_url, &cfg.large_url) {
+        let small_url = cfg.small_url.clone().or_else(|| models.url(Role::Small));
+        let large_url = cfg.large_url.clone().or_else(|| models.url(Role::Large));
+        let host = match (&small_url, &large_url) {
             (None, None) => None,
             (s, l) => {
                 let small = s.clone().or_else(|| l.clone()).unwrap();
@@ -176,6 +219,7 @@ impl Core {
                     grammar,
                     max_tokens: 128,
                     timeout: Duration::from_secs(20),
+                    system: Some(system),
                 })
             }
         };
@@ -207,6 +251,9 @@ impl Core {
             notifier,
             phone,
             last_phone_poll_ms: 0,
+            prio,
+            models,
+            prio_error,
             anchor_key: secrets.anchor_key,
             ledger_path,
             last_activity_ms: now,
@@ -214,6 +261,7 @@ impl Core {
             fixed_minute_of_day: None,
         };
         core.phone.borrow_mut().poll(); // learn what is already in the inbox
+        core.sync_models();
         core.save_anchor()?;
         Ok(core)
     }
@@ -253,6 +301,38 @@ impl Core {
         let _ = self.kernel.handle(Event::ChatArrived);
     }
 
+    /// Which local models this stage and battery allow.
+    fn wanted_roles(&self) -> Vec<Role> {
+        match self.kernel.model_budget() {
+            ModelBudget::Large => vec![Role::Small, Role::Large],
+            ModelBudget::Small => vec![Role::Small],
+            ModelBudget::None if self.cfg.keep_small_loaded => vec![Role::Small],
+            ModelBudget::None => vec![],
+        }
+    }
+
+    /// Start or stop model servers for the current stage, and put new ones in the model's cgroup.
+    fn sync_models(&mut self) {
+        let roles = self.wanted_roles();
+        let mut started = self.models.want(&roles);
+        started.extend(self.models.check());
+        for (_, pid) in &started {
+            self.prio.adopt(*pid);
+        }
+        if !started.is_empty() || roles.is_empty() {
+            self.prio.reserve_memory(self.models.loaded_bytes());
+        }
+    }
+
+    /// Long jobs get the chip in the Deep stage; otherwise the model idles until asked.
+    fn baseline_mode(&self) -> Mode {
+        if self.kernel.stage == Stage::Deep {
+            Mode::Training
+        } else {
+            Mode::Idle
+        }
+    }
+
     // ---- the three ways in -------------------------------------------------------------------
 
     /// One MCP JSON-RPC request, already authenticated by the HTTP layer.
@@ -264,6 +344,19 @@ impl Core {
     /// One line of plain language from the human.
     pub fn chat(&mut self, text: &str) -> String {
         self.touch();
+        self.sync_models();
+        if self.models.spec(Role::Small).is_some() {
+            // a model still loading: wait a little rather than fail the first question
+            self.models
+                .wait_ready(Role::Small, Duration::from_secs(self.cfg.model_wait_secs));
+        }
+        self.prio.set_mode(Mode::Inference);
+        let answer = self.chat_inner(text);
+        self.prio.set_mode(self.baseline_mode());
+        answer
+    }
+
+    fn chat_inner(&mut self, text: &str) -> String {
         let job = Job {
             kind: JobKind::Chat,
             sensitivity: Sensitivity::Normal,
@@ -355,6 +448,18 @@ impl Core {
                 }
                 None => "usage: sim-sms <from>|<text>".into(),
             },
+            "prio" => match &self.prio_error {
+                Some(e) => format!("{}\nsetup failed: {e}", self.prio.report()),
+                None => self.prio.report(),
+            },
+            "models" => {
+                if rest.trim() == "reset" {
+                    self.models.reset();
+                    self.sync_models();
+                }
+                self.models.refresh_health();
+                self.models.report()
+            }
             "tools" => self
                 .gateway
                 .executor()
@@ -363,7 +468,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status stage chat pending press decline power anchor verify notify digest tools phone sim-call sim-sms".into(),
+            "" => "commands: status stage chat pending press decline power anchor verify notify digest tools phone sim-call sim-sms prio models".into(),
             other => format!("unknown command: {other}"),
         }
     }
@@ -518,6 +623,9 @@ impl Core {
         if now.saturating_sub(self.last_anchor_ms) >= self.cfg.anchor_secs * 1000 {
             let _ = self.save_anchor();
         }
+        self.sync_models();
+        self.prio.set_mode(self.baseline_mode());
+        self.prio.tick();
     }
 
     pub fn tier_of(&self, tool: &str) -> Option<Tier> {

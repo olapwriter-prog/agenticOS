@@ -42,6 +42,22 @@ pub struct Config {
     pub phone_poll_secs: u64,
     /// The control socket. Defaults to control.sock in data_dir.
     pub control_socket: Option<PathBuf>,
+
+    /// llama.cpp's server binary. agentd starts one per configured model.
+    pub llama_server: PathBuf,
+    /// Where model files live. Defaults to models/ in data_dir.
+    pub models_dir: Option<PathBuf>,
+    /// Local models (`[[models]]` tables). When set, small_url/large_url default to them.
+    pub models: Vec<agentos_models::ModelSpec>,
+    /// Keep the small model loaded even while asleep, so the first answer is fast.
+    pub keep_small_loaded: bool,
+    /// How long a chat waits for a model that is still loading.
+    pub model_wait_secs: u64,
+    /// Cores never given to the model (kept for calls and the system). Empty: the slowest core.
+    pub reserve_cpus: Vec<u32>,
+    /// Above this temperature the model's boost is dropped; it returns below cool_c.
+    pub hot_c: f32,
+    pub cool_c: f32,
 }
 
 impl Default for Config {
@@ -68,6 +84,14 @@ impl Default for Config {
             leds_dir: PathBuf::from("/sys/class/leds"),
             phone_poll_secs: 2,
             control_socket: None,
+            llama_server: PathBuf::from("/usr/bin/llama-server"),
+            models_dir: None,
+            models: vec![],
+            keep_small_loaded: true,
+            model_wait_secs: 20,
+            reserve_cpus: vec![],
+            hot_c: 80.0,
+            cool_c: 70.0,
         }
     }
 }
@@ -80,6 +104,11 @@ impl Config {
         self.control_socket
             .clone()
             .unwrap_or_else(|| self.data_dir.join("control.sock"))
+    }
+    pub fn models_path(&self) -> PathBuf {
+        self.models_dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("models"))
     }
     pub fn load(path: &std::path::Path) -> Result<Config, String> {
         let t = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -111,6 +140,26 @@ mod tests {
         assert_eq!(c.listen, "127.0.0.1:9");
         assert_eq!(c.idle_secs, 5);
         assert_eq!(c.small_url.as_deref(), Some("http://127.0.0.1:8080"));
+    }
+    #[test]
+    fn models_are_tables() {
+        let c = Config::from_toml(
+            "[[models]]\nname = \"qwen\"\nrole = \"small\"\nfile = \"q.gguf\"\nport = 8080\n",
+        )
+        .unwrap();
+        assert_eq!(c.models.len(), 1);
+        assert_eq!(c.models_path(), PathBuf::from("./agentd-data/models"));
+    }
+    #[test]
+    fn the_shipped_phone_config_parses() {
+        let c = Config::from_toml(include_str!("../../../os/postmarketos/agentd.toml")).unwrap();
+        assert_eq!(c.phone, "modemmanager");
+        assert!(c.real_hardware);
+        assert_eq!(c.models.len(), 2);
+        assert!(c
+            .models
+            .iter()
+            .all(|m| m.sha256.as_ref().is_some_and(|h| h.len() == 64)));
     }
     #[test]
     fn a_misspelt_type_is_an_error_not_a_default() {

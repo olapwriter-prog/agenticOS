@@ -395,3 +395,104 @@ fn the_phone_works_headless_and_calls_need_the_key() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// A stand-in for llama-server: answers /health, and turns every chat request into
+/// read_calendar(friday). It saves the last request so the test can see the system prompt.
+fn fake_llama(dir: &std::path::Path) -> PathBuf {
+    let p = dir.join("llama-server");
+    let script = r#"#!/bin/sh
+while [ $# -gt 0 ]; do [ "$1" = "--port" ] && PORT=$2; shift; done
+exec python3 - "$PORT" "$(dirname "$0")/last-request.json" <<'PY'
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_GET(s):
+        s.send_response(200); s.send_header("Content-Length", "15"); s.end_headers()
+        s.wfile.write(b'{"status":"ok"}')
+    def do_POST(s):
+        req = s.rfile.read(int(s.headers.get("Content-Length", 0)))
+        open(sys.argv[2], "wb").write(req)
+        act = json.dumps({"tool": "read_calendar", "args": {"day": "friday"}})
+        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": act}}]}).encode()
+        s.send_response(200); s.send_header("Content-Type", "application/json")
+        s.send_header("Content-Length", str(len(body))); s.end_headers(); s.wfile.write(body)
+    def log_message(s, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+"#;
+    std::fs::write(&p, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+#[test]
+fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
+    if std::process::Command::new("python3")
+        .arg("-V")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: needs python3 for the fake llama-server");
+        return;
+    }
+    let d = dir("llm");
+    std::fs::create_dir_all(d.join("models")).unwrap();
+    std::fs::write(d.join("models/small.gguf"), vec![0u8; 4096]).unwrap();
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama(&d);
+    c.models = vec![toml::from_str(&format!(
+        "name = \"small\"\nrole = \"small\"\nfile = \"small.gguf\"\nport = {port}\nctx = 512"
+    ))
+    .unwrap()];
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+
+    // kept loaded while asleep, so the first question is fast
+    assert!(
+        ctl("models").contains("small (small, port"),
+        "{}",
+        ctl("models")
+    );
+
+    // no intent matches this; the model answers, and the action runs through the executor
+    let a = ctl("chat is anything happening at the end of the week");
+    assert!(a.starts_with("done:"), "{a}");
+    let req = std::fs::read_to_string(d.join("last-request.json")).unwrap();
+    assert!(
+        req.contains("You are the agent that runs this phone"),
+        "{req}"
+    );
+    assert!(
+        req.contains("call(to) [approval]") && req.contains("grammar"),
+        "{req}"
+    );
+    assert!(ctl("models").contains("ready"));
+
+    // the server lives in the model's cgroup, with the model's cores; back to idle afterwards
+    let procs =
+        std::fs::read_to_string(d.join("sim/cgroup/agentos.slice/agentos-llm.slice/cgroup.procs"))
+            .unwrap();
+    assert!(!procs.trim().is_empty());
+    let p = ctl("prio");
+    assert!(
+        p.starts_with("mode Idle") && p.contains("model cores"),
+        "{p}"
+    );
+    let min =
+        std::fs::read_to_string(d.join("sim/cgroup/agentos.slice/agentos-llm.slice/memory.min"))
+            .unwrap();
+    assert_eq!(
+        min.trim(),
+        "4096",
+        "the loaded weights are protected from reclaim"
+    );
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

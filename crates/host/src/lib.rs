@@ -11,6 +11,10 @@ pub struct LlamaHost {
     pub grammar: String,
     pub max_tokens: u32,
     pub timeout: Duration,
+    /// What the model is told before the request: who it is and what each tool does.
+    /// With it, requests go to the chat endpoint so each model's own chat template is applied;
+    /// without it, the raw request goes to /completion.
+    pub system: Option<String>,
 }
 
 impl LlamaHost {
@@ -23,6 +27,9 @@ impl LlamaHost {
     }
 
     fn call(&self, url: &str, prompt: &str) -> Result<String, String> {
+        if let Some(system) = &self.system {
+            return self.chat(url, system, prompt);
+        }
         let body = json!({
             "prompt": prompt,
             "grammar": self.grammar,
@@ -40,6 +47,31 @@ impl LlamaHost {
             .and_then(|c| c.as_str())
             .map(String::from)
             .ok_or_else(|| "no content field".to_string())
+    }
+}
+
+impl LlamaHost {
+    fn chat(&self, url: &str, system: &str, prompt: &str) -> Result<String, String> {
+        let body = json!({
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ],
+            "grammar": self.grammar,
+            "max_tokens": self.max_tokens,
+            "temperature": 0.2,
+            "cache_prompt": true
+        });
+        let agent = ureq::AgentBuilder::new().timeout(self.timeout).build();
+        let resp = agent
+            .post(&format!("{url}/v1/chat/completions"))
+            .send_json(body)
+            .map_err(|e| e.to_string())?;
+        let v: serde_json::Value = resp.into_json().map_err(|e| e.to_string())?;
+        v["choices"][0]["message"]["content"]
+            .as_str()
+            .map(String::from)
+            .ok_or_else(|| "no message content".to_string())
     }
 }
 
@@ -107,7 +139,28 @@ mod tests {
             grammar: "root ::= action".into(),
             max_tokens: 128,
             timeout: Duration::from_secs(5),
+            system: None,
         }
+    }
+
+    #[test]
+    fn with_a_system_prompt_it_uses_the_chat_endpoint() {
+        let (url, rx) = fake_server(
+            r#"{"choices":[{"message":{"role":"assistant","content":"{\"tool\":\"call\"}"}}]}"#,
+        );
+        let mut h = host(&url);
+        h.system = Some("You run a phone. Tools: call(to)".into());
+        assert_eq!(
+            h.complete(Brain::LocalSmall, "ring mum"),
+            r#"{"tool":"call"}"#
+        );
+        let req = rx.recv().unwrap();
+        assert!(req.starts_with("POST /v1/chat/completions"));
+        assert!(req.contains("You run a phone") && req.contains("ring mum"));
+        assert!(
+            req.contains("root ::= action"),
+            "the grammar still constrains the answer"
+        );
     }
 
     #[test]

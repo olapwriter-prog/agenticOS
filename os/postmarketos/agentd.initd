@@ -20,6 +20,11 @@ depend() {
 }
 
 start_pre() {
+	# The model's CPU/GPU/memory priority needs the unified cgroup v2 tree.
+	if [ ! -e /sys/fs/cgroup/cgroup.controllers ]; then
+		ewarn "cgroup v2 is not mounted at /sys/fs/cgroup: set rc_cgroup_mode=\"unified\""
+		ewarn "in /etc/rc.conf and reboot, or the LLM gets no CPU/GPU priority"
+	fi
 	checkpath -d -m 0700 -o root:root /var/lib/agentd
 	checkpath -d -m 0700 -o root:root /etc/agentd
 	# First boot: a random vault passphrase, then the vault and the MCP bearer token.

@@ -36,6 +36,7 @@ When `init` asks:
 - **Vendor / device**: your phone
 - **User interface**: `none`  ← headless; this is the whole point
 - **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,callaudiod,wireplumber`
+  (the agentd package also pulls in `llama-server`, `libggml-cpu` and `libggml-vulkan` on aarch64)
 
 Build and add the agentd package from this repository:
 ```bash
@@ -59,6 +60,19 @@ sudo rc-update add agentd default
 sudo rc-service agentd start
 sudo cat /etc/agentd/gateway-token      # bearer token for the MCP endpoint
 ```
+
+The LLM's CPU, GPU and memory priority needs the unified cgroup v2 tree. In `/etc/rc.conf` set
+`rc_cgroup_mode="unified"` and reboot (the service warns at start if it is missing).
+
+Download the local models once (0.5 GB for the always-loaded small model, 2.1 GB for the large
+one used on the charger). Both are checked against the SHA-256 pinned in the config, and the
+daemon starts each one within a second of it arriving:
+```bash
+sudo agentd models pull -c /etc/agentd/agentd.toml
+sudo agentd ctl -c /etc/agentd/agentd.toml models   # running, ready
+sudo agentd ctl -c /etc/agentd/agentd.toml prio     # model cores, temperature, protected memory
+```
+On a phone with 4 GB of RAM or less, delete the large `[[models]]` table.
 
 Find the battery directory and put it in `/etc/agentd/agentd.toml` as `power_dir`:
 ```bash
@@ -98,7 +112,34 @@ pmbootstrap install --add agentd,agentd-openrc && pmbootstrap qemu
 ```
 Or run `agentd` straight on your computer (see the README); the simulated phone is the default.
 
+## How the chip is given to the LLM
+
+`agentd` starts `llama-server` itself and moves it into `/sys/fs/cgroup/agentos.slice/agentos-llm.slice`.
+
+| | Idle | Answering (chat) or Deep stage (charger) | Too hot (≥ `hot_c` until < `cool_c`) |
+|---|---|---|---|
+| CPU weight | 100 | 10000, highest on the system | 10000 |
+| Cores | the fast cores, minus one reserved core | same | same |
+| uclamp.min | 0 | max (top frequency) | 0 |
+| cpufreq on those cores | kernel's choice | `performance` | kernel's choice |
+| GPU devfreq | kernel's choice | `performance` | kernel's choice |
+| cpu.max | unlimited | unlimited | half of those cores |
+| Memory | weights protected (`memory.min`), never swapped, `--mlock` | same | same |
+
+The reserved core (the slowest one, or `reserve_cpus`) is never given to the model. The modem,
+call audio and `agentd` itself always have it, so a call is never starved. The model's threads
+match the cores it owns. Layers go to the GPU through Vulkan where Mesa supports it (Adreno via
+Turnip, Mali via PanVK) and stay on the CPU otherwise. Knobs the kernel lacks (for example uclamp
+on some ports) are skipped and listed by `agentd ctl prio`.
+
+The phone's NPU (for example Qualcomm Hexagon) is not used: mainline Linux has no driver
+llama.cpp can use on these phones.
+
 ## Known gaps (honest list)
+
+- **Small-model accuracy.** On a laptop test the 0.5B model chose the right tool for 7 of 10
+  unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
+  The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.
 
 - **Call audio, vibration and volume.** callaudiod, feedbackd and PipeWire run inside a *user session*
   on postmarketOS. On a `ui=none` image no session starts, so `callaudiocli`, `fbcli` and `wpctl` fail

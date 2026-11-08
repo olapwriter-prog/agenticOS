@@ -36,9 +36,11 @@ dependencies = [
  "agentos-intents",
  "agentos-kerneld",
  "agentos-ledger",
+ "agentos-models",
  "agentos-notify",
  "agentos-phone",
  "agentos-power",
+ "agentos-prio",
  "agentos-router",
  "agentos-stage",
  "agentos-status",
@@ -46,6 +48,7 @@ dependencies = [
  "agentos-update",
  "agentos-vault",
  "getrandom",
+ "libc",
  "serde",
  "serde_json",
  "toml",
@@ -210,6 +213,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-models"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "sha2",
+ "toml",
+ "ureq",
+]
+
+[[package]]
 name = "agentos-notify"
 version = "0.1.0"
 
@@ -248,6 +262,10 @@ dependencies = [
  "agentos-hal",
  "agentos-stage",
 ]
+
+[[package]]
+name = "agentos-prio"
+version = "0.1.0"
 
 [[package]]
 name = "agentos-router"

@@ -14,6 +14,22 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Set by SIGTERM or SIGINT. The core loop sees it within a second and shuts down cleanly,
+/// which stops the model servers it started.
+pub static STOP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Call once from `main` before `start`.
+pub fn install_signal_handlers() {
+    unsafe {
+        libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+    }
+}
+
 enum Cmd {
     Mcp(String, Sender<Option<String>>),
     Ctl(String, Sender<String>),
@@ -122,6 +138,9 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
         });
         // the core loop
         loop {
+            if STOP.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(Cmd::Mcp(b, r)) => {
                     let _ = r.send(core.mcp(&b));

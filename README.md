@@ -36,6 +36,15 @@ The base system is **postmarketOS** (Alpine Linux for phones) installed with no 
 | `where am i` | `where_am_i` | Medium |
 | `flashlight on`, `volume 40`, `find my phone` | `flashlight`, `set_volume`, `ring_phone` | Low |
 
+## The LLM on the phone
+
+`agentd` runs llama.cpp's `llama-server` itself: a small model always loaded for chat, and a large one
+on the charger. Requests no fixed phrase covers go to the model. It is given the tool list with one
+line per tool, and a grammar forces its answer to be exactly one registered tool call. The chip is
+given to the model first: its own fast cores, top CPU weight, top frequency, the GPU (Vulkan), and
+locked memory. One core is always kept for calls, and a temperature limit drops the boost when the
+phone gets hot. `agentd ctl prio` shows it; `agentd models pull` fetches models and checks their hashes.
+
 Incoming calls and texts are picked up in the background. They wake the phone, get written to the
 tamper-evident ledger, and alert the user through vibration and sound. Texts that arrive during quiet
 hours are held for the digest, but incoming calls always ring.
@@ -64,6 +73,8 @@ cp agentd.example.toml agentd.toml
 |---|---|
 | `crates/agentd` | The daemon: wires everything together, MCP over HTTP, control socket |
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
+| `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
+| `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
 | `crates/{hal,stage,power,wake,freeze,ledger,kerneld}` | Vol 2: power stages, cgroup freezer, cpufreq, hash-chained ledger |
 | `crates/{router,firewall,gate,action,store,brain,host}` | Vol 3: model routing, PII firewall, approval tokens, llama.cpp host |
 | `crates/{executor,connectors,intents,skills,mcp}` | Vol 4: tool tiers, connectors, phrase intents, skills, MCP |

@@ -3,6 +3,7 @@
 //!   agentd run    [-c config.toml]     start the daemon
 //!   agentd ctl    [-c config.toml] ... send a control command (status, pending, press 1, chat ...)
 //!   agentd set-commercial-key [-c config.toml]
+//!   agentd models list|pull [name] [-c config.toml]   local model files
 //! The vault passphrase comes from AGENTD_PASSPHRASE, the file named by AGENTD_PASSPHRASE_FILE,
 //! or one line on standard input.
 use agentd::config::Config;
@@ -48,7 +49,7 @@ fn main() {
         None => Config::default(),
     };
     let Some(cmd) = args.first().cloned() else {
-        fail("usage: agentd init|run|ctl|set-commercial-key [-c config.toml]");
+        fail("usage: agentd init|run|ctl|models|set-commercial-key [-c config.toml]");
     };
     match cmd.as_str() {
         "init" => {
@@ -74,6 +75,7 @@ fn main() {
                 .unwrap_or_else(|e| fail(&e));
             let listen = cfg.listen.clone();
             let ctl = cfg.control_path();
+            server::install_signal_handlers();
             let r = server::start(cfg, s, Arc::new(ScaledClock::new(1)))
                 .unwrap_or_else(|e| fail(&e.to_string()));
             eprintln!(
@@ -83,6 +85,7 @@ fn main() {
             );
             let _ = listen;
             r.wait();
+            eprintln!("agentd stopped");
         }
         "ctl" => {
             let line = args[1..].join(" ");
@@ -91,6 +94,80 @@ fn main() {
                 Err(e) => fail(&format!("cannot reach the daemon: {e}")),
             }
         }
+        "models" => models(&cfg, &args[1..]),
         other => fail(&format!("unknown command {other}")),
+    }
+}
+
+/// `agentd models list` and `agentd models pull [name]`. Needs no passphrase and no daemon;
+/// a running daemon starts a model within a second of its file arriving.
+fn models(cfg: &Config, args: &[String]) {
+    let dir = cfg.models_path();
+    let sup = agentos_models::Supervisor::new(
+        cfg.llama_server.clone(),
+        dir.clone(),
+        dir.clone(),
+        cfg.models.clone(),
+        1,
+    );
+    if cfg.models.is_empty() {
+        fail("no [[models]] in the config");
+    }
+    match args.first().map(String::as_str) {
+        Some("list") | None => {
+            for s in &cfg.models {
+                let p = sup.path(s);
+                let have = match std::fs::metadata(&p) {
+                    Ok(m) => format!("{} MiB", m.len() >> 20),
+                    Err(_) => "not downloaded".into(),
+                };
+                println!(
+                    "{} ({:?}, port {}): {} [{have}]",
+                    s.name,
+                    s.role,
+                    s.port,
+                    p.display()
+                );
+            }
+        }
+        Some("pull") => {
+            let only = args.get(1);
+            for s in cfg
+                .models
+                .iter()
+                .filter(|s| only.is_none_or(|n| *n == s.name))
+            {
+                let dest = sup.path(s);
+                if dest.exists() {
+                    println!("{}: already there", s.name);
+                    continue;
+                }
+                eprintln!(
+                    "{}: downloading {}",
+                    s.name,
+                    s.url.as_deref().unwrap_or("?")
+                );
+                let mut last = 0u64;
+                let got = agentos_models::pull(s, &dest, &mut |done, total| {
+                    if done - last >= 32 << 20 {
+                        last = done;
+                        match total {
+                            Some(t) => eprint!("\r  {} / {} MiB", done >> 20, t >> 20),
+                            None => eprint!("\r  {} MiB", done >> 20),
+                        }
+                    }
+                })
+                .unwrap_or_else(|e| fail(&e));
+                eprintln!();
+                match &s.sha256 {
+                    Some(_) => println!("{}: ok, checksum verified", s.name),
+                    None => println!(
+                        "{}: ok. Not verified; pin it in the config:\n  sha256 = \"{got}\"",
+                        s.name
+                    ),
+                }
+            }
+        }
+        Some(other) => fail(&format!("models {other}: use list or pull")),
     }
 }

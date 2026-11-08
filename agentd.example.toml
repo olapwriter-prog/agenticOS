@@ -20,3 +20,22 @@ phone = "sim"                     # "modemmanager" on a real phone
 # leds_dir = "/sys/class/leds"
 phone_poll_secs = 2               # how often to look for incoming calls and texts
 # control_socket = "/run/agentd.sock"   # default: control.sock in data_dir
+
+# ---- the local LLM (optional) -------------------------------------------------------------
+# agentd starts llama-server per model, gives it the fast cores, and stops it when the stage
+# says so. Fetch files with: agentd models pull -c agentd.toml
+# llama_server = "/opt/homebrew/bin/llama-server"   # /usr/bin/llama-server on the phone
+# keep_small_loaded = true
+# model_wait_secs = 20
+# reserve_cpus = []               # empty: keep the slowest core for calls and the system
+# hot_c = 80.0
+# cool_c = 70.0
+# [[models]]
+# name = "qwen2.5-0.5b"
+# role = "small"                  # "small" (chat) or "large" (on the charger)
+# file = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# url = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# sha256 = "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+# port = 8080
+# ctx = 4096
+# gpu_layers = 99

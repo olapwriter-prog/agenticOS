@@ -6,7 +6,7 @@
 pkgname=agentd
 pkgver=0.1.0
 pkgrel=0
-pkgdesc="Agentic OS: a headless phone driven by an on-device agent (calls, SMS, Wi-Fi, MCP)"
+pkgdesc="Agentic OS: a headless phone driven by an on-device LLM agent (calls, SMS, Wi-Fi, MCP)"
 url="https://github.com/olapwriter-prog/agenticOS"
 arch="aarch64 armv7 x86_64"
 license="Apache-2.0"
@@ -23,6 +23,11 @@ depends="
 	pipewire
 	wireplumber
 	"
+# The local LLM: Alpine's llama.cpp, with the Vulkan GPU backend. Alpine does not build it for
+# 32-bit ARM, so armv7 phones run without a local model (intents and the commercial model only).
+case "$CARCH" in
+	aarch64|x86_64) depends="$depends llama-server libggml-cpu libggml-vulkan" ;;
+esac
 makedepends="cargo cargo-auditable"
 subpackages="$pkgname-openrc"
 source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
@@ -45,7 +50,7 @@ build() {
 }
 
 check() {
-	cargo test --frozen -p agentos-phone -p agentd
+	cargo test --frozen -p agentos-phone -p agentos-prio -p agentos-models -p agentd
 }
 
 package() {
@@ -54,6 +59,7 @@ package() {
 	install -Dm755 "$srcdir"/agentd.initd "$pkgdir"/etc/init.d/agentd
 	install -Dm644 "$srcdir"/agentd.confd "$pkgdir"/etc/conf.d/agentd
 	install -dm700 "$pkgdir"/var/lib/agentd
+	install -dm700 "$pkgdir"/var/lib/agentd/models
 }
 
 sha512sums="SKIP"
