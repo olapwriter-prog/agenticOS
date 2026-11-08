@@ -388,7 +388,61 @@ impl Core {
     /// One MCP JSON-RPC request, already authenticated by the HTTP layer.
     pub fn mcp(&mut self, body: &str) -> Option<String> {
         self.touch();
+        // analysis is agentd's own: it needs other tools' data, which a connector cannot fetch
+        if let Ok(req) = serde_json::from_str::<Value>(body) {
+            let id = req["id"].clone();
+            match (req["method"].as_str(), req["params"]["name"].as_str()) {
+                (Some("tools/list"), _) => {
+                    let mut v: Value = serde_json::from_str(&self.gateway.handle(body)?).ok()?;
+                    if let Some(tools) = v["result"]["tools"].as_array_mut() {
+                        tools.extend(crate::analyst_mcp::tool_specs());
+                    }
+                    return Some(v.to_string());
+                }
+                (Some("tools/call"), Some("data_formats")) => {
+                    return Some(crate::analyst_mcp::reply(id, Ok(crate::analyst::formats())));
+                }
+                (Some("tools/call"), Some("analyze_data")) => {
+                    let a = &req["params"]["arguments"];
+                    let out = self.analyze(
+                        &a["sources"],
+                        a["code"].as_str().unwrap_or_default(),
+                        a["question"].as_str().unwrap_or_default(),
+                    );
+                    return Some(crate::analyst_mcp::reply(id, out));
+                }
+                _ => {}
+            }
+        }
         self.gateway.handle(body)
+    }
+
+    /// Load read-only sources through the executor (Low tier only), then run the code over them
+    /// in the sandbox. Only the answer comes back.
+    fn analyze(&mut self, sources: &Value, code: &str, question: &str) -> Result<String, String> {
+        let sources = crate::analyst::parse_sources(sources)?;
+        let mut data = std::collections::BTreeMap::new();
+        for (tool, args) in &sources {
+            if self.engine.registry.tier_of(tool) != Some(Tier::Low) {
+                return Err(format!("{tool} is not a read-only tool"));
+            }
+            let (ok, text) = self.call_tool(tool, args);
+            if !ok {
+                return Err(format!("could not load {tool}: {text}"));
+            }
+            data.insert(tool.clone(), text);
+        }
+        let compiler = self.functions.borrow().compiler.clone();
+        let mut answer = crate::analyst::run(&compiler, code, question, data)?;
+        if answer.len() > crate::analyst::MAX_ANSWER {
+            answer.truncate(crate::analyst::MAX_ANSWER);
+            answer.push_str(" [cut: return less]");
+        }
+        let names: Vec<&str> = sources.iter().map(|(t, _)| t.as_str()).collect();
+        let _ = self
+            .kernel
+            .record(&format!("analysis over {}", names.join(", ")));
+        Ok(answer)
     }
 
     /// One line of plain language from the human.
@@ -538,7 +592,18 @@ impl Core {
     pub fn ctl_reply(&mut self, line: &str, reply: std::sync::mpsc::Sender<String>) {
         let t = line.trim();
         if let Some(request) = t.strip_prefix("chat ").and_then(crate::coder::request_of) {
-            if let Err(e) = self.start_coder(&request, reply.clone()) {
+            let (system, schema) = (self.coder_prompt.clone(), crate::coder::schema());
+            if let Err(e) = self.start_job(system, &request, schema, None, reply.clone()) {
+                let _ = reply.send(e);
+            }
+            return;
+        }
+        if let Some(q) = t
+            .strip_prefix("chat ")
+            .and_then(crate::analyst::question_of)
+        {
+            let (system, schema) = (crate::analyst::system_prompt(), crate::analyst::schema());
+            if let Err(e) = self.start_job(system, &q, schema, Some(q.clone()), reply.clone()) {
                 let _ = reply.send(e);
             }
             return;
@@ -546,9 +611,14 @@ impl Core {
         let _ = reply.send(self.ctl(line));
     }
 
-    fn start_coder(
+    /// Ask the local model for code in the background: a function to keep (question None) or
+    /// analysis code to run once over the phone's data (question Some).
+    fn start_job(
         &mut self,
+        system: String,
         request: &str,
+        schema: Value,
+        question: Option<String>,
         reply: std::sync::mpsc::Sender<String>,
     ) -> Result<(), String> {
         self.touch();
@@ -562,18 +632,18 @@ impl Core {
         });
         let url = if large_up { self.large_url.clone() } else { None }
             .or_else(|| self.small_url.clone())
-            .ok_or("no local model is set up. A Claude client can write functions over MCP with write_function.")?;
+            .ok_or("no local model is set up. A Claude client can do this over MCP (write_function, analyze_data).")?;
         let role = if large_up { Role::Large } else { Role::Small };
         if self.models.spec(role).is_some() {
             self.models
                 .wait_ready(role, Duration::from_secs(self.cfg.model_wait_secs));
         }
         let messages = vec![
-            ("system".to_string(), self.coder_prompt.clone()),
+            ("system".to_string(), system),
             ("user".to_string(), request.to_string()),
         ];
         let timeout = Duration::from_secs(self.cfg.coder_timeout_secs);
-        let rx = crate::coder::generate(&url, &messages, timeout);
+        let rx = crate::coder::generate(&url, &messages, &schema, timeout);
         self.coder_jobs.push(crate::coder::Job {
             reply,
             url,
@@ -581,6 +651,8 @@ impl Core {
             attempt: 1,
             rx,
             timeout,
+            schema,
+            question,
         });
         self.prio.set_mode(self.baseline_mode());
         Ok(())
@@ -605,16 +677,29 @@ impl Core {
                 Err(e) => Err(format!("the model did not answer: {e}")),
                 Ok(text) => {
                     job.messages.push(("assistant".into(), text.clone()));
-                    match crate::coder::write_args(&text) {
-                        Err(e) => Err(e),
-                        Ok(args) => match self.call_tool("write_function", &args) {
-                            (true, ok) => Ok(ok),
-                            (false, why) => Err(why),
+                    match &job.question {
+                        Some(q) => serde_json::from_str::<Value>(text.trim())
+                            .map_err(|e| format!("your answer was not JSON: {e}"))
+                            .and_then(|v| {
+                                let code = v["code"].as_str().unwrap_or_default().to_string();
+                                self.analyze(&v["sources"], &code, q)
+                            }),
+                        None => match crate::coder::write_args(&text) {
+                            Err(e) => Err(e),
+                            Ok(args) => match self.call_tool("write_function", &args) {
+                                (true, ok) => Ok(ok),
+                                (false, why) => Err(why),
+                            },
                         },
                     }
                 }
             };
             match report {
+                Ok(answer) if job.question.is_some() => {
+                    let _ = job
+                        .reply
+                        .send(format!("answer (attempt {}): {answer}", job.attempt));
+                }
                 Ok(ok) => {
                     let name = ok.split_whitespace().next().unwrap_or("").to_string();
                     let _ = self.kernel.record(&format!("function written: {name}"));
@@ -631,8 +716,13 @@ impl Core {
                         .and_then(|(_, t)| serde_json::from_str::<Value>(t).ok())
                         .and_then(|v| v["code"].as_str().map(String::from))
                         .unwrap_or_default();
+                    let what = if job.question.is_some() {
+                        "analysis"
+                    } else {
+                        "function"
+                    };
                     let _ = job.reply.send(format!(
-                        "not done: no working function after {} attempts. Last problem:\n{why}\n--- last code ---\n{code}",
+                        "not done: no working {what} after {} attempts. Last problem:\n{why}\n--- last code ---\n{code}",
                         job.attempt
                     ));
                 }
@@ -648,7 +738,8 @@ impl Core {
                         crate::coder::feedback(&why, &last, &self.phone_tool_names),
                     ));
                     job.attempt += 1;
-                    job.rx = crate::coder::generate(&job.url, &job.messages, job.timeout);
+                    job.rx =
+                        crate::coder::generate(&job.url, &job.messages, &job.schema, job.timeout);
                     self.coder_jobs.insert(i, job);
                     i += 1;
                 }

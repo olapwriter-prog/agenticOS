@@ -157,23 +157,24 @@ pub struct Job {
     pub attempt: u32,
     pub rx: Receiver<Result<String, String>>,
     pub timeout: Duration,
+    /// The JSON schema the answer must match.
+    pub schema: Value,
+    /// Some(question) for analysis code (crate::analyst); None for a function to keep.
+    pub question: Option<String>,
 }
 
 /// Ask the model on another thread; the answer arrives on the returned channel.
 pub fn generate(
     url: &str,
     messages: &[(String, String)],
+    schema: &Value,
     timeout: Duration,
 ) -> Receiver<Result<String, String>> {
     let (tx, rx) = channel();
-    let (url, messages) = (url.to_string(), messages.to_vec());
+    let (url, messages, schema) = (url.to_string(), messages.to_vec(), schema.clone());
     std::thread::spawn(move || {
         let _ = tx.send(agentos_host::chat_json(
-            &url,
-            &messages,
-            &schema(),
-            1500,
-            timeout,
+            &url, &messages, &schema, 1500, timeout,
         ));
     });
     rx

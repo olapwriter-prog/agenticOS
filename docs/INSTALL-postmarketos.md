@@ -159,6 +159,11 @@ llama.cpp can use on these phones.
   everything compiles; the failures are logic slips ("1 words") and wrong arithmetic in its own
   examples, and the example tests stopped every one. (In Rhai, tried earlier, it managed 4 of 10.)
   A Claude client over MCP can always write functions with `write_function`.
+- **No weight training yet.** `llama-finetune` (llama.cpp's trainer) aborts with an internal
+  assertion on Qwen models in both Homebrew's b8960 and Alpine's b9564, for 4-bit, F16 and F32
+  weights alike. The learning that works today needs no training (shortcuts, examples,
+  corrections), and the data and eval gate for training are in place. Next step: a Rust LoRA
+  trainer (candle), run overnight on the charger, used only if it beats the current model.
 - **Function writing on the phone.** Functions are Rust, compiled by the phone's own `rustc`
   (the `rust` and `rust-wasm` packages, a few hundred MB). A compile takes under a second on a
   laptop; on a phone expect a few seconds, during which the daemon is busy.

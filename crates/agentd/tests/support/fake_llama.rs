@@ -1,7 +1,8 @@
 //! A stand-in for llama.cpp's llama-server, for agentd's end-to-end tests.
 //! Started by the model supervisor with the same arguments as the real one. What it does is
 //! written in its "model file" (-m): `tools` answers every chat with read_calendar(friday);
-//! `coder` writes a Rust function that does not compile, then fixes it once shown the errors.
+//! `coder` writes a Rust function that does not compile, then fixes it once shown the errors;
+//! `analyst` does the same with analysis code that counts Mum's texts.
 //! Every request is saved next to the model file, as <model>.last.json, and each code request
 //! adds a line to <model>.coder-requests.
 use serde_json::{json, Value};
@@ -71,7 +72,21 @@ fn main() {
     }
 }
 
+const COUNT_BROKEN: &str = "fn run(args: &Args) -> Result<String, String> {\n    let n = args.get(\"all_messages\")?.lines().filter(|l| l.starts_with(\"from Mum \")).count();\n    Ok(n)\n}";
+const COUNT_FIXED: &str = "fn run(args: &Args) -> Result<String, String> {\n    let n = args.get(\"all_messages\")?.lines().filter(|l| l.starts_with(\"from Mum \")).count();\n    Ok(format!(\"Mum sent {} texts\", n))\n}";
+
 fn answer(mode: &str, model: &str, req: &Value) -> String {
+    if mode == "analyst" && req.get("json_schema").is_some() {
+        let shown_errors = req["messages"].as_array().is_some_and(|m| {
+            m.iter()
+                .any(|m| m["content"].as_str().unwrap_or("").contains("did not work"))
+        });
+        return json!({
+            "sources": [{"tool": "all_messages", "args": {}}],
+            "code": if shown_errors { COUNT_FIXED } else { COUNT_BROKEN }
+        })
+        .to_string();
+    }
     if mode == "coder" && req.get("json_schema").is_some() {
         let mut f = std::fs::OpenOptions::new()
             .create(true)

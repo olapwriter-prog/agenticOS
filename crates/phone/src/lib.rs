@@ -295,6 +295,16 @@ const TOOLS: &[Tool] = &[
         tier: Tier::Low,
     },
     Tool {
+        name: "all_messages",
+        args: &[],
+        tier: Tier::Low,
+    },
+    Tool {
+        name: "call_log",
+        args: &[],
+        tier: Tier::Low,
+    },
+    Tool {
         name: "messages_from",
         args: &["from"],
         tier: Tier::Low,
@@ -456,6 +466,26 @@ impl Connector for PhoneTools {
                 let msgs = p.backend.messages()?;
                 let recent: Vec<Sms> = msgs.iter().rev().take(10).rev().cloned().collect();
                 Ok(sms_lines(&p, &recent))
+            }
+            // every message and call, for analysis code in the sandbox rather than the model
+            "all_messages" => {
+                let msgs = p.backend.messages()?;
+                Ok(sms_lines(&p, &msgs))
+            }
+            "call_log" => {
+                let calls = p.backend.calls()?;
+                Ok(if calls.is_empty() {
+                    "no calls".into()
+                } else {
+                    calls
+                        .iter()
+                        .map(|c| {
+                            let dir = if c.incoming { "from" } else { "to" };
+                            format!("{dir} {} {:?}", p.who(&c.number), c.state).to_lowercase()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
             }
             "messages_from" => {
                 let who = arg(a, "from")?;

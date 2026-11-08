@@ -638,3 +638,93 @@ fn it_learns_from_corrections_and_approvals() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn questions_are_answered_by_code_in_the_sandbox_and_the_model_never_sees_the_data() {
+    let d = dir("analyst");
+    let (models, model) = fake_model(&d, "analyst");
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama_bin();
+    c.models = models;
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let tok = s.gateway_token.clone();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+    ctl("chat save Mum as +919876543210");
+    for text in ["dinner at 8", "bring milk", "call me back"] {
+        ctl(&format!("sim-sms +919876543210|{text}"));
+    }
+    for i in 0..20 {
+        ctl(&format!("sim-sms +91800000{i:04}|offer number {i}"));
+    }
+
+    // the model writes code (fixing a compile error on the way); the sandbox counts
+    let a = ctl("chat how many texts did Mum send me");
+    assert_eq!(a, "answer (attempt 2): Mum sent 3 texts", "{a}");
+    let sent = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
+    assert!(
+        sent.contains("from NAME (NUMBER): TEXT"),
+        "the model saw the format"
+    );
+    for private in ["dinner at 8", "bring milk", "offer number", "+919876543210"] {
+        assert!(
+            !sent.contains(private),
+            "the model must not see {private:?}"
+        );
+    }
+    assert!(std::fs::read_to_string(d.join("ledger.log"))
+        .unwrap()
+        .contains("analysis over all_messages"));
+
+    // a Claude client does the same over MCP and gets only the answer
+    let (_, list) = post(
+        &r.http_addr,
+        Some(&tok),
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+    );
+    let names: Vec<&str> = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"analyze_data") && names.contains(&"data_formats"),
+        "{names:?}"
+    );
+    let code = r#"fn run(args: &Args) -> Result<String, String> {
+    let offers = args.get("all_messages")?.lines().filter(|l| l.contains("offer")).count();
+    Ok(format!("{offers} offers"))
+}"#;
+    let v = call(
+        &r.http_addr,
+        &tok,
+        "analyze_data",
+        json!({"sources": "all_messages", "code": code}),
+    );
+    assert_eq!(v["result"]["content"][0]["text"], "20 offers", "{v}");
+    // loading anything that is not read-only is refused, as is code that tries to act
+    let v = call(
+        &r.http_addr,
+        &tok,
+        "analyze_data",
+        json!({"sources": "send_sms", "code": code}),
+    );
+    assert_eq!(v["result"]["isError"], true);
+    let acts = r#"fn run(args: &Args) -> Result<String, String> { phone("call", &[("to", "Mum")])?; Ok(String::new()) }"#;
+    let v = call(
+        &r.http_addr,
+        &tok,
+        "analyze_data",
+        json!({"sources": "call_log", "code": acts}),
+    );
+    assert!(
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cannot ask the phone"),
+        "{v}"
+    );
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

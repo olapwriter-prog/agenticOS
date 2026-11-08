@@ -23,6 +23,8 @@ pub fn describe(tool: &str) -> &'static str {
         "list_calls" => "recent and missed calls",
         "send_sms" => "send a text message (SMS) to a person or number",
         "read_messages" => "read the latest text messages",
+        "all_messages" => "every text message (for analysis)",
+        "call_log" => "every call (for analysis)",
         "messages_from" => "read text messages from one person",
         "ussd" => "send a USSD code like *123# (balance, data pack)",
         "wifi_scan" => "list Wi-Fi networks nearby",

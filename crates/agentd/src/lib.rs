@@ -1,4 +1,6 @@
 //! agentd: the daemon that joins Volumes 2 to 7 into one running system.
+pub mod analyst;
+pub mod analyst_mcp;
 pub mod anchors;
 pub mod coder;
 pub mod config;

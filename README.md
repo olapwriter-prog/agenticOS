@@ -66,6 +66,31 @@ with `write_function`.
   The daemon carries the requests out afterwards through the executor, so a text still waits for the
   key, and a function can never write or install functions.
 
+## Questions over the phone's data, answered in the sandbox
+
+Ask `how many texts did Mum send me?` or `look through my calls for missed ones`. The model is
+not given the data. It is told only each source's format (`from NAME (NUMBER): TEXT`, ...), and
+it writes Rust that loads the sources it needs (read-only tools such as `all_messages`,
+`call_log`, `list_contacts`) and returns just the answer. agentd fetches the data through the
+executor (Low tier only), compiles the code with rustc and runs it in the sandbox over everything,
+so the context window stays small and private data never reaches the model. Compiler errors go
+back to the model to fix. Code that tries to make the phone act is refused. A Claude client uses
+the same thing over MCP as `analyze_data` (formats from `data_formats`).
+
+## Learning from you
+
+Every request is an episode, rewarded only by you and by what happened: the approval key (+1),
+a decline (-1), "that was right" / "that was wrong", and whether the tool worked. A model's answer
+that only ran is never treated as right. Say "that was wrong" and then do it the right way, and
+that becomes the correction. What it learns, with no retraining:
+
+- **Shortcuts:** a request you approved or corrected runs that action directly next time,
+  still through the tiers and the key.
+- **Examples:** the model is shown your most similar confirmed requests.
+- **Training data:** `agentd ctl learn` writes SFT chats, DPO pairs (from corrections) and a
+  held-out eval set; `learn eval` scores the model on it. Weight training is not wired yet:
+  llama.cpp's trainer aborts on Qwen models (see the install guide).
+
 Incoming calls and texts are picked up in the background. They wake the phone, get written to the
 tamper-evident ledger, and alert the user through vibration and sound. Texts that arrive during quiet
 hours are held for the digest, but incoming calls always ring.
@@ -96,6 +121,7 @@ cp agentd.example.toml agentd.toml
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
+| `crates/learn` | **Learning**: episodes, rewards from human signals, shortcuts, examples, datasets, eval |
 | `crates/functions` | **Agent-written Rust functions**: source check, rustc to WebAssembly, examples, versions, install/rollback |
 | `crates/{hal,stage,power,wake,freeze,ledger,kerneld}` | Vol 2: power stages, cgroup freezer, cpufreq, hash-chained ledger |
 | `crates/{router,firewall,gate,action,store,brain,host}` | Vol 3: model routing, PII firewall, approval tokens, llama.cpp host |
