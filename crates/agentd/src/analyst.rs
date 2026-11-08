@@ -113,7 +113,10 @@ pub fn question_of(text: &str) -> Option<String> {
 
 /// The sources from a model's answer or a client's request: a JSON list of {tool, args}, or
 /// tool names separated by commas.
-pub fn parse_sources(v: &Value) -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+/// A source to load: the tool and its arguments.
+pub type Source = (String, Vec<(String, String)>);
+
+pub fn parse_sources(v: &Value) -> Result<Vec<Source>, String> {
     let list: Vec<Value> = match v {
         Value::Array(a) => a.clone(),
         Value::String(s) if s.trim_start().starts_with('[') => {
@@ -142,7 +145,7 @@ pub fn parse_sources(v: &Value) -> Result<Vec<(String, Vec<(String, String)>)>, 
                     .join(", ")
             ));
         }
-        if out.iter().any(|(t, _): &(String, _)| *t == tool) {
+        if out.iter().any(|(t, _): &Source| *t == tool) {
             return Err(format!("load {tool} only once"));
         }
         let args = item["args"]
