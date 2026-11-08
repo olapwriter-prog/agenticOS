@@ -159,6 +159,11 @@ llama.cpp can use on these phones.
   everything compiles; the failures are logic slips ("1 words") and wrong arithmetic in its own
   examples, and the example tests stopped every one. (In Rhai, tried earlier, it managed 4 of 10.)
   A Claude client over MCP can always write functions with `write_function`.
+- **Own engine speed.** On an Apple M-series CPU, Qwen3.5-4B Q4_K_M: agentos-llm generates
+  ~10 tokens/s and reads prompts at ~17 tokens/s; llama.cpp on the same CPU does ~22 and ~42.
+  agentd's requests take 2 to 3 s once the system prompt is cached (it is read once, at start).
+  Not yet: GPU (Vulkan), i8mm matrix kernels for faster prompt reading, speculative decoding.
+  llama.cpp's llama-server remains a drop-in alternative (`llama_server` in agentd.toml).
 - **No weight training yet.** `llama-finetune` (llama.cpp's trainer) aborts with an internal
   assertion on Qwen models in both Homebrew's b8960 and Alpine's b9564, for 4-bit, F16 and F32
   weights alike. The learning that works today needs no training (shortcuts, examples,

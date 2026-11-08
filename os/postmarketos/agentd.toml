@@ -15,9 +15,11 @@ kdf_mib = 64
 commercial_enabled = false
 
 # ---- the local LLM ------------------------------------------------------------------------
-# agentd runs llama-server for each model itself, puts it in the model's cgroup and gives it the
-# chip. Download the files once with:   agentd models pull -c /etc/agentd/agentd.toml
-llama_server = "/usr/bin/llama-server"
+# agentd runs the model server for each model itself, puts it in the model's cgroup and gives it
+# the chip. agentos-llm is this OS's own engine; /usr/bin/llama-server works too if installed.
+# Download the files once with:   agentd models pull -c /etc/agentd/agentd.toml
+llama_server = "/usr/bin/agentos-llm"
+model_timeout_secs = 300          # the first read of the system prompt is slow on a phone CPU
 keep_small_loaded = true          # always ready: about 3 GB of RAM held for the small model
 model_wait_secs = 20
 # reserve_cpus = [0]              # cores kept for calls and the system; default: the slowest core
@@ -36,7 +38,7 @@ file = "Qwen3.5-4B-Q4_K_M.gguf"
 url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
 sha256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
 port = 8080
-ctx = 8192
+ctx = 4096
 gpu_layers = 99                   # all layers on the GPU via Vulkan when there is one
 
 [[models]]                        # on the charger: harder requests and writing functions
@@ -46,5 +48,5 @@ file = "Qwen3.5-9B-Q4_K_M.gguf"
 url = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
 sha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
 port = 8081
-ctx = 8192
+ctx = 4096
 gpu_layers = 99

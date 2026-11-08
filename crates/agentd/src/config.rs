@@ -64,6 +64,9 @@ pub struct Config {
     pub coder_timeout_secs: u64,
     /// The Rust compiler, with the wasm32-unknown-unknown target, for the agent's functions.
     pub rustc: PathBuf,
+    /// How long one model request may take. A CPU engine on a phone reading a long prompt
+    /// for the first time needs a while; after that the prompt is reused.
+    pub model_timeout_secs: u64,
 }
 
 impl Default for Config {
@@ -101,6 +104,7 @@ impl Default for Config {
             coder_attempts: 3,
             coder_timeout_secs: 300,
             rustc: PathBuf::from("rustc"),
+            model_timeout_secs: 180,
         }
     }
 }

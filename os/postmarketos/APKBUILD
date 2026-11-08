@@ -26,11 +26,9 @@ depends="
 	rust
 	rust-wasm
 	"
-# The local LLM: Alpine's llama.cpp, with the Vulkan GPU backend. Alpine does not build it for
-# 32-bit ARM, so armv7 phones run without a local model (intents and the commercial model only).
-case "$CARCH" in
-	aarch64|x86_64) depends="$depends llama-server libggml-cpu libggml-vulkan" ;;
-esac
+# The local LLM runs on agentos-llm, this package's own engine (crates/infer): CPU, NEON SDOT
+# kernels on aarch64, portable elsewhere, so armv7 phones get a local model too. llama.cpp's
+# llama-server also works (apk add llama-server; set llama_server in agentd.toml).
 # rust and rust-wasm are runtime dependencies too: the agent writes its functions in Rust, and
 # agentd compiles them with rustc to WebAssembly for the sandbox. (check() compiles some.)
 makedepends="cargo cargo-auditable rust-wasm"
@@ -51,16 +49,17 @@ prepare() {
 }
 
 build() {
-	cargo auditable build --release --frozen -p agentd
+	cargo auditable build --release --frozen -p agentd -p agentos-infer --bins
 }
 
 check() {
 	cargo test --frozen -p agentos-phone -p agentos-prio -p agentos-models \
-		-p agentos-functions -p agentd
+		-p agentos-functions -p agentos-infer -p agentd
 }
 
 package() {
 	install -Dm755 target/release/agentd "$pkgdir"/usr/bin/agentd
+	install -Dm755 target/release/agentos-llm "$pkgdir"/usr/bin/agentos-llm
 	install -Dm644 "$srcdir"/agentd.toml "$pkgdir"/etc/agentd/agentd.toml
 	install -Dm755 "$srcdir"/agentd.initd "$pkgdir"/etc/init.d/agentd
 	install -Dm644 "$srcdir"/agentd.confd "$pkgdir"/etc/conf.d/agentd

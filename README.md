@@ -36,6 +36,16 @@ The base system is **postmarketOS** (Alpine Linux for phones) installed with no 
 | `where am i` | `where_am_i` | Medium |
 | `flashlight on`, `volume 40`, `find my phone` | `flashlight`, `set_volume`, `ring_phone` | Low |
 
+## Its own inference engine
+
+`agentos-llm` (`crates/infer`) is this OS's LLM engine, written in Rust for phones, a drop-in for
+llama.cpp's `llama-server` as agentd uses it. It reads GGUF files and runs Qwen2/2.5, Qwen3 and the
+Qwen3.5 hybrid (Gated DeltaNet + gated attention), producing the same text as llama.cpp. Built for a
+phone: weights memory-mapped and never copied, integer kernels with NEON SDOT chosen at run time
+(portable Rust elsewhere, armv7 included), an f16 attention cache, a constant-size recurrent
+state, a snapshot of the system prompt so it is read once (agentd warms it at start), GBNF and
+JSON-schema constrained output, and thread count following the model's cgroup cores.
+
 ## The LLM on the phone
 
 `agentd` runs llama.cpp's `llama-server` itself: a small model always loaded for chat, and a large one
@@ -121,6 +131,7 @@ cp agentd.example.toml agentd.toml
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
+| `crates/infer` | **agentos-llm**: GGUF, BPE tokenizer, Qwen2/3/3.5 forward pass, NEON kernels, grammar, server |
 | `crates/learn` | **Learning**: episodes, rewards from human signals, shortcuts, examples, datasets, eval |
 | `crates/functions` | **Agent-written Rust functions**: source check, rustc to WebAssembly, examples, versions, install/rollback |
 | `crates/{hal,stage,power,wake,freeze,ledger,kerneld}` | Vol 2: power stages, cgroup freezer, cpufreq, hash-chained ledger |

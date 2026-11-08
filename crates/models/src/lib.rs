@@ -372,10 +372,15 @@ impl Drop for Supervisor {
 
 /// True if llama-server on this port says it has loaded its model.
 pub fn healthy(port: u16) -> bool {
+    healthy_url(&format!("http://127.0.0.1:{port}"))
+}
+
+/// The same, for a base URL.
+pub fn healthy_url(url: &str) -> bool {
     ureq::AgentBuilder::new()
         .timeout(Duration::from_millis(500))
         .build()
-        .get(&format!("http://127.0.0.1:{port}/health"))
+        .get(&format!("{url}/health"))
         .call()
         .map(|r| r.status() == 200)
         .unwrap_or(false)

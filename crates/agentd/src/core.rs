@@ -250,7 +250,7 @@ impl Core {
                     large_url: large,
                     grammar,
                     max_tokens: 128,
-                    timeout: Duration::from_secs(20),
+                    timeout: Duration::from_secs(cfg.model_timeout_secs),
                     system: Some(system),
                 })
             }
@@ -363,12 +363,44 @@ impl Core {
         let roles = self.wanted_roles();
         let mut started = self.models.want(&roles);
         started.extend(self.models.check());
-        for (_, pid) in &started {
+        for (name, pid) in &started {
             self.prio.adopt(*pid);
+            self.warm(name);
         }
         if !started.is_empty() || roles.is_empty() {
             self.prio.reserve_memory(self.models.loaded_bytes());
         }
+    }
+
+    /// Have a freshly started model read the system prompt now, in the background, so the
+    /// engine keeps a snapshot of it and the first real request does not wait for it.
+    fn warm(&self, name: &str) {
+        let Some(spec) = self.models.specs.iter().find(|s| s.name == name) else {
+            return;
+        };
+        let url = format!("http://127.0.0.1:{}", spec.port);
+        let (system, grammar) = (self.system.clone(), self.grammar.clone());
+        let wait = Duration::from_secs(self.cfg.model_wait_secs);
+        let timeout = Duration::from_secs(self.cfg.model_timeout_secs.max(300));
+        std::thread::spawn(move || {
+            let until = std::time::Instant::now() + wait;
+            while !agentos_models::healthy_url(&url) {
+                if std::time::Instant::now() > until {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let host = LlamaHost {
+                small_url: url.clone(),
+                large_url: url,
+                grammar,
+                max_tokens: 1,
+                timeout,
+                system: Some(system),
+            };
+            let mut host = host;
+            let _ = host.complete(agentos_router::Brain::LocalSmall, "hello");
+        });
     }
 
     /// Long jobs get the chip in the Deep stage; otherwise the model idles until asked.
@@ -795,7 +827,7 @@ impl Core {
             large_url: url,
             grammar: self.grammar.clone(),
             max_tokens: 128,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(self.cfg.model_timeout_secs),
             system: Some(self.system.clone()),
         };
         let score = agentos_learn::evaluate(&cases, &mut |p| {

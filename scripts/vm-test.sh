@@ -48,8 +48,9 @@ grep -E "test result: .* [1-9]+ passed" ~/build.log | sed 's/^/   /'
 sudo rc-service agentd stop >/dev/null 2>&1 || true
 sudo apk add -q -u --repository "$repo" agentd agentd-openrc
 apk list -I agentd | cut -d' ' -f1
+small=$(sed -n '/role = "small"/,/^file/s/^file = "\(.*\)"/\1/p' /etc/agentd/agentd.toml | head -1)
 if [ -f model.gguf ]; then
-	sudo install -Dm600 model.gguf /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+	sudo install -Dm600 model.gguf "/var/lib/agentd/models/$small"
 fi
 sudo sed -i "s|^power_dir|# power_dir|" /etc/agentd/agentd.toml   # no battery in a VM
 
@@ -86,10 +87,11 @@ check "a Rust function is written, compiled and tested" 'echo "$W" | grep -q "pa
 check "installing it waits for the approval key" '$C "chat install function split_bill version $V" | grep -q "approval required"'
 id=$($C pending | sed -n "s/^#\([0-9]*\) install_function.*/\1/p" | tail -1)
 check "after the key it installs and runs" '$C "press $id" >/dev/null; $C "chat install function split_bill version $V" | grep -q installed && [ "$($C "chat run split_bill with total=1250; people=4")" = "done: 312.50" ]'
-if sudo test -f /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf; then
-	sleep 3
-	check "llama-server is running and ready" '$C models | grep -q "small.*ready"'
-	check "llama-server is in the model cgroup" 'grep -qx "$(pidof llama-server)" $G/agentos-llm.slice/cgroup.procs'
+if sudo test -f "/var/lib/agentd/models/$small"; then
+	# the engine reads the system prompt once at start (a few minutes on a VM CPU)
+	for i in $(seq 1 120); do $C models | grep -q "small.*ready" && break; sleep 5; done
+	check "our engine (agentos-llm) is running and ready" '$C models | grep -q "small.*ready"'
+	check "the engine is in the model cgroup" 'grep -qx "$(pidof agentos-llm)" $G/agentos-llm.slice/cgroup.procs'
 	check "model weights are protected" '[ "$(cat $G/agentos-llm.slice/memory.min)" -gt 0 ]'
 	check "the model answers what intents cannot" '$C "chat what do I have on monday" | grep -q "^done"'
 	A=$(pidof agentd); sudo kill -9 "$A"; sleep 6
@@ -98,7 +100,7 @@ else
 	echo "  (no model given: skipping the llama-server checks)"
 fi
 sudo rc-service agentd stop >/dev/null
-check "a clean stop leaves nothing running" '[ -z "$(pidof agentd)" ] && [ -z "$(pidof llama-server)" ]'
+check "a clean stop leaves nothing running" '[ -z "$(pidof agentd)" ] && [ -z "$(pidof agentos-llm)" ]'
 echo "== $pass passed, $fail failed"
 $C prio 2>/dev/null || true
 [ "$fail" = 0 ]
