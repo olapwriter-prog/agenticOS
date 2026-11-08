@@ -51,6 +51,7 @@ pub struct Core {
     /// Functions being written by the local model, each for someone waiting on the control socket.
     coder_jobs: Vec<crate::coder::Job>,
     coder_prompt: String,
+    phone_tool_names: Vec<&'static str>,
     small_url: Option<String>,
     large_url: Option<String>,
     /// Set if the priority manager could not set up its cgroups (not fatal).
@@ -168,6 +169,7 @@ impl Core {
         let functions = FunctionStore::open(dir.join("functions"), &reserved)?.shared();
         connectors.push(Box::new(FunctionTools(functions.clone())));
         let coder_prompt = crate::coder::system_prompt(&phone_tools);
+        let phone_tool_names: Vec<&'static str> = phone_tools.iter().map(|t| t.name).collect();
         let exec = Executor::new(
             connectors,
             tools_store,
@@ -276,6 +278,7 @@ impl Core {
             functions,
             coder_jobs: Vec::new(),
             coder_prompt,
+            phone_tool_names,
             small_url: small_url.clone(),
             large_url: large_url.clone(),
             anchor_key: secrets.anchor_key,
@@ -328,8 +331,12 @@ impl Core {
 
     /// Which local models this stage and battery allow.
     fn wanted_roles(&self) -> Vec<Role> {
+        // On the charger with enough battery, power is not the limit: keep the large model
+        // loaded while the human is here too, so asking for a function does not unload it.
+        let plugged = self.power.on_charger() && self.power.level_percent() >= 30;
         match self.kernel.model_budget() {
             ModelBudget::Large => vec![Role::Small, Role::Large],
+            _ if plugged => vec![Role::Small, Role::Large],
             ModelBudget::Small => vec![Role::Small],
             ModelBudget::None if self.cfg.keep_small_loaded => vec![Role::Small],
             ModelBudget::None => vec![],
@@ -549,15 +556,28 @@ impl Core {
                     ));
                 }
                 Err(why) if job.attempt >= self.cfg.coder_attempts => {
+                    let code = job
+                        .messages
+                        .last()
+                        .filter(|(role, _)| role == "assistant")
+                        .and_then(|(_, t)| serde_json::from_str::<Value>(t).ok())
+                        .and_then(|v| v["code"].as_str().map(String::from))
+                        .unwrap_or_default();
                     let _ = job.reply.send(format!(
-                        "not done: no working function after {} attempts. Last problem:\n{why}",
+                        "not done: no working function after {} attempts. Last problem:\n{why}\n--- last code ---\n{code}",
                         job.attempt
                     ));
                 }
                 Err(why) => {
+                    let last = job
+                        .messages
+                        .last()
+                        .filter(|(role, _)| role == "assistant")
+                        .map(|(_, t)| t.clone())
+                        .unwrap_or_default();
                     job.messages.push((
                         "user".into(),
-                        format!("That did not work:\n{why}\nFix the code (or an example that was wrong) and answer again with the whole function."),
+                        crate::coder::feedback(&why, &last, &self.phone_tool_names),
                     ));
                     job.attempt += 1;
                     job.rx = crate::coder::generate(&job.url, &job.messages, job.timeout);

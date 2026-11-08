@@ -153,10 +153,13 @@ llama.cpp can use on these phones.
 
 ## Known gaps (honest list)
 
-- **Writing code needs the large model.** In a laptop test the 0.5B model produced a working
-  function for 1 of 3 requests, even with the repair loop. The phone config uses Qwen2.5-Coder-3B
-  for this on the charger, but that model has not been tested here yet (this Mac ran out of disk).
-  A Claude client over MCP can always write functions with `write_function`.
+- **Local models write Rhai poorly.** Measured on a laptop with the repair loop (3 attempts):
+  the 0.5B model wrote a working function for 1 of 3 requests; Qwen2.5-Coder-3B (loaded on the
+  charger) for 4 of 10, in about 5 s each. Its failures are other languages' habits (Rust's `?` and
+  `.collect()`, JavaScript's `Math` and `null`), plus wrong arithmetic in its own examples. Every
+  failure was stopped by the example tests, and the reply shows the last code tried. A Claude
+  client over MCP writes Rhai well with `write_function`. Next step: a Python-dialect runtime
+  (Starlark), the language small models write best.
 - **Small-model accuracy.** On a laptop test the 0.5B model chose the right tool for 7 of 10
   unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
   The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.
