@@ -389,6 +389,7 @@ pub fn free_bytes(dir: &Path) -> Option<u64> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return None;
     }
+    #[allow(clippy::unnecessary_cast)] // the field types differ between Linux and macOS
     Some(st.f_bavail as u64 * st.f_frsize as u64)
 }
 
