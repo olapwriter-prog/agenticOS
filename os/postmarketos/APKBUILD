@@ -22,6 +22,7 @@ depends="
 	networkmanager-wwan
 	pipewire
 	wireplumber
+	wpa_supplicant
 	"
 # The local LLM: Alpine's llama.cpp, with the Vulkan GPU backend. Alpine does not build it for
 # 32-bit ARM, so armv7 phones run without a local model (intents and the commercial model only).

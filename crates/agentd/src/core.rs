@@ -96,10 +96,13 @@ impl Core {
 
         // 2. Hardware: real trees on a phone, a simulated tree under the data directory otherwise.
         let (freezer, cpufreq) = if cfg.real_hardware {
-            (
-                Freezer::system(),
-                PathBuf::from("/sys/devices/system/cpu/cpufreq"),
-            )
+            // Making a directory in the cgroup tree makes the cgroup; the freezer needs them.
+            let f = Freezer::system();
+            for s in FREEZABLE {
+                std::fs::create_dir_all(f.root.join(s))
+                    .map_err(|e| format!("cannot create cgroup {s}: {e}"))?;
+            }
+            (f, PathBuf::from("/sys/devices/system/cpu/cpufreq"))
         } else {
             let sim = dir.join("sim");
             for s in FREEZABLE {
@@ -260,6 +263,7 @@ impl Core {
             last_anchor_ms: now,
             fixed_minute_of_day: None,
         };
+        let _ = core.kernel.record("agentd started");
         core.phone.borrow_mut().poll(); // learn what is already in the inbox
         core.sync_models();
         core.save_anchor()?;

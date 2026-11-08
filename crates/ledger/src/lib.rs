@@ -69,7 +69,12 @@ impl Ledger {
                 format!("ledger broken at seq {n}"),
             )
         };
-        let f = std::fs::File::open(&self.path)?;
+        // Nothing written yet is an empty, valid ledger. (A deleted ledger is caught by the anchor.)
+        let f = match std::fs::File::open(&self.path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
         let mut prev = GENESIS.to_string();
         let mut count = 0u64;
         for line in io::BufReader::new(f).lines() {

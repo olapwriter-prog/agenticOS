@@ -5,8 +5,11 @@ name="agentd"
 description="Agentic OS phone daemon"
 command="/usr/bin/agentd"
 command_args="run -c ${AGENTD_CONFIG:-/etc/agentd/agentd.toml}"
-command_background=true
-pidfile="/run/${RC_SVCNAME}.pid"
+# supervise-daemon restarts agentd if it dies: the phone must not stay without its agent.
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=10
+respawn_period=300
 output_log="/var/log/agentd.log"
 error_log="/var/log/agentd.log"
 : ${AGENTD_PASSPHRASE_FILE:=/etc/agentd/passphrase}
