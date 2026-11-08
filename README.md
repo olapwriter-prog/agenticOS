@@ -83,6 +83,7 @@ cp agentd.example.toml agentd.toml
 | `crates/{vault,gateway,commercial,update}` | Vol 7: vault, HTTP gateway, commercial model client, signed updates |
 | `os/postmarketos` | APKBUILD, OpenRC service, phone config |
 | `scripts/sideload.sh` | Cross-compile and push to a phone over USB |
+| `scripts/vm-test.sh` | Build the package and test the service in an aarch64 Alpine VM (Mac + Lima) |
 | `docs/volumes` | Reference output and the original agentd notes |
 
 ## Not done yet

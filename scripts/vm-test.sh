@@ -73,7 +73,7 @@ check "MCP lists tools with the token" 'curl -s -H "Authorization: Bearer $T" -d
 check "chat runs a tool and wakes the phone" '$C "chat add dentist to my calendar on monday" | grep -q "^done" && [ "$($C stage)" = Active ]'
 check "background is frozen while Active" '[ "$(cat $G/agentos-agents.slice/cgroup.freeze)" = 1 ]'
 check "a call waits for the approval key" '$C "chat call mum" | grep -q "approval required"'
-if [ -f /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf ]; then
+if sudo test -f /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf; then
 	sleep 3
 	check "llama-server is running and ready" '$C models | grep -q "small.*ready"'
 	check "llama-server is in the model cgroup" 'grep -qx "$(pidof llama-server)" $G/agentos-llm.slice/cgroup.procs'

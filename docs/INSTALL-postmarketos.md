@@ -104,6 +104,20 @@ brew install zig && cargo install cargo-zigbuild
 scripts/sideload.sh user@172.16.42.1 aarch64
 ```
 
+## Test the package before flashing (Mac, no phone)
+
+postmarketOS is Alpine plus phone-specific packages, and Apple Silicon runs aarch64 natively. So an
+Alpine VM checks the phone's architecture, libc, OpenRC, cgroups and Alpine's own `llama-server`:
+```bash
+brew install lima
+scripts/vm-test.sh path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf
+```
+It builds the real package with `abuild` (running its tests), installs it, starts the service,
+and checks 18 things: first-boot secrets, ledger, charger boost, the reserved core, MCP auth,
+chat, freezing, approval, llama-server in the model cgroup, real-model answers, crash recovery
+(`kill -9` takes the model server down with it, and supervise-daemon brings both back), and a
+clean stop. It cannot check the modem, GPU, uclamp or thermal sensors; those need the phone.
+
 ## Try it without a phone
 
 postmarketOS has a QEMU target. It has no modem, so run it with `phone = "sim"`:
@@ -151,5 +165,6 @@ llama.cpp can use on these phones.
   change.
 - **The approval key** is `agentd ctl press N` over SSH. On the phone it should be a hardware button
   (for example volume-down held for two seconds) read from `/dev/input`.
-- **Untested on hardware.** The ModemManager backend is unit-tested against recorded `mmcli` and
-  `nmcli` output, but has not yet run on a real modem.
+- **Untested on a phone.** The package and service pass `scripts/vm-test.sh` on Alpine 3.24 aarch64
+  (kernel 6.18), with a real model. The ModemManager backend is only unit-tested against recorded
+  `mmcli` and `nmcli` output, and has not yet run on a real modem.
