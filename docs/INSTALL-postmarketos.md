@@ -113,8 +113,9 @@ brew install lima
 scripts/vm-test.sh path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 It builds the real package with `abuild` (running its tests), installs it, starts the service,
-and checks 18 things: first-boot secrets, ledger, charger boost, the reserved core, MCP auth,
-chat, freezing, approval, llama-server in the model cgroup, real-model answers, crash recovery
+and checks 21 things: first-boot secrets, ledger, charger boost, the reserved core, MCP auth,
+chat, freezing, approval, a function written, tested, installed with the key and run,
+llama-server in the model cgroup, real-model answers, crash recovery
 (`kill -9` takes the model server down with it, and supervise-daemon brings both back), and a
 clean stop. It cannot check the modem, GPU, uclamp or thermal sensors; those need the phone.
 
@@ -152,6 +153,10 @@ llama.cpp can use on these phones.
 
 ## Known gaps (honest list)
 
+- **Writing code needs the large model.** In a laptop test the 0.5B model produced a working
+  function for 1 of 3 requests, even with the repair loop. The phone config uses Qwen2.5-Coder-3B
+  for this on the charger, but that model has not been tested here yet (this Mac ran out of disk).
+  A Claude client over MCP can always write functions with `write_function`.
 - **Small-model accuracy.** On a laptop test the 0.5B model chose the right tool for 7 of 10
   unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
   The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.
