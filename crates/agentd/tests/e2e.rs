@@ -405,60 +405,34 @@ fn the_phone_works_headless_and_calls_need_the_key() {
     let _ = std::fs::remove_dir_all(d);
 }
 
-/// A stand-in for llama-server: answers /health, and turns every chat request into
-/// read_calendar(friday). It saves the last request so the test can see the system prompt.
-fn fake_llama(dir: &std::path::Path) -> PathBuf {
-    let p = dir.join("llama-server");
-    let script = r#"#!/bin/sh
-while [ $# -gt 0 ]; do [ "$1" = "--port" ] && PORT=$2; shift; done
-exec python3 - "$PORT" "$(dirname "$0")/last-request.json" <<'PY'
-import sys, json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-class H(BaseHTTPRequestHandler):
-    def do_GET(s):
-        s.send_response(200); s.send_header("Content-Length", "15"); s.end_headers()
-        s.wfile.write(b'{"status":"ok"}')
-    def do_POST(s):
-        req = s.rfile.read(int(s.headers.get("Content-Length", 0)))
-        open(sys.argv[2], "wb").write(req)
-        act = json.dumps({"tool": "read_calendar", "args": {"day": "friday"}})
-        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": act}}]}).encode()
-        s.send_response(200); s.send_header("Content-Type", "application/json")
-        s.send_header("Content-Length", str(len(body))); s.end_headers(); s.wfile.write(body)
-    def log_message(s, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-PY
-"#;
-    std::fs::write(&p, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    p
-}
-
-#[test]
-fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
-    if std::process::Command::new("python3")
-        .arg("-V")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: needs python3 for the fake llama-server");
-        return;
-    }
-    let d = dir("llm");
+/// The fake llama-server (tests/support/fake_llama.rs), set up to behave as `mode`.
+/// Returns the config's models entry and the path of the model file it reads.
+fn fake_model(d: &std::path::Path, mode: &str) -> (Vec<agentos_models::ModelSpec>, PathBuf) {
     std::fs::create_dir_all(d.join("models")).unwrap();
-    std::fs::write(d.join("models/small.gguf"), vec![0u8; 4096]).unwrap();
+    let model = d.join("models/small.gguf");
+    std::fs::write(&model, mode).unwrap();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let mut c = cfg(&d);
-    c.llama_server = fake_llama(&d);
-    c.models = vec![toml::from_str(&format!(
+    let spec = toml::from_str(&format!(
         "name = \"small\"\nrole = \"small\"\nfile = \"small.gguf\"\nport = {port}\nctx = 512"
     ))
-    .unwrap()];
+    .unwrap();
+    (vec![spec], model)
+}
+fn fake_llama_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_agentd-fake-llama"))
+}
+
+#[test]
+fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
+    let d = dir("llm");
+    let (models, model) = fake_model(&d, "tools");
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama_bin();
+    c.models = models;
     let s = secrets::open_or_create(&d, "pw", 1).unwrap();
     let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
     let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
@@ -473,7 +447,7 @@ fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
     // no intent matches this; the model answers, and the action runs through the executor
     let a = ctl("chat is anything happening at the end of the week");
     assert!(a.starts_with("done:"), "{a}");
-    let req = std::fs::read_to_string(d.join("last-request.json")).unwrap();
+    let req = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
     assert!(
         req.contains("You are the agent that runs this phone"),
         "{req}"
@@ -499,93 +473,47 @@ fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
             .unwrap();
     assert_eq!(
         min.trim(),
-        "4096",
+        "5",
         "the loaded weights are protected from reclaim"
     );
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
 
-/// A fake coding model: its first function has a wrong example; shown the failure report, it
-/// fixes it. It records how many code requests it got.
-fn fake_coder(dir: &std::path::Path) -> PathBuf {
-    let p = dir.join("llama-server");
-    let script = r#"#!/bin/sh
-while [ $# -gt 0 ]; do [ "$1" = "--port" ] && PORT=$2; shift; done
-exec python3 - "$PORT" "$(dirname "$0")/coder-requests" <<'PY'
-import sys, json
-from http.server import BaseHTTPRequestHandler, HTTPServer
-CODE = "let each = (parse_float(args.total) * 100.0 / parse_int(args.people)).round() / 100.0;\n`${each}`"
-def answer(expect3):
-    return json.dumps({"name": "split_bill", "description": "share of a bill", "args": ["total", "people"],
-        "code": CODE, "examples": [
-            {"args": {"total": "900", "people": "3"}, "expect": "300.0"},
-            {"args": {"total": "100", "people": "4"}, "expect": "25.0"},
-            {"args": {"total": "10", "people": "3"}, "expect": expect3}]})
-class H(BaseHTTPRequestHandler):
-    def do_GET(s):
-        s.send_response(200); s.send_header("Content-Length", "15"); s.end_headers(); s.wfile.write(b'{"status":"ok"}')
-    def do_POST(s):
-        req = json.loads(s.rfile.read(int(s.headers.get("Content-Length", 0))))
-        if "json_schema" in req:
-            open(sys.argv[2], "a").write("x")
-            fixed = any("did not work" in m["content"] for m in req["messages"])
-            content = answer("3.33" if fixed else "3.3")
-        else:
-            content = json.dumps({"tool": "list_functions", "args": {}})
-        body = json.dumps({"choices": [{"message": {"role": "assistant", "content": content}}]}).encode()
-        s.send_response(200); s.send_header("Content-Type", "application/json")
-        s.send_header("Content-Length", str(len(body))); s.end_headers(); s.wfile.write(body)
-    def log_message(s, *a): pass
-HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
-PY
-"#;
-    std::fs::write(&p, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    p
-}
-
 #[test]
-fn the_agent_writes_tests_repairs_and_runs_its_own_functions() {
-    if std::process::Command::new("python3")
-        .arg("-V")
-        .output()
-        .is_err()
-    {
-        eprintln!("skipped: needs python3 for the fake model");
-        return;
-    }
+fn the_agent_writes_compiles_repairs_and_runs_its_own_rust_functions() {
     let d = dir("forge");
-    std::fs::create_dir_all(d.join("models")).unwrap();
-    std::fs::write(d.join("models/small.gguf"), vec![0u8; 16]).unwrap();
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
+    let (models, model) = fake_model(&d, "coder");
     let mut c = cfg(&d);
-    c.llama_server = fake_coder(&d);
-    c.models = vec![toml::from_str(&format!(
-        "name = \"small\"\nrole = \"small\"\nfile = \"small.gguf\"\nport = {port}"
-    ))
-    .unwrap()];
+    c.llama_server = fake_llama_bin();
+    c.models = models;
     let s = secrets::open_or_create(&d, "pw", 1).unwrap();
     let tok = s.gateway_token.clone();
     let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
     let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+    assert!(
+        ctl("functions").contains("compiler: rustc"),
+        "{}",
+        ctl("functions")
+    );
 
-    // written, tested in the sandbox, repaired once
+    // written; rustc refuses the first try; the model sees the error and fixes it
     let a = ctl("chat make a function that splits a bill between people");
     assert!(
         a.starts_with("done (attempt 2)") && a.contains("split_bill v1 passed all 3"),
         "{a}"
     );
-    assert_eq!(
-        std::fs::read_to_string(d.join("coder-requests")).unwrap(),
-        "xx"
+    let asked = std::fs::read_to_string(format!("{}.coder-requests", model.display())).unwrap();
+    assert_eq!(asked.lines().count(), 2);
+    let last = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
+    // the model was shown the compiler's verdict on its line 2 (rustc 1.88 crashes on it;
+    // newer compilers report the type error), with the line quoted
+    assert!(
+        last.contains("does not compile") && last.contains("line 2:"),
+        "{last}"
     );
-    assert!(ctl("show split_bill").contains("parse_float(args.total)"));
+    assert!(!last.contains("HirId"), "no compiler internals: {last}");
+    assert!(ctl("show split_bill").contains("args.num(\"total\")?"));
     assert!(ctl("chat run split_bill with total=900; people=3").contains("not installed"));
 
     // installing needs the key, for that exact version
@@ -595,11 +523,15 @@ fn the_agent_writes_tests_repairs_and_runs_its_own_functions() {
     assert!(ctl("chat install function split_bill version 1").contains("split_bill v1 installed"));
     assert_eq!(
         ctl("chat run split_bill with total=1250; people=4"),
-        "done: 312.5"
+        "done: 312.50"
     );
 
     // a Claude client writes one that asks the phone to text: the text still needs the key
-    let code = r#"phone("send_sms", #{to: args.who, text: `Running ${args.mins} min late`}); "told " + args.who"#;
+    let code = r#"fn run(args: &Args) -> Result<String, String> {
+    let who = args.get("who")?;
+    phone("send_sms", &[("to", who), ("text", &format!("Running {} min late", args.get("mins")?))])?;
+    Ok(format!("told {who}"))
+}"#;
     let examples = json!([
         {"args": {"who": "Mum", "mins": "10"}, "expect": "told Mum"},
         {"args": {"who": "Ravi", "mins": "5"}, "expect": "told Ravi"},
@@ -620,6 +552,15 @@ fn the_agent_writes_tests_repairs_and_runs_its_own_functions() {
             .contains("tell_late v1 passed"),
         "{v}"
     );
+    // and one that tries to read a file while compiling is refused
+    let v = call(
+        &r.http_addr,
+        &tok,
+        "write_function",
+        json!({"name": "peek", "description": "x", "args": "", "examples": "[]",
+        "code": "fn run(a: &Args) -> Result<String, String> { Ok(include_str!(\"/etc/hosts\").into()) }"}),
+    );
+    assert_eq!(v["result"]["isError"], true);
     let install = json!({"name": "tell_late", "version": "1"});
     assert_eq!(
         call(&r.http_addr, &tok, "install_function", install.clone())["result"]["isError"],

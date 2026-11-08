@@ -23,13 +23,16 @@ depends="
 	pipewire
 	wireplumber
 	wpa_supplicant
+	rust
+	rust-wasm
 	"
 # The local LLM: Alpine's llama.cpp, with the Vulkan GPU backend. Alpine does not build it for
 # 32-bit ARM, so armv7 phones run without a local model (intents and the commercial model only).
 case "$CARCH" in
 	aarch64|x86_64) depends="$depends llama-server libggml-cpu libggml-vulkan" ;;
 esac
-# rust-wasm: the script runtime (Rhai) is compiled to WebAssembly and embedded in agentd.
+# rust and rust-wasm are runtime dependencies too: the agent writes its functions in Rust, and
+# agentd compiles them with rustc to WebAssembly for the sandbox. (check() compiles some.)
 makedepends="cargo cargo-auditable rust-wasm"
 subpackages="$pkgname-openrc"
 source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
@@ -45,19 +48,15 @@ prepare() {
 	# Alpine ships its own rustc; the pinned toolchain file is for developer machines.
 	rm -f rust-toolchain.toml
 	cargo fetch --target="$CTARGET" --locked
-	cargo fetch --target=wasm32-unknown-unknown --locked
 }
 
 build() {
-	# the script runtime is built by a nested cargo, which must stay offline too
-	export CARGO_NET_OFFLINE=true
 	cargo auditable build --release --frozen -p agentd
 }
 
 check() {
-	export CARGO_NET_OFFLINE=true
 	cargo test --frozen -p agentos-phone -p agentos-prio -p agentos-models \
-		-p agentos-script-guest -p agentos-scripts -p agentd
+		-p agentos-functions -p agentd
 }
 
 package() {

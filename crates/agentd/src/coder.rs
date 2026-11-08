@@ -1,6 +1,7 @@
-//! The coder: the local model writes a function, the sandbox tests it, failures go back to the
-//! model, up to a few attempts. Generation runs on its own thread (it can take minutes on a
-//! phone) so the daemon keeps answering calls meanwhile; testing happens on the core thread.
+//! The coder: the local model writes a function in Rust, rustc compiles it, the sandbox tests
+//! it, and the compiler's errors or failed examples go back to the model, up to a few attempts.
+//! Generation runs on its own thread (it can take minutes on a phone) so the daemon keeps
+//! answering calls meanwhile; compiling and testing happen on the core thread.
 use serde_json::{json, Value};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
@@ -8,31 +9,23 @@ use std::time::Duration;
 /// What the model is told before it writes a function.
 pub fn system_prompt(phone_tools: &[agentos_action::Tool]) -> String {
     let mut s = String::from(
-        "You write small functions for a phone, in the Rhai scripting language. Answer with one \
-JSON object: name (lowercase_with_underscores), description (one line), args (list of argument \
-names), code (the Rhai script), examples (3 to 5 objects with args and the exact expected result).
+        "You write small functions for a phone, in Rust. Answer with one JSON object: name \
+(lowercase_with_underscores), description (one line), args (list of argument names), code (the \
+Rust source), examples (3 to 5 objects with args and the exact expected result).
 
-Rules for the code:
-- The arguments arrive in the map `args`, and every value is text: use parse_int(args.x) or \
-parse_float(args.x) for numbers.
-- The value of the last expression is the result. Return text: `${x}` turns a value into text.
-- Rhai basics: let x = 1; if a > b { } else { }; for item in list { }; for i in 0..n { }; \
-let list = []; list.push(x); list.len(); let m = #{key: 1}; m.key; s.split(\" \"); s.to_upper(); \
-s.trim(); s.contains(\"x\"); x.round(); x.floor(); fn helper(a) { a * 2 }.
-- There is no file, network or clock access.
-- Rhai is NOT JavaScript. There is no Math object: use x ** y for powers, x.sqrt(), x.abs(), \
-x.round(), x.floor(). There is no null: use () or \"\". There is no ?: operator: if is an \
-expression, so write let y = if c { a } else { b };. Use parse_int/parse_float, not parseInt; \
-.len(), not .length; fn, not function or =>. Strings have no reverse(): let c = s.to_chars(); \
-c.reverse(); then build a string with for ch in c { out += ch; }. Booleans come back as \"true\"/\"false\".
-- Rhai is NOT Rust either: no ? operator, no .rev(), no .collect(), no ::<Type>, no |x| closures, \
-no match. Loop with for and build results by hand.
-- phone(...) returns nothing: it only asks for an action after the function ends. send_sms and call \
-take a contact name directly, so there is no need to look a number up first.
-- To make the phone do something, call phone(\"tool\", #{arg: value, ...}). It is carried out \
-after the function ends, and calls and texts still need the human's approval key.
+The code must define exactly this function, plus any helper functions you need:
+    fn run(args: &Args) -> Result<String, String>
+Rules:
+- Use only the standard library. No crates, no unsafe, no files, network, clock or environment \
+(they are not available), no include_str!, env!, extern, mod name;, or #![...].
+- args.get(\"x\")? gives an argument's text, args.num(\"x\")? an f64, args.int(\"x\")? an i64. \
+Use ? on them; never unwrap() user input: return Err(\"...\".to_string()) instead of panicking.
+- Return Ok(text). Format numbers with format!, e.g. format!(\"{:.2}\", x) for two decimals.
+- To make the phone do something, call phone(\"tool\", &[(\"arg\", value), ...])?; with &str \
+values. It is carried out after the function ends (calls and texts still need the human's \
+approval key) and returns nothing. send_sms and call accept a contact name directly.
 - Each example's args must use exactly the declared argument names, and expect must be exactly \
-what the code returns for them.
+what run returns for them. Work the expected values out carefully.
 
 Phone tools that phone() may use:
 ",
@@ -43,7 +36,7 @@ Phone tools that phone() may use:
     s.push_str(
         r#"
 Example answer, for "split a bill between people, with a tip percent":
-{"name":"split_bill","description":"each person's share of a bill, tip included","args":["total","people","tip"],"code":"let total = parse_float(args.total) * (1.0 + parse_float(args.tip) / 100.0);\nlet each = (total * 100.0 / parse_int(args.people)).round() / 100.0;\n`${each}`","examples":[{"args":{"total":"1000","people":"4","tip":"10"},"expect":"275.0"},{"args":{"total":"90","people":"3","tip":"0"},"expect":"30.0"},{"args":{"total":"100","people":"3","tip":"0"},"expect":"33.33"}]}
+{"name":"split_bill","description":"each person's share of a bill, tip included","args":["total","people","tip"],"code":"fn run(args: &Args) -> Result<String, String> {\n    let people = args.num(\"people\")?;\n    if people <= 0.0 {\n        return Err(\"people must be more than 0\".to_string());\n    }\n    let total = args.num(\"total\")? * (1.0 + args.num(\"tip\")? / 100.0);\n    Ok(format!(\"{:.2}\", total / people))\n}","examples":[{"args":{"total":"1000","people":"4","tip":"10"},"expect":"275.00"},{"args":{"total":"90","people":"3","tip":"0"},"expect":"30.00"},{"args":{"total":"100","people":"3","tip":"0"},"expect":"33.33"}]}
 "#,
     );
     s
@@ -117,25 +110,7 @@ pub fn write_args(answer: &str) -> Result<Vec<(String, String)>, String> {
     ])
 }
 
-/// Hints for mistakes the model makes again and again (mostly JavaScript habits).
-const HINTS: &[(&str, &str)] = &[
-    ("Variable not found: Math", "Rhai has no Math object: use x ** y for powers, x.sqrt(), x.abs(), x.round(), x.floor()."),
-    ("'null' is a reserved keyword", "Rhai has no null: use () for nothing, or \"\"."),
-    ("Unknown operator: '?'", "Rhai has no ?: operator: if is an expression, so write let y = if c { a } else { b };"),
-    ("Unknown operator: '==='", "Use == (there is no ===)."),
-    ("Function not found: reverse (&str", "Strings have no reverse(): let c = s.to_chars(); c.reverse(); then let out = \"\"; for ch in c { out += ch; }"),
-    ("Variable not found: parseInt", "Use parse_int(x)."),
-    ("Variable not found: parseFloat", "Use parse_float(x)."),
-    ("Variable not found: console", "There is no console; the last expression is the result."),
-    ("Property not found: length", "Use .len() for the length of a string or array."),
-    ("'function' is a reserved keyword", "Define functions with fn name(a) { ... }."),
-    ("Expecting ';' to terminate", "Every statement ends with ;. This is often a Rust or JavaScript habit: no ?, .collect(), ::<T>, |x| closures or => arrows."),
-    ("Function not found: rev ", "There is no .rev(): use let c = s.to_chars(); c.reverse();"),
-    ("Function not found: collect", "There is no .collect(): build the result with a for loop."),
-    ("Invalid character", "Strings use double quotes \"...\"; single quotes hold exactly one character, so '' is not allowed."),
-];
-
-/// What to tell the model after a failure: the report, the code lines it points at, and hints.
+/// What to tell the model after a failure: the report, and each code line rustc points at.
 pub fn feedback(report: &str, answer: &str, phone_tools: &[&str]) -> String {
     let code = serde_json::from_str::<Value>(answer)
         .ok()
@@ -144,53 +119,29 @@ pub fn feedback(report: &str, answer: &str, phone_tools: &[&str]) -> String {
     let lines: Vec<&str> = code.lines().collect();
     let mut out = format!("That did not work:\n{report}\n");
     let mut quoted = std::collections::BTreeSet::new();
+    // rustc's short format: f.rs:LINE:COL: error...
     let mut rest = report;
-    while let Some(i) = rest.find("(line ") {
-        rest = &rest[i + 6..];
-        let n: usize = rest
-            .chars()
-            .take_while(|c| c.is_ascii_digit())
-            .collect::<String>()
-            .parse()
-            .unwrap_or(0);
-        let pos: usize = rest
-            .find("position ")
-            .map(|p| {
-                rest[p + 9..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
-            })
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(0);
-        if n >= 1 && n <= lines.len() && quoted.insert(n) {
-            out.push_str(&format!("line {n}: {}\n", lines[n - 1]));
-            if pos >= 1 {
-                out.push_str(&format!(
-                    "{}^ here\n",
-                    " ".repeat(pos - 1 + format!("line {n}: ").len())
-                ));
+    while let Some(i) = rest.find("f.rs:") {
+        rest = &rest[i + 5..];
+        let mut nums = rest.split(':');
+        let line: usize = nums.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        let col: usize = nums.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+        if line >= 1 && line <= lines.len() && quoted.insert(line) {
+            let prefix = format!("line {line}: ");
+            out.push_str(&format!("{prefix}{}\n", lines[line - 1]));
+            if col >= 1 {
+                out.push_str(&format!("{}^ here\n", " ".repeat(prefix.len() + col - 1)));
             }
         }
     }
-    let mut hints: Vec<String> = HINTS
-        .iter()
-        .filter(|(pat, _)| report.contains(pat))
-        .map(|(_, h)| h.to_string())
-        .collect();
-    // calling a phone tool as if it were a function
+    // calling a phone tool as if it were a Rust function
     for t in phone_tools {
-        if report.contains(&format!("Function not found: {t} ")) {
-            hints.push(format!(
-                "{t} is a phone tool, not a function: use phone(\"{t}\", #{{...}}). Its result is \
-                 not available to the code. send_sms and call accept a contact name directly."
+        if report.contains(&format!("cannot find function `{t}`")) {
+            out.push_str(&format!(
+                "Hint: {t} is a phone tool, not a function: phone(\"{t}\", &[(\"arg\", value)])?; \
+                 it returns nothing. send_sms and call accept a contact name directly.\n"
             ));
         }
-    }
-    if !hints.is_empty() {
-        out.push_str("Hint: ");
-        out.push_str(&hints.join(" "));
-        out.push('\n');
     }
     out.push_str(
         "Fix the code (or an example that was wrong) and answer again with the whole function.",
@@ -245,23 +196,25 @@ mod tests {
         assert!(request_of("call mum").is_none());
     }
     #[test]
-    fn feedback_quotes_the_line_and_gives_a_hint() {
-        let answer = r#"{"code":"let a = 2;\nlet b = Math.pow(a, 3);\nb"}"#;
+    fn feedback_quotes_the_lines_rustc_points_at() {
+        let answer = r#"{"code":"fn run(args: &Args) -> Result<String, String> {\n    let x: i64 = \"a\";\n    Ok(x.to_string())\n}"}"#;
         let f = feedback(
-            "example 1: error: Variable not found: Math (line 2, position 9)",
+            "does not compile:\nf.rs:2:18: error[E0308]: mismatched types",
             answer,
             &[],
         );
-        assert!(f.contains("line 2: let b = Math.pow(a, 3);"), "{f}");
-        assert!(f.contains("^ here") && f.contains("x ** y"), "{f}");
-        assert!(f.starts_with("That did not work"));
-        let plain = feedback("example 1: expected \"3\", got \"4\"", answer, &[]);
+        assert!(f.contains("line 2:     let x: i64 = \"a\";"), "{f}");
+        assert!(
+            f.contains("^ here") && f.starts_with("That did not work"),
+            "{f}"
+        );
         let tool = feedback(
-            "error: Function not found: find_contact (&str) (line 1, position 3)",
+            "f.rs:2:5: error[E0425]: cannot find function `find_contact` in this scope",
             answer,
             &["find_contact"],
         );
         assert!(tool.contains("phone(\"find_contact\""), "{tool}");
+        let plain = feedback("example 1: expected \"3\", got \"4\"", answer, &[]);
         assert!(!plain.contains("Hint") && plain.contains("Fix the code"));
     }
     #[test]
@@ -272,14 +225,17 @@ mod tests {
         assert!(write_args("not json").unwrap_err().contains("not JSON"));
     }
     #[test]
-    fn the_prompt_lists_phone_tools_and_the_schema_requires_examples() {
+    fn the_prompt_asks_for_rust_and_lists_phone_tools() {
         use agentos_action::{Tier, Tool};
         let p = system_prompt(&[Tool {
             name: "send_sms",
             args: &["to", "text"],
             tier: Tier::High,
         }]);
-        assert!(p.contains("- send_sms(to, text)") && p.contains("phone(\"tool\""));
+        assert!(
+            p.contains("in Rust") && p.contains("fn run(args: &Args) -> Result<String, String>")
+        );
+        assert!(p.contains("- send_sms(to, text)"));
         assert_eq!(schema()["properties"]["examples"]["minItems"], 3);
     }
 }

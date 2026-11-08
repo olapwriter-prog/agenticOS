@@ -45,21 +45,25 @@ given to the model first: its own fast cores, top CPU weight, top frequency, the
 locked memory. One core is always kept for calls, and a temperature limit drops the boost when the
 phone gets hot. `agentd ctl prio` shows it; `agentd models pull` fetches models and checks their hashes.
 
-## Functions the agent writes for itself
+## Functions the agent writes for itself, in Rust
 
-Say `make a function that splits a bill between people`. The local model (the large one when it is
-loaded) writes a Rhai script with at least three examples. The sandbox runs the examples, and any
-failure goes back to the model with a line-by-line report, up to three attempts. A Claude client can
-do the same over MCP with `write_function`.
+Everything is Rust: the OS, and the functions the agent writes for itself. Say `make a function that
+splits a bill between people`. The local model (the large one when it is loaded) writes
+`fn run(args: &Args) -> Result<String, String>` with at least three examples. `rustc` compiles it to
+WebAssembly, and the sandbox runs the examples. Compiler errors or failed examples go back to the
+model with the offending line quoted, up to three attempts. A Claude client can do the same over MCP
+with `write_function`.
 
-- **Sandboxed twice:** the Rhai interpreter is compiled to WebAssembly and runs inside the sandbox,
-  with no files, network or clock, capped fuel and memory, and Rhai's own operation limits.
+- **Checked, then sandboxed:** before compiling, the source is refused if it uses anything that reads
+  files or the environment while compiling (`include_str!`, `env!`, `#[path]`, `mod x;`, `extern`).
+  `rustc` runs in an empty directory with a cleared environment and a time limit. The module runs in
+  the sandbox with no imports at all (no files, network or clock), capped fuel and memory.
 - **Installed only with the key:** `install_function` is High tier, and the approval covers that
   exact version. `agentd ctl show <name>` shows the code and examples to read first.
-- **Versions:** writing again makes a new version (tested again, installed again).
+- **Versions:** writing again makes a new version (compiled, tested, installed again).
   `roll back <name> to version <n>` returns to any version installed before.
-- **Acting on the phone:** a function asks with `phone("send_sms", #{to: ..., text: ...})`. The
-  daemon carries the requests out afterwards through the executor, so a text still waits for the
+- **Acting on the phone:** a function asks with `phone("send_sms", &[("to", who), ("text", msg)])?`.
+  The daemon carries the requests out afterwards through the executor, so a text still waits for the
   key, and a function can never write or install functions.
 
 Incoming calls and texts are picked up in the background. They wake the phone, get written to the
@@ -92,8 +96,7 @@ cp agentd.example.toml agentd.toml
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
-| `crates/scripts` | **Agent-written functions**: versions, examples, install/rollback, run in the sandbox |
-| `crates/script-guest` | The Rhai interpreter, compiled to WebAssembly for the sandbox |
+| `crates/functions` | **Agent-written Rust functions**: source check, rustc to WebAssembly, examples, versions, install/rollback |
 | `crates/{hal,stage,power,wake,freeze,ledger,kerneld}` | Vol 2: power stages, cgroup freezer, cpufreq, hash-chained ledger |
 | `crates/{router,firewall,gate,action,store,brain,host}` | Vol 3: model routing, PII firewall, approval tokens, llama.cpp host |
 | `crates/{executor,connectors,intents,skills,mcp}` | Vol 4: tool tiers, connectors, phrase intents, skills, MCP |

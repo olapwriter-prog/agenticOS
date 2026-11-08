@@ -1,83 +1,30 @@
-//! Functions the agent writes for itself.
+//! Functions the agent writes for itself, in Rust.
 //!
-//! A function is a Rhai script with a name, declared arguments, and at least three examples.
-//! Lifecycle: write (tested against its examples in the sandbox) -> install (the human presses the
-//! approval key for that exact version) -> run. Writing again under the same name makes a new
-//! version, tested again and installed again; earlier installed versions can be rolled back to.
+//! A function is `fn run(args: &Args) -> Result<String, String>` (plus helpers, std only) with a
+//! name, declared arguments, and at least three examples. Lifecycle: write (checked, compiled to
+//! WebAssembly with rustc, tested against its examples in the sandbox) -> install (the human
+//! presses the approval key for that exact version) -> run. Writing again under the same name
+//! makes a new version; earlier installed versions can be rolled back to.
 //!
-//! Scripts run in the Rhai interpreter compiled to WebAssembly, inside `agentos-sandbox`: no
-//! files, no network, no clock, capped fuel and memory. A script that wants the phone to do
-//! something returns requests (`phone("send_sms", #{...})`); the daemon runs them through the
-//! executor, so tiers and the approval key still apply.
+//! The compiled module runs in `agentos-sandbox`: no imports at all, so no files, network or
+//! clock, and capped fuel and memory. A function that wants the phone to act calls
+//! `phone("send_sms", &[("to", who), ("text", msg)])`; that only records a request, which the
+//! daemon carries out afterwards through the executor, so tiers and the approval key still apply.
+pub mod compile;
+
+pub use compile::{check_source, Compiler, Outcome};
+
 use agentos_action::{Action, Tier, Tool};
 use agentos_executor::Connector;
-use agentos_sandbox::Limits;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-/// The Rhai interpreter as a sandbox module (built from crates/script-guest by build.rs).
-pub static RUNTIME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/script_runtime.wasm"));
-
 pub const MIN_EXAMPLES: usize = 3;
 pub const MAX_EXAMPLES: usize = 20;
 pub const MAX_ARGS: usize = 8;
-pub const MAX_CODE: usize = 16 * 1024;
-
-/// About 50 ms of work on a laptop, a few hundred on a phone. Starting the interpreter costs ~10M.
-pub fn limits() -> Limits {
-    Limits {
-        fuel: 400_000_000,
-        memory_bytes: 64 << 20,
-        max_output: 64 << 10,
-    }
-}
-
-/// What one run produced: its result, and the phone actions it asked for.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Outcome {
-    pub result: String,
-    pub calls: Vec<Action>,
-}
-
-/// Run a script in the sandbox with these arguments.
-pub fn run(code: &str, args: &BTreeMap<String, String>) -> Result<Outcome, String> {
-    let input = serde_json::json!({"code": code, "args": args}).to_string();
-    let out = agentos_sandbox::run(RUNTIME, input.as_bytes(), limits()).map_err(|e| match e {
-        agentos_sandbox::SandboxError::OutOfFuel => "ran too long (out of fuel)".to_string(),
-        other => format!("sandbox: {other:?}"),
-    })?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&out).map_err(|_| "runtime returned garbage".to_string())?;
-    if let Some(e) = v["error"].as_str() {
-        return Err(e.to_string());
-    }
-    let calls = v["calls"]
-        .as_array()
-        .map(|a| {
-            a.iter()
-                .filter_map(|c| {
-                    let mut args: Vec<(String, String)> = c["args"]
-                        .as_object()?
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
-                        .collect();
-                    args.sort();
-                    Some(Action {
-                        tool: c["tool"].as_str()?.to_string(),
-                        args,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    Ok(Outcome {
-        result: v["ok"].as_str().unwrap_or_default().to_string(),
-        calls,
-    })
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Example {
@@ -90,10 +37,14 @@ pub struct Version {
     pub version: u32,
     pub description: String,
     pub args: Vec<String>,
+    /// Rust source.
     pub code: String,
     pub examples: Vec<Example>,
     /// Has the human ever installed this version? Only such versions can be rolled back to.
     pub approved: bool,
+    /// The compiled module; kept in its own file next to the function's JSON.
+    #[serde(skip)]
+    pub wasm: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -154,14 +105,15 @@ pub fn parse_args(s: &str) -> Result<BTreeMap<String, String>, String> {
 pub struct FunctionStore {
     dir: Option<PathBuf>,
     pub funcs: BTreeMap<String, Function>,
-    /// Names of the phone's own tools: a function can never take one.
+    /// Names of the phone's own tools and of these tools: a function can never take one.
     reserved: BTreeSet<String>,
+    pub compiler: Compiler,
 }
 
 pub type Shared = Rc<RefCell<FunctionStore>>;
 
 impl FunctionStore {
-    pub fn in_memory(reserved: &[&str]) -> Self {
+    pub fn in_memory(reserved: &[&str], compiler: Compiler) -> Self {
         FunctionStore {
             dir: None,
             funcs: BTreeMap::new(),
@@ -170,20 +122,25 @@ impl FunctionStore {
                 .map(|s| s.to_string())
                 .chain(TOOLS.iter().map(|t| t.name.to_string()))
                 .collect(),
+            compiler,
         }
     }
 
-    /// One JSON file per function in `dir`.
-    pub fn open(dir: PathBuf, reserved: &[&str]) -> Result<Self, String> {
+    /// One JSON file per function in `dir`, and one .wasm file per version.
+    pub fn open(dir: PathBuf, reserved: &[&str], compiler: Compiler) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let mut s = Self::in_memory(reserved);
+        let mut s = Self::in_memory(reserved, compiler);
         let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
         for e in rd.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "json") {
                 let t = std::fs::read_to_string(&p).map_err(|e| e.to_string())?;
-                let f: Function =
+                let mut f: Function =
                     serde_json::from_str(&t).map_err(|e| format!("{}: {e}", p.display()))?;
+                for v in &mut f.versions {
+                    v.wasm = std::fs::read(dir.join(format!("{}.v{}.wasm", f.name, v.version)))
+                        .unwrap_or_default();
+                }
                 s.funcs.insert(f.name.clone(), f);
             }
         }
@@ -199,6 +156,12 @@ impl FunctionStore {
         let (Some(dir), Some(f)) = (&self.dir, self.funcs.get(name)) else {
             return Ok(());
         };
+        for v in &f.versions {
+            let w = dir.join(format!("{name}.v{}.wasm", v.version));
+            if !w.exists() && !v.wasm.is_empty() {
+                std::fs::write(&w, &v.wasm).map_err(|e| e.to_string())?;
+            }
+        }
         let p = dir.join(format!("{name}.json"));
         let tmp = p.with_extension("tmp");
         let t = serde_json::to_string_pretty(f).map_err(|e| e.to_string())?;
@@ -206,8 +169,8 @@ impl FunctionStore {
         std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
     }
 
-    /// Test a new version against its examples. Only a version that passes them all is kept.
-    /// The error is a report meant to be shown to whoever wrote the code, so they can fix it.
+    /// Check, compile and test a new version. Only a version that passes every example is kept.
+    /// The error is a report meant for whoever wrote the code, so they can fix it.
     pub fn write(
         &mut self,
         name: &str,
@@ -232,12 +195,10 @@ impl FunctionStore {
         if let Some(a) = args.iter().find(|a| !valid_ident(a)) {
             return Err(format!("bad argument name {a:?}"));
         }
-        if code.len() > MAX_CODE {
-            return Err(format!("code is over {MAX_CODE} bytes"));
-        }
         if examples.len() < MIN_EXAMPLES || examples.len() > MAX_EXAMPLES {
             return Err(format!("give {MIN_EXAMPLES} to {MAX_EXAMPLES} examples"));
         }
+        let wasm = self.compiler.compile(code)?;
         let declared: BTreeSet<&String> = args.iter().collect();
         let mut report = Vec::new();
         let mut failed = 0;
@@ -253,7 +214,7 @@ impl FunctionStore {
                 ));
                 continue;
             }
-            match run(code, &ex.args) {
+            match compile::run(&wasm, &ex.args) {
                 Ok(o) if o.result.trim() == ex.expect.trim() => {
                     report.push(format!("example {}: ok", i + 1))
                 }
@@ -294,6 +255,7 @@ impl FunctionStore {
             code: code.to_string(),
             examples,
             approved: false,
+            wasm,
         });
         self.save(name)?;
         Ok(version)
@@ -343,7 +305,7 @@ impl FunctionStore {
         self.save(name)
     }
 
-    pub fn call(&self, name: &str, args: &BTreeMap<String, String>) -> Result<Outcome, String> {
+    pub fn call(&mut self, name: &str, args: &BTreeMap<String, String>) -> Result<Outcome, String> {
         let f = self
             .funcs
             .get(name)
@@ -356,7 +318,18 @@ impl FunctionStore {
         if given != declared {
             return Err(format!("{name} takes ({})", v.args.join(", ")));
         }
-        run(&v.code, args)
+        if v.wasm.is_empty() {
+            // its module file went missing: build it again from the approved source
+            let (vn, code) = (v.version, v.code.clone());
+            let wasm = self.compiler.compile(&code)?;
+            let f = self.funcs.get_mut(name).unwrap();
+            if let Some(v) = f.versions.iter_mut().find(|x| x.version == vn) {
+                v.wasm = wasm;
+            }
+            self.save(name)?;
+        }
+        let v = self.funcs[name].current().unwrap();
+        compile::run(&v.wasm, args)
     }
 
     pub fn list(&self) -> String {
@@ -411,7 +384,7 @@ impl FunctionStore {
             .map(|e| format!("  {:?} -> {:?}", e.args, e.expect))
             .collect();
         Ok(format!(
-            "{name} v{} ({status}): {}\nargs: {}\n--- code ---\n{}\n--- examples ---\n{}",
+            "{name} v{} ({status}): {}\nargs: {}\n--- code (Rust) ---\n{}\n--- examples ---\n{}",
             v.version,
             v.description,
             v.args.join(", "),
@@ -568,6 +541,12 @@ impl Connector for FunctionTools {
 mod tests {
     use super::*;
 
+    fn compiler() -> Compiler {
+        Compiler::new(
+            "rustc".into(),
+            std::env::temp_dir().join(format!("fn-store-{}", std::process::id())),
+        )
+    }
     fn ex(args: &[(&str, &str)], expect: &str) -> Example {
         Example {
             args: args
@@ -586,16 +565,14 @@ mod tests {
                 .collect(),
         }
     }
-    const SPLIT: &str = r#"
-        let total = parse_float(args.total);
-        let people = parse_int(args.people);
-        let each = (total * 100.0 / people).round() / 100.0;
-        `${each}`
-    "#;
+    const SPLIT: &str = r#"fn run(args: &Args) -> Result<String, String> {
+    let each = args.num("total")? / args.num("people")?;
+    Ok(format!("{:.2}", each))
+}"#;
     fn split_examples() -> Vec<Example> {
         vec![
-            ex(&[("total", "900"), ("people", "3")], "300.0"),
-            ex(&[("total", "100"), ("people", "4")], "25.0"),
+            ex(&[("total", "900"), ("people", "3")], "300.00"),
+            ex(&[("total", "100"), ("people", "4")], "25.00"),
             ex(&[("total", "10"), ("people", "3")], "3.33"),
         ]
     }
@@ -604,14 +581,8 @@ mod tests {
     }
 
     #[test]
-    fn the_runtime_has_no_imports_and_runs_in_the_sandbox() {
-        let o = run("40 + 2", &BTreeMap::new()).unwrap();
-        assert_eq!(o.result, "42");
-        assert!(run("loop {}", &BTreeMap::new()).is_err());
-    }
-    #[test]
     fn write_install_run() {
-        let mut s = FunctionStore::in_memory(&["send_sms"]);
+        let mut s = FunctionStore::in_memory(&["send_sms"], compiler());
         let v = s
             .write(
                 "split_bill",
@@ -622,17 +593,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(v, 1);
-        let a: BTreeMap<String, String> = parse_args("total=1250; people=4").unwrap();
+        let a = parse_args("total=1250; people=4").unwrap();
         assert!(s
             .call("split_bill", &a)
             .unwrap_err()
             .contains("not installed"));
         s.install("split_bill", 1).unwrap();
-        assert_eq!(s.call("split_bill", &a).unwrap().result, "312.5");
+        assert_eq!(s.call("split_bill", &a).unwrap().result, "312.50");
     }
     #[test]
-    fn a_failing_example_is_reported_line_by_line_and_nothing_is_kept() {
-        let mut s = FunctionStore::in_memory(&[]);
+    fn failures_are_reported_and_nothing_is_kept() {
+        let mut s = FunctionStore::in_memory(&[], compiler());
         let mut exs = split_examples();
         exs[2].expect = "3.34".into();
         let e = s
@@ -643,15 +614,28 @@ mod tests {
             e.contains("example 3: expected \"3.34\", got \"3.33\""),
             "{e}"
         );
-        assert!(s.funcs.is_empty());
         let e = s
-            .write("broken", "d", &args2(), "let x = ;", split_examples())
+            .write(
+                "broken",
+                "d",
+                &args2(),
+                "fn run(args: &Args) -> Result<String, String> { Ok(1) }",
+                split_examples(),
+            )
             .unwrap_err();
-        assert!(e.contains("error:") && e.contains("line"), "{e}");
+        assert!(
+            e.contains("does not compile") && e.contains("f.rs:1:"),
+            "{e}"
+        );
+        let e = s
+            .write("sneaky", "d", &args2(), r#"fn run(a: &Args) -> Result<String, String> { Ok(include_str!("/etc/hosts").into()) }"#, split_examples())
+            .unwrap_err();
+        assert!(e.contains("not allowed"), "{e}");
+        assert!(s.funcs.is_empty());
     }
     #[test]
     fn names_and_shapes_are_checked() {
-        let mut s = FunctionStore::in_memory(&["send_sms"]);
+        let mut s = FunctionStore::in_memory(&["send_sms"], compiler());
         assert!(s
             .write("send_sms", "d", &args2(), SPLIT, split_examples())
             .unwrap_err()
@@ -674,15 +658,15 @@ mod tests {
     }
     #[test]
     fn editing_makes_a_new_version_and_rollback_needs_a_past_install() {
-        let mut s = FunctionStore::in_memory(&[]);
+        let mut s = FunctionStore::in_memory(&[], compiler());
         s.write("split_bill", "v1", &args2(), SPLIT, split_examples())
             .unwrap();
         s.install("split_bill", 1).unwrap();
-        let tip = SPLIT.replace("let each = (total", "let each = (total * 1.1");
+        let tip = SPLIT.replace("let each = args", "let each = 1.1 * args");
         let tip_ex = vec![
-            ex(&[("total", "900"), ("people", "3")], "330.0"),
-            ex(&[("total", "100"), ("people", "4")], "27.5"),
-            ex(&[("total", "10"), ("people", "1")], "11.0"),
+            ex(&[("total", "900"), ("people", "3")], "330.00"),
+            ex(&[("total", "100"), ("people", "4")], "27.50"),
+            ex(&[("total", "10"), ("people", "1")], "11.00"),
         ];
         assert_eq!(
             s.write("split_bill", "with tip", &args2(), &tip, tip_ex)
@@ -692,7 +676,7 @@ mod tests {
         assert_eq!(
             s.funcs["split_bill"].installed,
             Some(1),
-            "a new version is not live until installed"
+            "not live until installed"
         );
         assert!(s
             .rollback("split_bill", 2)
@@ -700,9 +684,9 @@ mod tests {
             .contains("never installed"));
         s.install("split_bill", 2).unwrap();
         let a = parse_args(r#"{"total":"100","people":"4"}"#).unwrap();
-        assert_eq!(s.call("split_bill", &a).unwrap().result, "27.5");
+        assert_eq!(s.call("split_bill", &a).unwrap().result, "27.50");
         s.rollback("split_bill", 1).unwrap();
-        assert_eq!(s.call("split_bill", &a).unwrap().result, "25.0");
+        assert_eq!(s.call("split_bill", &a).unwrap().result, "25.00");
         s.remove("split_bill").unwrap();
         assert!(s.call("split_bill", &a).is_err());
         assert!(s
@@ -711,21 +695,33 @@ mod tests {
             .contains("installed before"));
     }
     #[test]
-    fn functions_survive_a_restart() {
+    fn functions_and_their_modules_survive_a_restart() {
         let d = std::env::temp_dir().join(format!("fns-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let mut s = FunctionStore::open(d.clone(), &[]).unwrap();
+        let mut s = FunctionStore::open(d.clone(), &[], compiler()).unwrap();
         s.write("split_bill", "d", &args2(), SPLIT, split_examples())
             .unwrap();
         s.install("split_bill", 1).unwrap();
-        let s2 = FunctionStore::open(d.clone(), &[]).unwrap();
+        assert!(d.join("split_bill.v1.wasm").exists());
+        let mut s2 = FunctionStore::open(d.clone(), &[], compiler()).unwrap();
         assert_eq!(s2.funcs["split_bill"].installed, Some(1));
+        let a = parse_args("total=9; people=3").unwrap();
+        assert_eq!(s2.call("split_bill", &a).unwrap().result, "3.00");
+        // a lost module is rebuilt from the approved source
+        std::fs::remove_file(d.join("split_bill.v1.wasm")).unwrap();
+        let mut s3 = FunctionStore::open(d.clone(), &[], compiler()).unwrap();
+        assert_eq!(s3.call("split_bill", &a).unwrap().result, "3.00");
+        assert!(d.join("split_bill.v1.wasm").exists());
         std::fs::remove_dir_all(d).ok();
     }
     #[test]
     fn phone_requests_come_back_to_the_caller() {
-        let mut t = FunctionTools(FunctionStore::in_memory(&[]).shared());
-        let code = r#"phone("send_sms", #{to: args.who, text: `Running ${args.mins} min late`}); "told " + args.who"#;
+        let mut t = FunctionTools(FunctionStore::in_memory(&[], compiler()).shared());
+        let code = r#"fn run(args: &Args) -> Result<String, String> {
+    let who = args.get("who")?;
+    phone("send_sms", &[("to", who), ("text", &format!("Running {} min late", args.get("mins")?))])?;
+    Ok(format!("told {who}"))
+}"#;
         let exs = serde_json::json!([
             {"args": {"who": "Mum", "mins": "10"}, "expect": "told Mum"},
             {"args": {"who": "Ravi", "mins": "5"}, "expect": "told Ravi"},
@@ -766,7 +762,7 @@ mod tests {
     }
     #[test]
     fn installing_is_high_tier_and_function_tools_are_known() {
-        let t = FunctionTools(FunctionStore::in_memory(&[]).shared());
+        let t = FunctionTools(FunctionStore::in_memory(&[], compiler()).shared());
         let tier = |n| t.tools().iter().find(|x| x.name == n).unwrap().tier;
         assert_eq!(tier("install_function"), Tier::High);
         assert_eq!(tier("run_function"), Tier::Low);

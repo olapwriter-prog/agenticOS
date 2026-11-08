@@ -114,7 +114,7 @@ scripts/vm-test.sh path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf
 ```
 It builds the real package with `abuild` (running its tests), installs it, starts the service,
 and checks 21 things: first-boot secrets, ledger, charger boost, the reserved core, MCP auth,
-chat, freezing, approval, a function written, tested, installed with the key and run,
+chat, freezing, approval, a Rust function compiled by the phone's rustc, tested, installed with the key and run,
 llama-server in the model cgroup, real-model answers, crash recovery
 (`kill -9` takes the model server down with it, and supervise-daemon brings both back), and a
 clean stop. It cannot check the modem, GPU, uclamp or thermal sensors; those need the phone.
@@ -153,13 +153,15 @@ llama.cpp can use on these phones.
 
 ## Known gaps (honest list)
 
-- **Local models write Rhai poorly.** Measured on a laptop with the repair loop (3 attempts):
-  the 0.5B model wrote a working function for 1 of 3 requests; Qwen2.5-Coder-3B (loaded on the
-  charger) for 4 of 10, in about 5 s each. Its failures are other languages' habits (Rust's `?` and
-  `.collect()`, JavaScript's `Math` and `null`), plus wrong arithmetic in its own examples. Every
-  failure was stopped by the example tests, and the reply shows the last code tried. A Claude
-  client over MCP writes Rhai well with `write_function`. Next step: a Python-dialect runtime
-  (Starlark), the language small models write best.
+- **Local models write some functions, not all.** Measured on a laptop with the repair loop
+  (3 attempts): Qwen2.5-Coder-3B (loaded on the charger) wrote working Rust functions for 6 of 10
+  requests, 5 to 15 s each, including one that texts a contact through `phone()`. Almost
+  everything compiles; the failures are logic slips ("1 words") and wrong arithmetic in its own
+  examples, and the example tests stopped every one. (In Rhai, tried earlier, it managed 4 of 10.)
+  A Claude client over MCP can always write functions with `write_function`.
+- **Function writing on the phone.** Functions are Rust, compiled by the phone's own `rustc`
+  (the `rust` and `rust-wasm` packages, a few hundred MB). A compile takes under a second on a
+  laptop; on a phone expect a few seconds, during which the daemon is busy.
 - **Small-model accuracy.** On a laptop test the 0.5B model chose the right tool for 7 of 10
   unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
   The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.

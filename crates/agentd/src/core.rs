@@ -12,6 +12,7 @@ use agentos_executor::Connector;
 use agentos_executor::Executor;
 use agentos_firewall::Firewall;
 use agentos_freeze::{Freezer, FREEZABLE};
+use agentos_functions::{Compiler, FunctionStore, FunctionTools};
 use agentos_gate::Gate;
 use agentos_gateway::Gateway;
 use agentos_hal::{Clock, FakePower, PowerSource};
@@ -23,7 +24,6 @@ use agentos_phone::{Contacts, Linux, Phone, PhoneEvent, PhoneTools, Sim};
 use agentos_power::ModelBudget;
 use agentos_prio::{Limits, Mode, Prio, SysPaths};
 use agentos_router::{Job, JobKind, Policy, Sensitivity};
-use agentos_scripts::{FunctionStore, FunctionTools};
 use agentos_stage::{Event, Stage};
 use agentos_status::{line, Facts};
 use agentos_store::Store;
@@ -47,7 +47,7 @@ pub struct Core {
     last_phone_poll_ms: u64,
     prio: Prio,
     models: Supervisor,
-    functions: agentos_scripts::Shared,
+    functions: agentos_functions::Shared,
     /// Functions being written by the local model, each for someone waiting on the control socket.
     coder_jobs: Vec<crate::coder::Job>,
     coder_prompt: String,
@@ -166,7 +166,9 @@ impl Core {
         let phone_tools: Vec<agentos_action::Tool> =
             connectors.iter().flat_map(|c| c.tools()).collect();
         let reserved: Vec<&str> = phone_tools.iter().map(|t| t.name).collect();
-        let functions = FunctionStore::open(dir.join("functions"), &reserved)?.shared();
+        // functions are Rust, compiled to WebAssembly by rustc and run in the sandbox
+        let compiler = Compiler::new(cfg.rustc.clone(), dir.join("run/compile"));
+        let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
         connectors.push(Box::new(FunctionTools(functions.clone())));
         let coder_prompt = crate::coder::system_prompt(&phone_tools);
         let phone_tool_names: Vec<&'static str> = phone_tools.iter().map(|t| t.name).collect();
@@ -442,7 +444,7 @@ impl Core {
         )];
         for c in calls {
             let tool = c["tool"].as_str().unwrap_or_default().to_string();
-            if agentos_scripts::is_function_tool(&tool) {
+            if agentos_functions::is_function_tool(&tool) {
                 lines.push(format!(
                     "  {tool}: refused (a function cannot manage functions)"
                 ));
@@ -665,7 +667,14 @@ impl Core {
                 self.models.refresh_health();
                 self.models.report()
             }
-            "functions" => self.functions.borrow().list(),
+            "functions" => {
+                let f = self.functions.borrow();
+                let compiler = match f.compiler.check() {
+                    Ok(v) => format!("compiler: {v}"),
+                    Err(e) => format!("compiler MISSING: {e}"),
+                };
+                format!("{}\n{compiler}", f.list())
+            }
             "show" => {
                 let mut it = rest.split_whitespace();
                 let name = it.next().unwrap_or("");

@@ -25,8 +25,8 @@ extern "C" fn on_signal(_: libc::c_int) {
 /// Call once from `main` before `start`.
 pub fn install_signal_handlers() {
     unsafe {
-        libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
-        libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
     }
 }
 

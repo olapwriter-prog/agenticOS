@@ -35,7 +35,7 @@ pub fn describe(tool: &str) -> &'static str {
         "ring_phone" => "make this phone ring loudly so the user can find it",
         "list_functions" => "list the functions the agent has written",
         "show_function" => "show a function's code and examples",
-        "write_function" => "write and test a new function (code in Rhai)",
+        "write_function" => "write, compile and test a new function (code in Rust)",
         "install_function" => "install a tested function version",
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",

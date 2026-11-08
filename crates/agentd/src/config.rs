@@ -62,6 +62,8 @@ pub struct Config {
     pub coder_attempts: u32,
     /// How long one attempt may take (a phone writing code is slow).
     pub coder_timeout_secs: u64,
+    /// The Rust compiler, with the wasm32-unknown-unknown target, for the agent's functions.
+    pub rustc: PathBuf,
 }
 
 impl Default for Config {
@@ -98,6 +100,7 @@ impl Default for Config {
             cool_c: 70.0,
             coder_attempts: 3,
             coder_timeout_secs: 300,
+            rustc: PathBuf::from("rustc"),
         }
     }
 }

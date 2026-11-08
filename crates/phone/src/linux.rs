@@ -283,7 +283,7 @@ impl Backend for Linux {
                 })
             })
             .collect();
-        nets.sort_by(|a, b| b.signal.cmp(&a.signal));
+        nets.sort_by_key(|n| std::cmp::Reverse(n.signal));
         nets.dedup_by(|a, b| a.ssid == b.ssid);
         Ok(nets)
     }
