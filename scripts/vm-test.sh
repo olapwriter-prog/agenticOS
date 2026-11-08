@@ -48,7 +48,9 @@ grep -E "test result: .* [1-9]+ passed" ~/build.log | sed 's/^/   /'
 sudo rc-service agentd stop >/dev/null 2>&1 || true
 sudo apk add -q -u --repository "$repo" agentd agentd-openrc
 apk list -I agentd | cut -d' ' -f1
-small=$(sed -n '/role = "small"/,/^file/s/^file = "\(.*\)"/\1/p' /etc/agentd/agentd.toml | head -1)
+# apk keeps an edited config and saves the new one as .apk-new: always test the packaged one
+sudo install -m600 agentd.toml /etc/agentd/agentd.toml
+small=$(sed -n '/role = "small"/,/^file/s/^file = "\(.*\)"/\1/p' agentd.toml | head -1)
 if [ -f model.gguf ]; then
 	sudo install -Dm600 model.gguf "/var/lib/agentd/models/$small"
 fi
@@ -97,7 +99,7 @@ if sudo test -f "/var/lib/agentd/models/$small"; then
 	A=$(pidof agentd); sudo kill -9 "$A"; sleep 6
 	check "kill -9: the model server dies too, agentd respawns" '[ -n "$(pidof agentd)" ] && [ "$(pidof agentd)" != "$A" ] && $C models | grep -q running'
 else
-	echo "  (no model given: skipping the llama-server checks)"
+	echo "  (no model given: skipping the model checks)"
 fi
 sudo rc-service agentd stop >/dev/null
 check "a clean stop leaves nothing running" '[ -z "$(pidof agentd)" ] && [ -z "$(pidof agentos-llm)" ]'
