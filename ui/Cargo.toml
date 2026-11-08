@@ -1,0 +1,19 @@
+[package]
+name = "agentos-ui"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "The phone's screen: a Rune app that shows and drives the headless agentd"
+
+# Its own workspace: the headless OS never builds a GPU stack; the UI is optional.
+[workspace]
+
+[dependencies]
+# Rune is pre-release; pin a rev of `dev` (it is never rewritten).
+rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true

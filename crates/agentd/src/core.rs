@@ -840,6 +840,46 @@ impl Core {
         )
     }
 
+    /// Everything a screen shows, in one JSON object, for clients such as the Rune UI.
+    fn ui_state(&mut self) -> Value {
+        let pending: Vec<Value> = self
+            .gateway
+            .pending()
+            .iter()
+            .map(|p| {
+                let args: serde_json::Map<String, Value> =
+                    p.action.args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+                json!({"id": p.id, "tool": p.action.tool, "args": args})
+            })
+            .collect();
+        let recent: Vec<Value> = self
+            .learner
+            .episodes
+            .iter()
+            .rev()
+            .take(8)
+            .map(|e| {
+                let tool = serde_json::from_str::<Value>(&e.action)
+                    .ok()
+                    .and_then(|a| a["tool"].as_str().map(String::from))
+                    .unwrap_or_default();
+                json!({"prompt": e.prompt, "tool": tool, "source": e.source, "reward": e.reward})
+            })
+            .collect();
+        let lines = |s: String| s.lines().map(String::from).collect::<Vec<_>>();
+        json!({
+            "stage": format!("{:?}", self.kernel.stage),
+            "status": self.status_line(),
+            "phone": self.phone.borrow_mut().status_text().unwrap_or_else(|e| format!("phone: {e}")),
+            "pending": pending,
+            "recent": recent,
+            "models": lines(self.models.report()),
+            "prio": self.prio.report().lines().next().unwrap_or_default(),
+            "functions": lines(self.functions.borrow().list()),
+            "learning": self.learner.stats(),
+        })
+    }
+
     /// The control channel: the approval key and operator commands.
     pub fn ctl(&mut self, line_in: &str) -> String {
         let line_in = line_in.trim();
@@ -848,6 +888,7 @@ impl Core {
             "status" => self.status_line(),
             "stage" => format!("{:?}", self.kernel.stage),
             "chat" => self.chat(rest),
+            "state" => self.ui_state().to_string(),
             "pending" => {
                 let p = self.gateway.pending();
                 if p.is_empty() {
@@ -948,7 +989,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status stage chat pending press decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
+            "" => "commands: status state stage chat pending press decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
             other => format!("unknown command: {other}"),
         }
     }

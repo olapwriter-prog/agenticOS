@@ -2,7 +2,7 @@
 resolver = "2"
 members = ["crates/*"]
 default-members = ["crates/agentd"]
-exclude = ["examples/split-bill"]
+exclude = ["examples/split-bill", "ui"]
 
 [workspace.package]
 edition = "2021"

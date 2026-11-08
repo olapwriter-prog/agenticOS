@@ -2,3 +2,4 @@
 /agentd-data
 /agentd.toml
 /examples/*/target
+/ui/target

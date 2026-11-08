@@ -398,6 +398,13 @@ fn the_phone_works_headless_and_calls_need_the_key() {
         "{v}"
     );
 
+    // one JSON snapshot for screens (the Rune UI)
+    ctl_send(&r.ctl_path, "chat call mum").unwrap();
+    let st: Value = serde_json::from_str(&c("state")).unwrap();
+    assert_eq!(st["pending"][0]["tool"], "call", "{st}");
+    assert_eq!(st["pending"][0]["args"]["to"], "mum");
+    assert!(st["phone"].as_str().unwrap().contains("SimNet"));
+    assert!(st["recent"].as_array().unwrap().len() > 3);
     let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap();
     assert!(ledger.contains("phone: incoming call") && ledger.contains("phone: sms received"));
     assert!(c("verify").contains("ledger ok"));
