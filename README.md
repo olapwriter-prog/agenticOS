@@ -36,6 +36,19 @@ The base system is **postmarketOS** (Alpine Linux for phones) installed with no 
 | `where am i` | `where_am_i` | Medium |
 | `flashlight on`, `volume 40`, `find my phone` | `flashlight`, `set_volume`, `ring_phone` | Low |
 
+## A screen, when you want one
+
+The OS is headless; a screen is optional. `ui/` is `agentos-ui`, a [Rune](https://github.com/anomalyco/rune)
+app that is only a client of agentd (the same control socket as `agentd ctl`): status, what is
+waiting for approval (Approve / Decline), recent actions, the model and the chip, functions, and a
+chat box. It is its own workspace, so the headless build never compiles a GPU stack.
+
+```bash
+cd ui && cargo run --release                                   # window (socket: $AGENTD_SOCK)
+cargo run --release -- --snap ui.png --scene demo             # headless render, sample data
+AGENTD_SOCK=../agentd-data/control.sock cargo run --release -- --snap ui.png --scene live
+```
+
 ## Its own inference engine
 
 `agentos-llm` (`crates/infer`) is this OS's LLM engine, written in Rust for phones, a drop-in for

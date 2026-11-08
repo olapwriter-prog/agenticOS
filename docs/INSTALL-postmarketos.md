@@ -159,6 +159,10 @@ llama.cpp can use on these phones.
   everything compiles; the failures are logic slips ("1 words") and wrong arithmetic in its own
   examples, and the example tests stopped every one. (In Rhai, tried earlier, it managed 4 of 10.)
   A Claude client over MCP can always write functions with `write_function`.
+- **The screen (agentos-ui) on a phone is not packaged yet.** It builds on Alpine aarch64 and its
+  tests pass, but rendering with Mesa's software Vulkan driver (lavapipe) in the VM crashes, and it
+  has not run on a phone GPU (Turnip on Adreno, PanVK on Mali). The plan: run it full screen under
+  the `cage` kiosk compositor (`apk add cage seatd mesa-vulkan-freedreno`), as a client of agentd.
 - **Own engine speed.** On an Apple M-series CPU, Qwen3.5-4B Q4_K_M: agentos-llm generates
   ~10 tokens/s and reads prompts at ~17 tokens/s; llama.cpp on the same CPU does ~22 and ~42.
   agentd's requests take 2 to 3 s once the system prompt is cached (it is read once, at start).
