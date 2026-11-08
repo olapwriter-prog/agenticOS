@@ -62,4 +62,6 @@ package() {
 	install -dm700 "$pkgdir"/var/lib/agentd/models
 }
 
-sha512sums="SKIP"
+# Generated, one line per source file: run `pmbootstrap checksum agentd` (or `abuild checksum`)
+# after copying this directory into pmaports, and again for each release tarball.
+sha512sums=""

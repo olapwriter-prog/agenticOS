@@ -41,6 +41,7 @@ When `init` asks:
 Build and add the agentd package from this repository:
 ```bash
 cp -r os/postmarketos "$(pmbootstrap config aports)/temp/agentd"
+pmbootstrap checksum agentd
 pmbootstrap build agentd --src="$PWD"
 pmbootstrap install --fde --add agentd,agentd-openrc
 ```
