@@ -447,7 +447,7 @@ impl Connector for PhoneTools {
                     .take(10)
                     .map(|c| {
                         let dir = if c.incoming { "from" } else { "to" };
-                        format!("{dir} {} {:?}", p.who(&c.number), c.state).to_lowercase()
+                        format!("{dir} {} {}", p.who(&c.number), format!("{:?}", c.state).to_lowercase())
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
@@ -481,7 +481,7 @@ impl Connector for PhoneTools {
                         .iter()
                         .map(|c| {
                             let dir = if c.incoming { "from" } else { "to" };
-                            format!("{dir} {} {:?}", p.who(&c.number), c.state).to_lowercase()
+                            format!("{dir} {} {}", p.who(&c.number), format!("{:?}", c.state).to_lowercase())
                         })
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -712,6 +712,14 @@ mod tests {
         sim.inject_sms("+919876543210", "old").unwrap();
         let mut p = Phone::new(Box::new(sim), Contacts::default());
         assert!(p.poll().is_empty());
+    }
+    #[test]
+    fn call_listings_keep_names_as_saved() {
+        let (mut t, p) = phone();
+        t.call(&act("add_contact", &[("name", "Ravi"), ("number", "+919812345678")])).unwrap();
+        p.borrow_mut().backend.inject_call("+919812345678").unwrap();
+        let log = t.call(&act("call_log", &[])).unwrap();
+        assert_eq!(log, "from Ravi (+919812345678) ringing", "only the state is lowercase");
     }
     #[test]
     fn switches_and_bad_values() {

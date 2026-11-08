@@ -159,6 +159,17 @@ llama.cpp can use on these phones.
   everything compiles; the failures are logic slips ("1 words") and wrong arithmetic in its own
   examples, and the example tests stopped every one. (In Rhai, tried earlier, it managed 4 of 10.)
   A Claude client over MCP can always write functions with `write_function`.
+- **What the models manage** (benchmark on a laptop, the same 10 unseen phrasings, 10 function
+  requests and 5 questions over planted messages and calls):
+
+  | | Qwen2.5 0.5B | Qwen3.5 4B (always on) | Qwen3.5 9B (on the charger) |
+  |---|---|---|---|
+  | Tool choice | 8/10 | 10/10 | 9/10 |
+  | Rust functions written and passing their tests | not tried | 7/10 | 8/10 |
+  | Questions answered by code in the sandbox | 0/5 | 2/5 | 3/5 |
+
+  The misses are the model's reasoning (an EMI formula, reading "calls Ravi made to me" as text to
+  match); every wrong function or answer was caught or is visible, and nothing acted without the key.
 - **The screen (agentos-ui) on a phone is not packaged yet.** It builds on Alpine aarch64 and its
   tests pass, but rendering with Mesa's software Vulkan driver (lavapipe) in the VM crashes, and it
   has not run on a phone GPU (Turnip on Adreno, PanVK on Mali). The plan: run it full screen under
