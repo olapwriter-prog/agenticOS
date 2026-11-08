@@ -1,0 +1,6 @@
+[package]
+name = "agentos-freeze"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

@@ -1,0 +1,9 @@
+[package]
+name = "agentos-patterns"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+agentos-intents = { path = "../intents" }

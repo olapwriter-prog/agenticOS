@@ -1,0 +1,8 @@
+[package]
+name = "agentos-power"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-hal = { path = "../hal" }
+agentos-stage = { path = "../stage" }

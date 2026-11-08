@@ -1,0 +1,9 @@
+outcome: Run(Action { tool: "read_calendar", args: [("day", "friday")] })
+  #1  t=0      route     Design failures=0 -> LocalLarge
+  #3  t=0      route     Design failures=1 -> LocalLarge
+  #5  t=0      route     Design failures=2 -> Commercial
+  #6  t=0      firewall  redacted 1 item(s)
+  #2  t=0      invalid   NotJson from LocalLarge
+  #4  t=0      invalid   UnknownTool("format_disk") from LocalLarge
+  #7  t=0      action    read_calendar tier=Low
+  commercial model saw: (Commercial, "Email [EMAIL] and check what is free on Friday")

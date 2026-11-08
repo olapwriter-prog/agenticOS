@@ -1,0 +1,11 @@
+outcome: NeedsApproval(Action { tool: "pay", args: [("amount", "99999"), ("to", "mallory")] })
+  canonical: {"tool":"pay","args":{"amount":"99999","to":"mallory"}}
+  release without approval (forged token): false
+  human pressed the key -> release: true
+  second release: false
+  #1  t=0      route     Chat failures=0 -> LocalSmall
+  #2  t=0      action    pay tier=High
+  #3  t=0      gate      redeem pay -> false
+  #4  t=0      gate      minted for pay
+  #5  t=0      gate      redeem pay -> true
+  #6  t=0      gate      redeem pay -> false

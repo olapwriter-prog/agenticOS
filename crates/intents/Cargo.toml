@@ -1,0 +1,7 @@
+[package]
+name = "agentos-intents"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-action = { path = "../action" }

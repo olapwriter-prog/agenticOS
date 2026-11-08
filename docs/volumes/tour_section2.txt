@@ -1,0 +1,20 @@
+IN : Email asha@example.com about the 5pm meeting
+  OUT: Email [EMAIL] about the 5pm meeting   [removed 1]
+
+  IN : Call me on 98765 43210 or 98765-43210
+  OUT: Call me on [PHONE] or [PHONE]   [removed 2]
+
+  IN : My ID is 1234 5678 9012, please file it
+  OUT: My ID is [ID], please file it   [removed 1]
+
+  IN : Card 4111 1111 1111 1111 expires soon
+  OUT: Card [CARD] expires soon   [removed 1]
+
+  IN : Order 1234567890123 shipped, total 499
+  OUT: Order 1234567890123 shipped, total 499   [removed 0]
+
+  IN : Meet @ 5 near the station
+  OUT: Meet @ 5 near the station   [removed 0]
+
+  IN : What is the vault key for the backup?
+  BLOCKED: contains never-send term 'vault key'

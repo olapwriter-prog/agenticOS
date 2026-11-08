@@ -1,0 +1,10 @@
+[package]
+name = "agentos-sandbox"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+wasmi = "2"
+
+[dev-dependencies]
+wat = "1"

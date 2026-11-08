@@ -1,0 +1,4 @@
+/target
+/agentd-data
+agentd.toml
+/examples/*/target

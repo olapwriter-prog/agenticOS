@@ -1,0 +1,11 @@
+action hash (500)   : dff989a055e03febb181d98af042b319090d18004a33857eb3173e31965e67fb
+  action hash (50000) : 95f1ef3211eb91bd1731aeed9433660bed59336c70811dddec17c68647fba12c
+  token: 1.600000.933a9a69b431f1ff25c9f50497978b973944affc180ef41a4f4748118f4ffadc
+  parts: [1, 6, 64]
+  redeem for 50000 : Err(BadSignature)
+  redeem for 500   : Ok(())
+  redeem again     : Err(AlreadyUsed)
+  exactly at ttl   : Ok(())
+  1 ms past ttl    : Err(Expired)
+  forged expiry    : Err(BadSignature)
+  garbage          : Err(Malformed)

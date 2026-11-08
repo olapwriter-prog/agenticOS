@@ -1,0 +1,15 @@
+name = "tell-family-trip"
+description = "Put a trip on the calendar, set a reminder, tell the family"
+params = ["day", "who", "place"]
+
+[[steps]]
+tool = "add_event"
+args = { day = "{day}", title = "Trip to {place}" }
+
+[[steps]]
+tool = "set_reminder"
+args = { text = "Pack for {place}", when = "evening before {day}" }
+
+[[steps]]
+tool = "send_message"
+args = { to = "{who}", text = "We are going to {place} on {day}" }

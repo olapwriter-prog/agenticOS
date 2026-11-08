@@ -1,0 +1,3 @@
+outcome: Run(Action { tool: "set_reminder", args: [("text", "call mum"), ("when", "18:00")] })
+  #1  t=0      route     Chat failures=0 -> LocalSmall
+  #2  t=0      action    set_reminder tier=Medium

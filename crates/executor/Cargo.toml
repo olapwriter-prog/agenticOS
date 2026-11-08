@@ -1,0 +1,11 @@
+[package]
+name = "agentos-executor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-action = { path = "../action" }
+agentos-gate = { path = "../gate" }
+agentos-store = { path = "../store" }
+agentos-brain = { path = "../brain" }
+agentos-hal = { path = "../hal" }

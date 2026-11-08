@@ -1,0 +1,7 @@
+[package]
+name = "agentos-action"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde_json = "1"

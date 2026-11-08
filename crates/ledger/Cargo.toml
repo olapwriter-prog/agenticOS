@@ -1,0 +1,7 @@
+[package]
+name = "agentos-ledger"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sha2 = "0.10"

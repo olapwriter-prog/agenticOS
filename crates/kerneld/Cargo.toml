@@ -1,0 +1,16 @@
+[package]
+name = "agentos-kerneld"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-hal = { path = "../hal" }
+agentos-stage = { path = "../stage" }
+agentos-power = { path = "../power" }
+agentos-wake = { path = "../wake" }
+agentos-freeze = { path = "../freeze" }
+agentos-ledger = { path = "../ledger" }
+
+[[bin]]
+name = "os-kernel-d"
+path = "src/main.rs"

@@ -1,0 +1,12 @@
+[package]
+name = "agentos-brain"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-hal = { path = "../hal" }
+agentos-router = { path = "../router" }
+agentos-firewall = { path = "../firewall" }
+agentos-gate = { path = "../gate" }
+agentos-action = { path = "../action" }
+agentos-store = { path = "../store" }

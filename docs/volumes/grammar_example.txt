@@ -1,0 +1,5 @@
+root ::= action
+action ::= act-set-reminder | act-pay
+act-set-reminder ::= "{\"tool\":\"set_reminder\",\"args\":{" "\"text\":" text ","  "\"when\":" text "}}"
+act-pay ::= "{\"tool\":\"pay\",\"args\":{" "\"to\":" text ","  "\"amount\":" text "}}"
+text ::= "\"" [^"\\]* "\""

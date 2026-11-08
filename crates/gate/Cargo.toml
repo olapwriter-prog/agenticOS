@@ -1,0 +1,9 @@
+[package]
+name = "agentos-gate"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-hal = { path = "../hal" }
+hmac = "0.12"
+sha2 = "0.10"

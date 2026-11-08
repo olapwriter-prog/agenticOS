@@ -1,0 +1,10 @@
+chat, battery                    -> LocalSmall
+  chat, charger                    -> LocalLarge
+  label, charger                   -> LocalSmall
+  plan                             -> Commercial
+  plan, offline                    -> LocalSmall
+  plan, human-only                 -> LocalSmall
+  design, 0 failures               -> LocalLarge
+  design, 2 failures               -> Commercial
+  design, 2 failures, human-only   -> LocalSmall
+  plan, commercial switch off      -> LocalSmall

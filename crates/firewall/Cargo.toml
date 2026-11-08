@@ -1,0 +1,6 @@
+[package]
+name = "agentos-firewall"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

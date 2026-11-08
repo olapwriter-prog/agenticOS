@@ -1,0 +1,6 @@
+[package]
+name = "agentos-hal"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

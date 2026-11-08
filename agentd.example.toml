@@ -1,0 +1,22 @@
+# Copy to agentd.toml and edit. Every key is optional.
+data_dir = "./agentd-data"        # vault, ledger, databases, contacts, anchor, control socket
+listen = "127.0.0.1:8765"         # MCP endpoint (POST /mcp). Keep on loopback.
+allowed_origins = []              # browser origins allowed to call it; empty = command-line clients only
+# small_url = "http://127.0.0.1:8080"   # llama-server for the small local model
+# large_url = "http://127.0.0.1:8081"   # llama-server for the large local model
+commercial_enabled = false        # needs a key: agentd set-commercial-key
+commercial_model = "claude-sonnet-5-5"
+online = true
+idle_secs = 120                   # Active -> Asleep after this much silence
+anchor_secs = 600                 # save a ledger anchor this often
+utc_offset_minutes = 330          # for quiet hours (India)
+quiet_start_min = 1320            # 22:00
+quiet_end_min = 420               # 07:00
+daily_budget = 5
+# power_dir = "/sys/class/power_supply/BAT0"   # real battery; omit to simulate
+real_hardware = false             # true writes the real cgroup and cpufreq trees
+kdf_mib = 32                      # vault cost; raise on the phone
+phone = "sim"                     # "modemmanager" on a real phone
+# leds_dir = "/sys/class/leds"
+phone_poll_secs = 2               # how often to look for incoming calls and texts
+# control_socket = "/run/agentd.sock"   # default: control.sock in data_dir

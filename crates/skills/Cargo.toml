@@ -1,0 +1,16 @@
+[package]
+name = "agentos-skills"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-executor = { path = "../executor" }
+agentos-action = { path = "../action" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+agentos-connectors = { path = "../connectors" }
+agentos-gate = { path = "../gate" }
+agentos-store = { path = "../store" }
+agentos-hal = { path = "../hal" }

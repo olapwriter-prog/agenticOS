@@ -1,0 +1,15 @@
+[package]
+name = "agentos-mcp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-executor = { path = "../executor" }
+agentos-action = { path = "../action" }
+serde_json = "1"
+
+[dev-dependencies]
+agentos-connectors = { path = "../connectors" }
+agentos-gate = { path = "../gate" }
+agentos-store = { path = "../store" }
+agentos-hal = { path = "../hal" }

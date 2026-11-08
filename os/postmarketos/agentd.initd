@@ -1,0 +1,35 @@
+#!/sbin/openrc-run
+# agentd: the agent that runs the phone. Starts after the modem, network and audio services.
+
+name="agentd"
+description="Agentic OS phone daemon"
+command="/usr/bin/agentd"
+command_args="run -c ${AGENTD_CONFIG:-/etc/agentd/agentd.toml}"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/agentd.log"
+error_log="/var/log/agentd.log"
+: ${AGENTD_PASSPHRASE_FILE:=/etc/agentd/passphrase}
+export AGENTD_PASSPHRASE_FILE
+
+depend() {
+	need dbus localmount
+	want modemmanager networkmanager feedbackd callaudiod
+	after modemmanager networkmanager bootmisc
+	use logger
+}
+
+start_pre() {
+	checkpath -d -m 0700 -o root:root /var/lib/agentd
+	checkpath -d -m 0700 -o root:root /etc/agentd
+	# First boot: a random vault passphrase, then the vault and the MCP bearer token.
+	if [ ! -s "$AGENTD_PASSPHRASE_FILE" ]; then
+		einfo "Creating the vault passphrase"
+		( umask 077; head -c 32 /dev/urandom | base64 > "$AGENTD_PASSPHRASE_FILE" )
+	fi
+	if [ ! -e /var/lib/agentd/vault.bin ] && [ ! -s /etc/agentd/gateway-token ]; then
+		einfo "Creating the vault; the MCP token is in /etc/agentd/gateway-token"
+		( umask 077; $command init -c "${AGENTD_CONFIG:-/etc/agentd/agentd.toml}" \
+			| tail -n 1 > /etc/agentd/gateway-token ) || return 1
+	fi
+}

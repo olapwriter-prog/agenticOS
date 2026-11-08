@@ -1,0 +1,6 @@
+[package]
+name = "agentos-stage"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

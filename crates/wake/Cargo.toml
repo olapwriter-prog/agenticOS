@@ -1,0 +1,7 @@
+[package]
+name = "agentos-wake"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-hal = { path = "../hal" }

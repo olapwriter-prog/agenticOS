@@ -1,0 +1,8 @@
+[package]
+name = "agentos-connectors"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-executor = { path = "../executor" }
+agentos-action = { path = "../action" }

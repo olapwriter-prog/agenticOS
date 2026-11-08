@@ -1,0 +1,6 @@
+# Configuration for /etc/init.d/agentd
+#AGENTD_CONFIG=/etc/agentd/agentd.toml
+# Root-only file holding the vault passphrase. Created on first start if missing.
+# Install postmarketOS with full-disk encryption (pmbootstrap install --fde) so this file
+# is not readable from a stolen phone.
+#AGENTD_PASSPHRASE_FILE=/etc/agentd/passphrase

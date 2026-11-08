@@ -1,0 +1,15 @@
+[package]
+name = "agentos-forge"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-sandbox = { path = "../sandbox" }
+agentos-executor = { path = "../executor" }
+agentos-action = { path = "../action" }
+
+[dev-dependencies]
+wat = "1"
+agentos-gate = { path = "../gate" }
+agentos-store = { path = "../store" }
+agentos-hal = { path = "../hal" }

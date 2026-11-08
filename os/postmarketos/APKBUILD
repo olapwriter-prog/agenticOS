@@ -1,0 +1,59 @@
+# Maintainer: M V Raghunadh <olapwriter@gmail.com>
+#
+# agentd for postmarketOS: the whole phone as one headless, agent-driven daemon.
+# Build from a local checkout with:
+#   pmbootstrap build agentd --arch aarch64 --src=/path/to/agenticOS
+pkgname=agentd
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Agentic OS: a headless phone driven by an on-device agent (calls, SMS, Wi-Fi, MCP)"
+url="https://github.com/olapwriter-prog/agenticOS"
+arch="aarch64 armv7 x86_64"
+license="Apache-2.0"
+# The phone's hardware is reached through these services; agentd shells out to their CLIs.
+depends="
+	callaudiod
+	dbus
+	feedbackd
+	modemmanager
+	networkmanager
+	networkmanager-cli
+	networkmanager-wifi
+	networkmanager-wwan
+	pipewire
+	wireplumber
+	"
+makedepends="cargo cargo-auditable"
+subpackages="$pkgname-openrc"
+source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
+	agentd.initd
+	agentd.confd
+	agentd.toml
+	"
+builddir="$srcdir/agenticOS-$pkgver"
+options="net" # cargo fetches crates
+
+prepare() {
+	default_prepare
+	# Alpine ships its own rustc; the pinned toolchain file is for developer machines.
+	rm -f rust-toolchain.toml
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen -p agentd
+}
+
+check() {
+	cargo test --frozen -p agentos-phone -p agentd
+}
+
+package() {
+	install -Dm755 target/release/agentd "$pkgdir"/usr/bin/agentd
+	install -Dm644 "$srcdir"/agentd.toml "$pkgdir"/etc/agentd/agentd.toml
+	install -Dm755 "$srcdir"/agentd.initd "$pkgdir"/etc/init.d/agentd
+	install -Dm644 "$srcdir"/agentd.confd "$pkgdir"/etc/conf.d/agentd
+	install -dm700 "$pkgdir"/var/lib/agentd
+}
+
+sha512sums="SKIP"

@@ -1,0 +1,33 @@
+[package]
+name = "agentd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-ledger = { path = "../ledger" }
+agentos-hal = { path = "../hal" }
+agentos-stage = { path = "../stage" }
+agentos-kerneld = { path = "../kerneld" }
+agentos-freeze = { path = "../freeze" }
+agentos-power = { path = "../power" }
+agentos-router = { path = "../router" }
+agentos-action = { path = "../action" }
+agentos-firewall = { path = "../firewall" }
+agentos-gate = { path = "../gate" }
+agentos-store = { path = "../store" }
+agentos-brain = { path = "../brain" }
+agentos-host = { path = "../host" }
+agentos-executor = { path = "../executor" }
+agentos-connectors = { path = "../connectors" }
+agentos-intents = { path = "../intents" }
+agentos-status = { path = "../status" }
+agentos-notify = { path = "../notify" }
+agentos-vault = { path = "../vault" }
+agentos-gateway = { path = "../gateway" }
+agentos-commercial = { path = "../commercial" }
+agentos-update = { path = "../update" }
+agentos-phone = { path = "../phone" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+getrandom = "0.2"

@@ -1,0 +1,8 @@
+[package]
+name = "agentos-status"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-stage = { path = "../stage" }
+agentos-hal = { path = "../hal" }
