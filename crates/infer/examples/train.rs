@@ -30,14 +30,17 @@ fn main() {
             let prompt = format!("<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\nring ravi<|im_end|>\n<|im_start|>assistant\n");
             let (tokens, train) = example(&tok, &prompt, r#"{"tool":"call","args":{"to":"ravi"}}"#);
             let ad = Adapter::new(&m, 8, 16.0, 1).unwrap();
-            let tr = Trainer::new(&m);
-            for _ in 0..2 {
+            let mut tr = Trainer::new(&m);
+            println!("{} tokens: all activations would take {} MiB", tokens.len(), tr.saved_bytes(tokens.len()) >> 20);
+            for budget in [usize::MAX, 0] {
+                tr.budget = budget;
                 let t0 = Instant::now();
                 let (l, _) = tr.loss(&ad, &tokens, &train, false);
                 let t1 = Instant::now();
                 let (_, g) = tr.loss(&ad, &tokens, &train, true);
                 assert!(g.is_some());
-                println!("{} tokens: forward {:?}, forward+backward {:?} (loss {l:.3})", tokens.len(), t1 - t0, t1.elapsed());
+                let how = if tr.checkpoints(tokens.len()) { "recomputing layers" } else { "keeping activations" };
+                println!("{how}: forward {:?}, forward+backward {:?} (loss {l:.3})", t1 - t0, t1.elapsed());
                 let p = &agentos_infer::model::PROFILE;
                 println!("  of which quantized matmul {:.2}s", p[0].swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
             }
@@ -80,8 +83,10 @@ fn gradcheck(m: &Model, tok: &Tokenizer) {
     println!("loss+grads in {:?}", t0.elapsed());
     let gr = gr.unwrap();
     let mut worst = 0f32;
-    let last = m.cfg.n_layer - 1;
-    for key in [(0, Target::Q), (0, Target::V), (last / 2, Target::K), (last, Target::O)] {
+    // first, middle and last attention layers (on Qwen3.5 only every fourth layer has one)
+    let layers: Vec<usize> = ad.pairs.keys().map(|k| k.0).collect();
+    let (first, mid, last) = (layers[0], layers[layers.len() / 2], layers[layers.len() - 1]);
+    for key in [(first, Target::Q), (first, Target::V), (mid, Target::K), (last, Target::O)] {
         for (which, idx) in [(0usize, 3usize), (0, 101), (1, 5), (1, 77)] {
             let h: f32 = std::env::var("H").ok().and_then(|s| s.parse().ok()).unwrap_or(1e-2);
             let mut plus = ad.clone();

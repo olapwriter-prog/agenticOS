@@ -22,6 +22,8 @@ pub struct Job {
     pub holdout: usize,
     /// stop (with a checkpoint) after this long; run again to continue
     pub max_secs: Option<u64>,
+    /// bytes of saved activations per example before layers are recomputed instead
+    pub memory: usize,
 }
 
 impl Default for Job {
@@ -37,6 +39,7 @@ impl Default for Job {
             lr: 1e-3,
             holdout: 5,
             max_secs: None,
+            memory: 256 << 20,
         }
     }
 }
@@ -205,7 +208,8 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
             save(&ad, step)?;
             return Ok(json!({"done": false, "step": step, "steps": job.steps, "loss": last_loss}));
         }
-        let tr = Trainer::new(&e.model);
+        let mut tr = Trainer::new(&e.model);
+        tr.budget = job.memory;
         let mut acc: Option<Grads> = None;
         let mut total = 0.0;
         let b = job.batch.max(1).min(examples.len());

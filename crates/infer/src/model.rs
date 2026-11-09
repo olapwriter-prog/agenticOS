@@ -88,7 +88,7 @@ pub(crate) struct Layer {
     pub(crate) ssm_alpha: Option<TensorInfo>,
     pub(crate) ssm_beta: Option<TensorInfo>,
     pub(crate) ssm_out: Option<TensorInfo>,
-    conv1d: Vec<f32>,
+    pub(crate) conv1d: Vec<f32>,
     pub(crate) dt_bias: Vec<f32>,
     pub(crate) ssm_a: Vec<f32>,
     pub(crate) ssm_norm: Vec<f32>,
@@ -203,7 +203,7 @@ pub(crate) fn silu(x: f32) -> f32 {
 pub(crate) fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
-fn softplus(x: f32) -> f32 {
+pub(crate) fn softplus(x: f32) -> f32 {
     if x > 20.0 {
         x
     } else {

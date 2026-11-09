@@ -197,7 +197,8 @@ fn serve_one(e: &mut Engine, conn: TcpStream) {
 }
 
 /// `agentos-llm train -m MODEL --data sft.jsonl --out adapter.lora [--grammar FILE]
-/// [--steps N] [--batch N] [--rank N] [--lr X] [--max-seconds N] [-t N]`
+/// [--steps N] [--batch N] [--rank N] [--lr X] [--max-seconds N] [--memory-mb N] [-t N]`
+/// `--memory-mb`: activations kept per example; longer examples recompute layers instead.
 /// Prints progress on stderr and one JSON summary line on stdout.
 fn train_main(v: &[String]) -> Result<(), String> {
     use agentos_infer::finetune::{run, Job};
@@ -220,6 +221,7 @@ fn train_main(v: &[String]) -> Result<(), String> {
             "--rank" => job.rank = num(i)? as usize,
             "--lr" => job.lr = num(i)? as f32,
             "--max-seconds" => job.max_secs = Some(num(i)? as u64),
+            "--memory-mb" => job.memory = (num(i)? * 1048576.0) as usize,
             "-t" | "--threads" => {
                 let _ = rayon::ThreadPoolBuilder::new().num_threads(num(i)? as usize).build_global();
             }
