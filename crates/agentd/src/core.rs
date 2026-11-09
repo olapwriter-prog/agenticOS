@@ -629,6 +629,10 @@ impl Core {
     /// A question the classifier recognises, answered by exact code over all the data, with no
     /// LLM. None if it is not such a question or a detail (who?) is missing.
     fn answer_by_code(&mut self, text: &str) -> Option<String> {
+        // a phrase the phone knows exactly ("messages from mum") is a request, not a question
+        if self.intents.resolve(text).is_some() {
+            return None;
+        }
         let (label, _) = self.classifier.decide(text, crate::qa::CONFIDENCE)?;
         if !label.starts_with("q.") {
             return None;
@@ -1332,10 +1336,14 @@ impl Core {
             let _ = self.kernel.record(&ledger);
             let line = format!("{}: {} from {}", note.app, note.text, note.sender);
             match self.notifier.offer(note, self.minute_of_day()) {
-                Decision::Deliver => {
-                    let _ = self.phone.borrow_mut().backend.feedback(feedback);
-                    said.push(format!("{line} (alerted)"));
-                }
+                Decision::Deliver => match self.phone.borrow_mut().backend.feedback(feedback) {
+                    Ok(()) => said.push(format!("{line} (alerted)")),
+                    // no sound or vibration reached the human: say so, do not claim it did
+                    Err(e) => {
+                        let _ = self.kernel.record(&format!("{ledger}: alert failed"));
+                        said.push(format!("{line} (alert failed: {e})"));
+                    }
+                },
                 Decision::Hold => said.push(format!("{line} (held for the digest)")),
             }
         }

@@ -102,11 +102,14 @@ ssh -L 8765:127.0.0.1:8765 user@172.16.42.1
 Before a phone, run agentd's real hardware backend on the simulated phone (`crates/phonesim`):
 fake `mmcli`, `nmcli`, `callaudiocli`, `fbcli` and `wpctl` on one phone state, ModemManager's
 signals on a private D-Bus daemon, a volume-down key device and a flash LED. The script starts
-the audio session as the `agentd-session` user, agentd with `phone = "modemmanager"`, and checks
-incoming texts and calls, the approval key, call audio, volume, torch and the polling fallback
-(Linux, as root, with dbus-daemon, dbus-monitor, dbus-send and setpriv):
+the audio session as the `agentd-session` user and agentd with `phone = "modemmanager"`, and runs
+every phone scenario: status, contacts, texts in and out (including one arriving in parts), calls
+in, out, waiting, declined and missed, the approval key, USSD, Wi-Fi, mobile data, airplane mode,
+no service, location, torch, volume, MCP clients, the watcher, modem, NetworkManager or audio
+session going away, a restart, quiet hours and the alert budget (Linux, as root, with
+dbus-daemon, dbus-monitor, dbus-send and setpriv):
 ```bash
-sudo scripts/phonesim-phase4.sh          # 24 checks; logs in /tmp/agentd-phonesim
+sudo scripts/phonesim-scenarios.sh       # 145 checks; -v prints each reply; logs in /tmp/agentd-phonesim
 ```
 
 Rebuild only the binary on your Mac and push it over USB networking:

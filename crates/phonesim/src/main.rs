@@ -26,6 +26,12 @@
 //!   agentos-phonesim hangup [ID]           the other side hangs up (default: the last call)
 //!   agentos-phonesim pickup [ID]           the other side answers our call
 //!   agentos-phonesim key MS [CODE]         hold a key (default 114, volume down) for MS ms
+//!   agentos-phonesim waiting NUMBER        a second call comes in during one (call waiting)
+//!   agentos-phonesim sms-parts NUMBER TEXT a long text starts arriving (state "receiving")
+//!   agentos-phonesim sms-complete ID TEXT  ... and the rest of it arrives
+//!   agentos-phonesim service on|off        the network: registered, or searching (no service)
+//!   agentos-phonesim fail mmcli|nmcli on|off   the modem or NetworkManager gone
+//!   agentos-phonesim gps fix|cell|none     what --location-get reports
 //!   agentos-phonesim state | log | stop
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -76,6 +82,19 @@ struct State {
     volume: f32,
     feedback: Vec<String>,
     gps: (String, String),
+    #[serde(default = "yes")]
+    service: bool,
+    #[serde(default)]
+    fail: Vec<String>,
+    #[serde(default = "fix")]
+    gps_mode: String,
+}
+
+fn yes() -> bool {
+    true
+}
+fn fix() -> String {
+    "fix".into()
 }
 
 impl Default for State {
@@ -98,6 +117,9 @@ impl Default for State {
             volume: 0.5,
             feedback: vec![],
             gps: ("12.9716".into(), "77.5946".into()),
+            service: true,
+            fail: vec![],
+            gps_mode: fix(),
         }
     }
 }
@@ -215,6 +237,10 @@ fn now() -> String {
 
 fn mmcli(args: &[String]) -> Result<String, String> {
     let mut l = Locked::open();
+    if l.s.fail.iter().any(|t| t == "mmcli") {
+        return Err("couldn't find modem".into());
+    }
+    let on_air = l.s.radios_on && l.s.service;
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let id_of = |s: &str| s.parse::<u32>().map_err(|_| format!("couldn't find object '{s}'"));
     let out = match a.as_slice() {
@@ -222,6 +248,8 @@ fn mmcli(args: &[String]) -> Result<String, String> {
             let s = &l.s;
             let state = if !s.radios_on {
                 "disabled"
+            } else if !s.service {
+                "searching"
             } else if s.data_up {
                 "connected"
             } else {
@@ -233,7 +261,7 @@ fn mmcli(args: &[String]) -> Result<String, String> {
             )
         }
         ["-m", "any", create] if create.starts_with("--voice-create-call=number=") => {
-            if !l.s.radios_on {
+            if !on_air {
                 return Err("couldn't create call: modem is not registered".into());
             }
             let number = &create["--voice-create-call=number=".len()..];
@@ -255,7 +283,7 @@ fn mmcli(args: &[String]) -> Result<String, String> {
                     set_call_state(&mut l.s, id, "ringing-out");
                     "successfully started the call\n".into()
                 }
-                "--accept" if c.state == "ringing-in" => {
+                "--accept" if c.state == "ringing-in" || c.state == "waiting" => {
                     set_call_state(&mut l.s, id, "active");
                     "successfully accepted the call\n".into()
                 }
@@ -311,6 +339,9 @@ fn mmcli(args: &[String]) -> Result<String, String> {
             o
         }
         ["-m", "any", u] if u.starts_with("--3gpp-ussd-initiate=") => {
+            if !on_air {
+                return Err("couldn't initiate USSD session: modem is not registered".into());
+            }
             let code = &u["--3gpp-ussd-initiate=".len()..];
             match code {
                 "*123#" => "USSD session initiated; new reply from network: 'Main balance Rs 142.50, valid till 30-11-2026'\n".into(),
@@ -319,10 +350,18 @@ fn mmcli(args: &[String]) -> Result<String, String> {
             }
         }
         ["-m", "any", "--location-enable-gps-raw", "--location-enable-gps-nmea"] => "successfully setup location gathering\n".into(),
-        ["-m", "any", "--location-get", "-K"] => format!(
-            "modem.location.3gpp.mcc : 404\nmodem.location.3gpp.mnc : 45\nmodem.location.3gpp.lac : 1A2B\nmodem.location.3gpp.cid : 0042F1\nmodem.location.gps.latitude : {}\nmodem.location.gps.longitude : {}\n",
-            l.s.gps.0, l.s.gps.1
-        ),
+        ["-m", "any", "--location-get", "-K"] => {
+            let (cell, gps) = match l.s.gps_mode.as_str() {
+                "fix" => (true, true),
+                "cell" => (true, false),
+                _ => (false, false),
+            };
+            let v = |ok: bool, s: &str| if ok { s.to_string() } else { "--".into() };
+            format!(
+                "modem.location.3gpp.mcc : {}\nmodem.location.3gpp.mnc : {}\nmodem.location.3gpp.lac : {}\nmodem.location.3gpp.cid : {}\nmodem.location.gps.latitude : {}\nmodem.location.gps.longitude : {}\n",
+                v(cell, "404"), v(cell, "45"), v(cell, "1A2B"), v(cell, "0042F1"), v(gps, &l.s.gps.0), v(gps, &l.s.gps.1)
+            )
+        }
         _ => return Err(format!("phonesim mmcli: unsupported arguments {a:?}")),
     };
     l.save();
@@ -335,6 +374,9 @@ fn nm_escape(s: &str) -> String {
 
 fn nmcli(args: &[String]) -> Result<String, String> {
     let mut l = Locked::open();
+    if l.s.fail.iter().any(|t| t == "nmcli") {
+        return Err("Error: NetworkManager is not running.".into());
+    }
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let on = |b: bool| if b { "enabled" } else { "disabled" };
     let out = match a.as_slice() {
@@ -598,6 +640,55 @@ fn control(args: &[String]) {
             signal(&format!("{MM}/Modem/0"), "org.freedesktop.ModemManager1.Modem.Messaging.Added", &[format!("objpath:{MM}/SMS/{id}"), "boolean:true".into()]);
             println!("sms {id} from {number}");
         }
+        ["waiting", number] => {
+            let mut l = Locked::open();
+            let id = l.s.next_id;
+            l.s.next_id += 1;
+            l.s.calls.insert(id, Call { number: number.to_string(), direction: "incoming".into(), state: "waiting".into() });
+            l.save();
+            call_added(id);
+            println!("call {id} waiting from {number}");
+        }
+        ["sms-parts", number, text @ ..] if !text.is_empty() => {
+            let mut l = Locked::open();
+            let id = l.s.next_id;
+            l.s.next_id += 1;
+            l.s.sms.insert(id, Sms { number: number.to_string(), text: text.join(" "), pdu_type: "deliver".into(), state: "receiving".into(), timestamp: now() });
+            l.save();
+            signal(&format!("{MM}/Modem/0"), "org.freedesktop.ModemManager1.Modem.Messaging.Added", &[format!("objpath:{MM}/SMS/{id}"), "boolean:true".into()]);
+            println!("sms {id} from {number}, first part");
+        }
+        ["sms-complete", id, text @ ..] => {
+            let mut l = Locked::open();
+            let id: u32 = id.parse().unwrap_or_else(|_| die("bad id"));
+            let m = l.s.sms.get_mut(&id).unwrap_or_else(|| die("no such SMS"));
+            m.text = format!("{} {}", m.text, text.join(" "));
+            m.state = "received".into();
+            l.save();
+            // ModemManager announces the new State as a property change on the SMS object.
+            // (dbus-send cannot build the a{sv} argument; the interface name, which is what
+            // a match rule's arg0 looks at, is the real one.)
+            signal(&format!("{MM}/SMS/{id}"), "org.freedesktop.DBus.Properties.PropertiesChanged", &["string:org.freedesktop.ModemManager1.Sms".into()]);
+            println!("sms {id} complete");
+        }
+        ["service", v @ ("on" | "off")] => {
+            let mut l = Locked::open();
+            l.s.service = *v == "on";
+            l.save();
+        }
+        ["fail", tool @ ("mmcli" | "nmcli"), v @ ("on" | "off")] => {
+            let mut l = Locked::open();
+            l.s.fail.retain(|t| t != tool);
+            if *v == "on" {
+                l.s.fail.push(tool.to_string());
+            }
+            l.save();
+        }
+        ["gps", m @ ("fix" | "cell" | "none")] => {
+            let mut l = Locked::open();
+            l.s.gps_mode = m.to_string();
+            l.save();
+        }
         [op @ ("hangup" | "pickup"), rest @ ..] => {
             let mut l = Locked::open();
             let id = rest.first().map(|s| s.parse().unwrap_or_else(|_| die("bad id"))).unwrap_or_else(|| last_call(&l.s));
@@ -619,7 +710,7 @@ fn control(args: &[String]) {
             println!("{}", serde_json::to_string_pretty(&v).unwrap());
         }
         ["log"] => print!("{}", std::fs::read_to_string(dir().join("hw.log")).unwrap_or_default()),
-        _ => die("usage: agentos-phonesim init|call N|sms N TEXT|hangup [ID]|pickup [ID]|key MS [CODE]|state|log|stop"),
+        _ => die("usage: agentos-phonesim init|call N|sms N TEXT|hangup [ID]|pickup [ID]|key MS [CODE]|waiting N|sms-parts N TEXT|sms-complete ID TEXT|service on|off|fail mmcli|nmcli on|off|gps fix|cell|none|state|log|stop"),
     }
 }
 

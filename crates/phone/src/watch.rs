@@ -19,10 +19,12 @@ pub enum Signal {
 }
 
 /// The match rules given to dbus-monitor.
-pub const RULES: [&str; 3] = [
+pub const RULES: [&str; 4] = [
     "type='signal',interface='org.freedesktop.ModemManager1.Modem.Voice',member='CallAdded'",
     "type='signal',interface='org.freedesktop.ModemManager1.Modem.Messaging',member='Added'",
     "type='signal',interface='org.freedesktop.ModemManager1.Call',member='StateChanged'",
+    // a text that arrived in parts is whole when its State property changes to received
+    "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.ModemManager1.Sms'",
 ];
 
 /// Which signal a dbus-monitor header line is, if it is one of ours.
@@ -39,6 +41,11 @@ pub fn wake_of(line: &str) -> Option<&'static str> {
         ("org.freedesktop.ModemManager1.Modem.Voice", "CallAdded") => Some("call"),
         ("org.freedesktop.ModemManager1.Modem.Messaging", "Added") => Some("sms"),
         ("org.freedesktop.ModemManager1.Call", "StateChanged") => Some("call-state"),
+        ("org.freedesktop.DBus.Properties", "PropertiesChanged")
+            if field("path=").starts_with("/org/freedesktop/ModemManager1/SMS/") =>
+        {
+            Some("sms-state")
+        }
         _ => None,
     }
 }
@@ -102,6 +109,9 @@ mod tests {
         assert_eq!(wake_of(&other), None);
         let props = "signal time=1 sender=:1.7 -> destination=(null destination) serial=9 path=/org/freedesktop/ModemManager1/Modem/0; interface=org.freedesktop.DBus.Properties; member=PropertiesChanged";
         assert_eq!(wake_of(props), None);
+        // ... but a text's own property change (it finished arriving) is
+        let sms = props.replace("Modem/0", "SMS/4");
+        assert_eq!(wake_of(&sms), Some("sms-state"));
     }
 
     #[test]

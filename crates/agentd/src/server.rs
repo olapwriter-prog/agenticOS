@@ -132,7 +132,12 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
                 };
                 let (rt, rr) = channel();
                 if txw.send(Cmd::Ctl(format!("phone-signal {what}"), rt)).is_ok() {
-                    let _ = rr.recv();
+                    // what arrived, for the log (a headless phone's only record besides the ledger)
+                    if let Ok(said) = rr.recv() {
+                        if said != "nothing new" {
+                            eprintln!("agentd: phone ({what}): {}", said.replace('\n', "; "));
+                        }
+                    }
                 }
             });
         }

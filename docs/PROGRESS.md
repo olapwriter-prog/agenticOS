@@ -57,8 +57,18 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 - Still open: Qwen3.5-4B training run and its timing on a phone; the AdamW moments are not checkpointed, so a resumed job restarts them.
 
 ## Phase 4 on the simulated phone (2026-11-09)
-`scripts/phonesim-phase4.sh`: agentd with `phone = "modemmanager"` on `crates/phonesim`, 24 of 24 checks pass (run three times).
+First run (since replaced by the full scenario set below): 24 of 24 checks pass (run three times).
 - Texts, incoming calls and missed calls are seen 5–115 ms after they happen, from ModemManager signals through a real dbus-monitor (the backup poll was every 60 s). With the monitor killed, a text was seen after ~1.6 s by the 2 s poll, and the monitor was back within 11 s.
 - Approval key: a 300 ms press approved nothing; a 2.5 s hold approved the one waiting call, which then dialled once through mmcli; with two actions waiting, a hold approved neither.
 - callaudiocli, fbcli and wpctl ran as the agentd-session user inside its session bus (started by `agentd-session.sh`); as root they fail, as the real tools do.
 - Not simulated: PipeWire, callaudiod and feedbackd themselves (the tools only check that the session bus is reachable), a real modem's timing and its error cases.
+
+## Every phone scenario on the simulated phone (2026-11-09)
+`scripts/phonesim-scenarios.sh`: 145 of 145 checks pass (run twice), over six boots of agentd with `phone = "modemmanager"`:
+1. boot: texts and calls already on the modem are not announced; 2. status (normal, no service, NetworkManager gone); 3. contacts (save, update, find, unknown, bad number, kept on disk); 4. texts in (signal, name or number, read, per person, one arriving in parts); 5. calls in (answer, call waiting, hang up, decline, missed, nothing to answer or end, call log); 6. calls out and the approval key (short press, other key, hold, nothing waiting, two waiting, press N, unknown name); 7. texts out (quotes and `&` reach the modem intact, never on a command line); 8. USSD, Wi-Fi (scan, wrong password, unknown network, join), mobile data, airplane mode (no scan, data, USSD or calls), no service; 9. location (GPS, cell only, none), torch, volume (0, 30, out of range, not a number), find my phone; 10. MCP client (approval by the key, open Wi-Fi, no token); 11. watcher killed and restarted; 12. modem and NetworkManager gone and back; 13. audio session gone and back; 14. session tools refuse root; 15. restart; 16. quiet hours; 17. daily alert budget; 18. no watcher; 19. no key device.
+
+Found and fixed by these runs:
+- A long text arriving in parts was announced half-finished ("Meet me at") and the whole text never was. The backend now leaves texts in state `receiving`, and the watcher wakes on the text's own PropertiesChanged (State) signal, so the whole text is announced once, as soon as it is complete.
+- With the audio session down, an alert that never sounded was logged "(alerted)". It now says "(alert failed: ...)" and the ledger records the failed alert.
+- "messages from mum" was taken by the code-first question layer and answered wrongly ("1 text came from numbers not in your contacts"); a phrase the phone knows exactly now goes to its tool first, as commands already did.
+- Behaviour seen and left as is: a call or text to an unknown name still asks for approval and fails after it (the approval is used up); an approval is also used up by a call that fails (airplane mode); volume above 100 is refused, not clamped.

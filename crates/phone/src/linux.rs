@@ -297,6 +297,11 @@ impl Backend for Linux {
         let mut out = Vec::new();
         for id in object_ids(&list, "SMS") {
             let s = kv(&self.mm(&["-s", &id, "-K"])?);
+            // a long text arrives in parts: leave it until it is whole (its State then changes
+            // to received, which the D-Bus watcher sees, so it is not left for long)
+            if get(&s, "sms.properties.state") == "receiving" {
+                continue;
+            }
             out.push(Sms {
                 number: get(&s, "sms.content.number").to_string(),
                 text: get(&s, "sms.content.text").to_string(),
@@ -542,6 +547,17 @@ mod tests {
         assert!(c[0].incoming);
         assert_eq!(c[0].state, CallState::Ringing);
         assert_eq!(c[0].number, "+919876543210");
+    }
+    #[test]
+    fn a_text_still_arriving_in_parts_is_left_until_it_is_whole() {
+        let (mut l, _) = linux(vec![
+            ("mmcli -m any --messaging-list-sms", "Found 2 SMS messages:\n\t/org/freedesktop/ModemManager1/SMS/1 (received)\n\t/org/freedesktop/ModemManager1/SMS/2 (receiving)\n"),
+            ("mmcli -s 1 -K", "sms.content.number : +919876543210\nsms.content.text : hi\nsms.properties.pdu-type : deliver\nsms.properties.state : received\n"),
+            ("mmcli -s 2 -K", "sms.content.number : +919876543210\nsms.content.text : Meet me at\nsms.properties.pdu-type : deliver\nsms.properties.state : receiving\n"),
+        ]);
+        let m = l.messages().unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].text, "hi");
     }
     #[test]
     fn status_combines_modem_and_network_manager() {
