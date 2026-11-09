@@ -158,6 +158,7 @@ cp agentd.example.toml agentd.toml
 |---|---|
 | `crates/agentd` | The daemon: wires everything together, MCP over HTTP, control socket |
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
+| `crates/phonesim` | **Simulated phone**: fake mmcli/nmcli/callaudiocli/fbcli/wpctl, ModemManager signals on a private D-Bus, a key device; `scripts/phonesim-phase4.sh` runs agentd's real backend on it |
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
 | `crates/infer` | **agentos-llm**: GGUF, BPE tokenizer, Qwen2/3/3.5 forward pass, NEON kernels, grammar, server |

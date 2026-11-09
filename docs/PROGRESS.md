@@ -55,3 +55,10 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 - Training Qwen2.5-0.5B, rank 8, 30 steps of batch 2 (60 example passes, about 1.25 epochs): loss 0.35 → 0.03–0.07; held-out score 46% → 67%, adapter kept by the gate. 7,538 s in all, including judging before and after.
 - Speed on this VM, 743-token example: forward 59 s, forward+backward 137 s keeping activations (986 MiB), 194 s recomputing layers (+42%). The forward is the engine's prompt-reading speed (~12 tok/s here), so faster prompt reading speeds training as much as answering.
 - Still open: Qwen3.5-4B training run and its timing on a phone; the AdamW moments are not checkpointed, so a resumed job restarts them.
+
+## Phase 4 on the simulated phone (2026-11-09)
+`scripts/phonesim-phase4.sh`: agentd with `phone = "modemmanager"` on `crates/phonesim`, 24 of 24 checks pass (run three times).
+- Texts, incoming calls and missed calls are seen 5–115 ms after they happen, from ModemManager signals through a real dbus-monitor (the backup poll was every 60 s). With the monitor killed, a text was seen after ~1.6 s by the 2 s poll, and the monitor was back within 11 s.
+- Approval key: a 300 ms press approved nothing; a 2.5 s hold approved the one waiting call, which then dialled once through mmcli; with two actions waiting, a hold approved neither.
+- callaudiocli, fbcli and wpctl ran as the agentd-session user inside its session bus (started by `agentd-session.sh`); as root they fail, as the real tools do.
+- Not simulated: PipeWire, callaudiod and feedbackd themselves (the tools only check that the session bus is reachable), a real modem's timing and its error cases.

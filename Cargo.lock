@@ -285,6 +285,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-phonesim"
+version = "0.1.0"
+dependencies = [
+ "agentos-phone",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "agentos-photos"
 version = "0.1.0"
 

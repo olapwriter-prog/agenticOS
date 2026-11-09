@@ -1,0 +1,17 @@
+[package]
+name = "agentos-phonesim"
+version.workspace = true
+edition.workspace = true
+description = "A simulated phone for running agentd's real hardware backend without a phone"
+
+[[bin]]
+name = "agentos-phonesim"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[dev-dependencies]
+agentos-phone = { path = "../phone" }
