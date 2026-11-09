@@ -61,6 +61,62 @@ pub fn phone(tool: &str, args: &[(&str, &str)]) -> Result<(), String> {
         Ok(())
     })
 }
+/// One text message, parsed from `all_messages` (a line `from NAME (NUMBER): TEXT`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Message {
+    /// true: they sent it to you; false: you sent it.
+    pub incoming: bool,
+    /// None when the number is not in your contacts.
+    pub name: Option<String>,
+    pub number: String,
+    pub text: String,
+}
+/// One call, parsed from `call_log` (a line `from NAME (NUMBER) STATE`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    /// true: they called you; false: you called them.
+    pub incoming: bool,
+    pub name: Option<String>,
+    pub number: String,
+    /// ringing, dialing, active, held or ended
+    pub state: String,
+}
+/// `NAME (NUMBER)rest` or `NUMBERrest` -> (name, number, rest)
+fn __agentos_who(s: &str, number_end: &str) -> (Option<String>, String, String) {
+    if let Some(open) = s.find(" (") {
+        if let Some(close) = s[open..].find(')') {
+            let close = open + close;
+            return (Some(s[..open].trim().to_string()), s[open + 2..close].to_string(), s[close + 1..].to_string());
+        }
+    }
+    let end = s.find(number_end).unwrap_or(s.len());
+    (None, s[..end].trim().to_string(), s[end..].to_string())
+}
+fn __agentos_dir(line: &str) -> Option<(bool, &str)> {
+    line.strip_prefix("from ").map(|r| (true, r)).or_else(|| line.strip_prefix("to ").map(|r| (false, r)))
+}
+/// Parse `all_messages` into records (lines that are not messages are skipped).
+pub fn messages(text: &str) -> Vec<Message> {
+    text.lines()
+        .filter_map(|line| {
+            let (incoming, rest) = __agentos_dir(line)?;
+            let (name, number, after) = __agentos_who(rest, ": ");
+            let text = after.strip_prefix(": ").or_else(|| after.strip_prefix(':')).unwrap_or(&after).to_string();
+            Some(Message { incoming, name, number, text })
+        })
+        .collect()
+}
+/// Parse `call_log` into records.
+pub fn calls(text: &str) -> Vec<Call> {
+    text.lines()
+        .filter_map(|line| {
+            let (incoming, rest) = __agentos_dir(line)?;
+            let (name, number, after) = __agentos_who(rest, " ");
+            let state = after.trim().to_string();
+            Some(Call { incoming, name, number, state })
+        })
+        .collect()
+}
 #[no_mangle]
 pub extern "C" fn alloc(len: i32) -> i32 {
     let mut v = Vec::<u8>::with_capacity(len.max(0) as usize);
@@ -520,6 +576,23 @@ mod tests {
             .unwrap_err();
         assert!(e.contains("f.rs:2:"), "{e}");
         assert!(!e.contains("HirId") && !e.contains("delayed bugs"), "{e}");
+    }
+    #[test]
+    fn the_harness_parses_messages_and_calls_into_records() {
+        let w = compiler("parse").compile(r#"fn run(args: &Args) -> Result<String, String> {
+    let m = messages(args.get("m")?);
+    let c = calls(args.get("c")?);
+    let contacts: std::collections::BTreeSet<String> =
+        m.iter().filter(|x| x.incoming).filter_map(|x| x.name.clone()).collect();
+    let strangers = m.iter().filter(|x| x.incoming && x.name.is_none()).count();
+    let ravi_called = c.iter().filter(|x| x.incoming && x.name.as_deref() == Some("Ravi K")).count();
+    Ok(format!("{}|{}|{}|{}|{}", contacts.len(), strangers, ravi_called, m[0].text, c[1].state))
+}"#).unwrap();
+        let mut args = std::collections::BTreeMap::new();
+        args.insert("m".to_string(), "from Mum (+91999): dinner: at 8?\nfrom Ravi K (+91888): hi\nto Mum (+91999): ok\nfrom +91800: sale!\nfrom Mum (+91999): milk".to_string());
+        args.insert("c".to_string(), "from Ravi K (+91888) ended\nto +91800 active\nno more".to_string());
+        // two contacts texted; one stranger; Ravi K called once; text keeps its colon; state parsed
+        assert_eq!(run(&w, &args).unwrap().result, "2|1|1|dinner: at 8?|active");
     }
     #[test]
     fn panics_and_runaway_loops_are_stopped() {

@@ -51,6 +51,8 @@ pub struct Core {
     functions: agentos_functions::Shared,
     /// Episodes and rewards: what the human approved, declined and corrected.
     learner: Learner,
+    /// What kind of request is this? Answers regular requests without the LLM (crate::qa).
+    classifier: agentos_understand::Classifier,
     /// The phrase table, to tell an intent from a request the model must answer.
     intents: agentos_intents::IntentTable,
     /// For judging a model on held-out episodes (`learn eval`).
@@ -288,6 +290,7 @@ impl Core {
             prio_error,
             functions,
             learner: Learner::open(dir.join("experience.jsonl"))?,
+            classifier: crate::qa::classifier(&[]),
             intents: default_intents(),
             grammar: grammar_copy,
             system: system_copy,
@@ -303,6 +306,7 @@ impl Core {
             fixed_minute_of_day: None,
         };
         let _ = core.kernel.record("agentd started");
+        core.retrain();
         core.phone.borrow_mut().poll(); // learn what is already in the inbox
         core.sync_models();
         core.save_anchor()?;
@@ -452,6 +456,11 @@ impl Core {
     /// Load read-only sources through the executor (Low tier only), then run the code over them
     /// in the sandbox. Only the answer comes back.
     fn analyze(&mut self, sources: &Value, code: &str, question: &str) -> Result<String, String> {
+        self.analyze_counted(sources, code, question).map(|(a, _)| a)
+    }
+
+    /// The same, also saying how many lines of data the code ran over.
+    fn analyze_counted(&mut self, sources: &Value, code: &str, question: &str) -> Result<(String, usize), String> {
         let sources = crate::analyst::parse_sources(sources)?;
         let mut data = std::collections::BTreeMap::new();
         for (tool, args) in &sources {
@@ -465,6 +474,7 @@ impl Core {
             data.insert(tool.clone(), text);
         }
         let compiler = self.functions.borrow().compiler.clone();
+        let lines = crate::analyst::data_lines(&data);
         let mut answer = crate::analyst::run(&compiler, code, question, data)?;
         if answer.len() > crate::analyst::MAX_ANSWER {
             answer.truncate(crate::analyst::MAX_ANSWER);
@@ -474,7 +484,7 @@ impl Core {
         let _ = self
             .kernel
             .record(&format!("analysis over {}", names.join(", ")));
-        Ok(answer)
+        Ok((answer, lines))
     }
 
     /// One line of plain language from the human.
@@ -495,7 +505,9 @@ impl Core {
     fn chat_inner(&mut self, text: &str) -> String {
         let now = self.clock.now_ms();
         if let Some(good) = feedback_of(text) {
-            return match self.learner.feedback(good, now) {
+            let said = self.learner.feedback(good, now);
+            self.retrain();
+            return match said {
                 Some(p) if good => format!("noted: {p:?} was right"),
                 Some(p) => format!(
                     "noted: {p:?} was wrong. Do it the right way now (say it differently) and I will learn from that"
@@ -512,6 +524,19 @@ impl Core {
                 .and_then(|j| self.engine.registry.parse(&j).ok())
             {
                 return self.act(text, a, "shortcut", now);
+            }
+        }
+        // a command the classifier recognises, with every detail found by rules: no LLM
+        if !is_intent {
+            if let Some((label, _)) = self.classifier.decide(text, crate::qa::CONFIDENCE) {
+                if !label.starts_with("q.") {
+                    let contacts = self.contact_names();
+                    if let Some(a) = crate::qa::command(&label, text, &contacts)
+                        .and_then(|j| self.engine.registry.parse(&j.to_string()).ok())
+                    {
+                        return self.act(text, a, "classifier", now);
+                    }
+                }
             }
         }
         let job = Job {
@@ -550,6 +575,45 @@ impl Core {
         }
     }
 
+    /// Rebuild the classifier from its seeds and every request the human confirmed. Cheap
+    /// (milliseconds), so it runs after each approval, decline or correction.
+    fn retrain(&mut self) {
+        let confirmed: Vec<(String, String)> = self
+            .learner
+            .episodes
+            .iter()
+            .filter_map(|e| {
+                let t = Learner::target(e)?;
+                let tool = serde_json::from_str::<Value>(t).ok()?["tool"].as_str()?.to_string();
+                Some((tool, e.prompt.clone()))
+            })
+            .collect();
+        self.classifier = crate::qa::classifier(&confirmed);
+    }
+
+    fn contact_names(&mut self) -> Vec<String> {
+        let (_, text) = self.call_tool("list_contacts", &[]);
+        agentos_understand::records::contacts(&text).into_iter().map(|(n, _)| n).collect()
+    }
+
+    /// A question the classifier recognises, answered by exact code over all the data, with no
+    /// LLM. None if it is not such a question or a detail (who?) is missing.
+    fn answer_by_code(&mut self, text: &str) -> Option<String> {
+        let (label, _) = self.classifier.decide(text, crate::qa::CONFIDENCE)?;
+        if !label.starts_with("q.") {
+            return None;
+        }
+        let (_, msgs) = self.call_tool("all_messages", &[]);
+        let (_, calls) = self.call_tool("call_log", &[]);
+        let (_, contacts) = self.call_tool("list_contacts", &[]);
+        let data = crate::qa::Data::parse(&msgs, &calls, &contacts);
+        let answer = crate::qa::answer(&label, text, &data)?;
+        let now = self.clock.now_ms();
+        let ep = self.learner.begin(now, text, &json!({"tool": label, "args": {}}).to_string(), "classifier");
+        self.learner.ran(ep, now, true);
+        Some(format!("answer: {answer}"))
+    }
+
     /// Carry out a chosen action and record how it went, for learning.
     fn act(&mut self, prompt: &str, a: agentos_action::Action, source: &str, now: u64) -> String {
         let ep = self
@@ -558,7 +622,11 @@ impl Core {
         let (ok, text) = self.call_tool(&a.tool, &a.args);
         match approval_id(&text) {
             Some(q) if !ok => self.learner.waiting(ep, q),
-            _ => self.learner.ran(ep, now, ok),
+            _ => {
+                self.learner.ran(ep, now, ok);
+                // a working action right after "that was wrong" is a correction: learn it
+                self.retrain();
+            }
         }
         if !ok {
             return format!("not done: {text}");
@@ -630,6 +698,13 @@ impl Core {
             }
             return;
         }
+        if let Some(text) = t.strip_prefix("chat ") {
+            self.touch();
+            if let Some(answer) = self.answer_by_code(text) {
+                let _ = reply.send(answer);
+                return;
+            }
+        }
         if let Some(q) = t
             .strip_prefix("chat ")
             .and_then(crate::analyst::question_of)
@@ -685,6 +760,7 @@ impl Core {
             timeout,
             schema,
             question,
+            rechecked: false,
         });
         self.prio.set_mode(self.baseline_mode());
         Ok(())
@@ -714,7 +790,19 @@ impl Core {
                             .map_err(|e| format!("your answer was not JSON: {e}"))
                             .and_then(|v| {
                                 let code = v["code"].as_str().unwrap_or_default().to_string();
-                                self.analyze(&v["sources"], &code, q)
+                                let q = q.clone();
+                                self.analyze_counted(&v["sources"], &code, &q)
+                            })
+                            .map(|(answer, lines)| {
+                                // "none" over data that has lines: one more look (not an attempt)
+                                if !job.rechecked && lines > 0 && crate::analyst::says_zero(&answer) {
+                                    job.rechecked = true;
+                                    job.messages.push(("user".into(), crate::analyst::zero_feedback(&answer, lines)));
+                                    job.rx = crate::coder::generate(&job.url, &job.messages, &job.schema, job.timeout);
+                                    RECHECKING.to_string()
+                                } else {
+                                    answer
+                                }
                             }),
                         None => match crate::coder::write_args(&text) {
                             Err(e) => Err(e),
@@ -727,6 +815,11 @@ impl Core {
                 }
             };
             match report {
+                // sent back for a second look: wait for the new answer
+                Ok(answer) if answer == RECHECKING => {
+                    self.coder_jobs.insert(i, job);
+                    i += 1;
+                }
                 Ok(answer) if job.question.is_some() => {
                     let _ = job
                         .reply
@@ -903,6 +996,7 @@ impl Core {
             "press" => match rest.trim().trim_start_matches('#').parse::<u64>() {
                 Ok(id) if self.gateway.press_key(id) => {
                     self.learner.approved(id, self.clock.now_ms());
+                    self.retrain();
                     format!("approved #{id}; ask again within 10 minutes")
                 }
                 _ => "no such pending item".into(),
@@ -910,6 +1004,7 @@ impl Core {
             "decline" => match rest.trim().trim_start_matches('#').parse::<u64>() {
                 Ok(id) if self.gateway.decline(id) => {
                     self.learner.declined(id);
+                    self.retrain();
                     format!("declined #{id}")
                 }
                 _ => "no such pending item".into(),
@@ -1156,6 +1251,9 @@ impl Core {
         self.engine.registry.tier_of(tool)
     }
 }
+
+/// Marks an analysis sent back for a second look (never a real answer: it holds a NUL).
+const RECHECKING: &str = "\0rechecking";
 
 /// "That was right" / "that was wrong" and the like: feedback on the last answer.
 fn feedback_of(text: &str) -> Option<bool> {

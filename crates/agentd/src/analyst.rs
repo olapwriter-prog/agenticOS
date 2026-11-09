@@ -13,11 +13,11 @@ use std::collections::BTreeMap;
 /// The sources analysis code may load, and the format of each. Only read-only (Low tier)
 /// tools appear here; the caller also checks the tier at run time.
 pub const SOURCES: &[(&str, &str)] = &[
-    ("all_messages", "every text message, one per line: `from NAME (NUMBER): TEXT` or `to NAME (NUMBER): TEXT`; just `from NUMBER: TEXT` when the sender is not a contact; `no messages` if none"),
-    ("call_log", "every call, one per line: `from NAME (NUMBER) STATE` or `to NAME (NUMBER) STATE`, STATE one of ringing, dialing, active, held, ended; `no calls` if none"),
-    ("list_contacts", "the address book, one per line: `NAME: NUMBER`; `no contacts` if none"),
-    ("read_calendar", "takes args {\"day\": DAY}; that day's events joined by `; `, or `nothing`"),
-    ("wifi_scan", "nearby Wi-Fi networks, one per line: `SSID (NN%)`, strongest first; `no networks found` if none"),
+    ("all_messages", "every text message, oldest first, one per line. `from NAME (NUMBER): TEXT` is a text NAME sent to you (incoming); `to NAME (NUMBER): TEXT` is one you sent (outgoing). A sender that is not in your contacts has no name: `from NUMBER: TEXT` (businesses, offers and promotions, strangers). `no messages` if there are none. Invented example lines:\n    from Asha (+919000011111): see you at 6?\n    to Asha (+919000011111): yes, on my way\n    from +918022233344: Flat 40% off today only, shop now"),
+    ("call_log", "every call, one per line. `from NAME (NUMBER) STATE` is a call NAME made to you (incoming); `to NAME (NUMBER) STATE` is a call you made (outgoing); no name when the number is not a contact. STATE is ringing, dialing, active, held or ended (a call that has finished, answered or not). `no calls` if there are none. Invented example lines:\n    from Asha (+919000011111) ended\n    to +918022233344 ended\n    from Dev (+919000022222) ringing"),
+    ("list_contacts", "the address book, one per line: `NAME: NUMBER`; `no contacts` if none. Invented example line:\n    Asha: +919000011111"),
+    ("read_calendar", "takes args {\"day\": DAY}; that day's events joined by `; `, or `nothing`. Invented example: `dentist; call with Dev`"),
+    ("wifi_scan", "nearby Wi-Fi networks, one per line: `SSID (NN%)`, strongest first; `no networks found` if none. Invented example line:\n    HomeNet (80%)"),
     ("phone_status", "one line, e.g. `Jio lte signal 64%, mobile data on, wifi HomeNet`"),
     ("list_functions", "the agent's functions, one per line: `name(args) vN: description`"),
 ];
@@ -45,13 +45,23 @@ The code must define fn run(args: &Args) -> Result<String, String>. Each source'
 args.get(\"NAME\")? (NAME is the tool name), and the question as args.get(\"question\")?. Use only the \
 standard library; no unsafe, files, network, include_str!, env!, extern or mod name;. Never unwrap \
 on the data: return Err(...) instead. Return only the short answer, not the data. Parse \
-carefully: lines may not all look the same.
+carefully: lines may not all look the same. Match lines by their structure (`from `, `to `, a \
+name followed by ` (`), not by words from the question: \"calls Ravi made to me\" are the \
+incoming lines `from Ravi (`. A question about strangers, offers or promotions means senders \
+with no name.
+
+Prefer these parsers to string matching: messages(args.get(\"all_messages\")?) gives a \
+Vec<Message> with fields incoming (bool: they sent it to you), name (Option<String>: None for a \
+number not in your contacts), number and text; calls(args.get(\"call_log\")?) gives a Vec<Call> \
+with incoming (bool: they called you), name, number and state. Example: people in your contacts \
+who texted you: messages(..).iter().filter(|m| m.incoming).filter_map(|m| m.name.clone()) \
+collected into a BTreeSet.
 
 Sources you may load, and their formats:
 {}
 
 Example: for \"how many texts did Mum send me?\":
-{{\"sources\":[{{\"tool\":\"all_messages\",\"args\":{{}}}}],\"code\":\"fn run(args: &Args) -> Result<String, String> {{\\n    let n = args.get(\\\"all_messages\\\")?\\n        .lines()\\n        .filter(|l| l.starts_with(\\\"from Mum \\\"))\\n        .count();\\n    Ok(format!(\\\"Mum sent {{}} texts\\\", n))\\n}}\"}}
+{{\"sources\":[{{\"tool\":\"all_messages\",\"args\":{{}}}}],\"code\":\"fn run(args: &Args) -> Result<String, String> {{\\n    let n = messages(args.get(\\\"all_messages\\\")?)\\n        .iter()\\n        .filter(|m| m.incoming && m.name.as_deref() == Some(\\\"Mum\\\"))\\n        .count();\\n    Ok(format!(\\\"Mum sent {{}} texts\\\", n))\\n}}\"}}
 ",
         formats()
     )
@@ -103,6 +113,14 @@ pub fn question_of(text: &str) -> Option<String> {
         "who sent ",
         "summarise my ",
         "summarize my ",
+        // openers no phrase command uses, so a command is never taken for a question
+        "did ",
+        "has ",
+        "have i ",
+        "when did ",
+        "which ",
+        "who has ",
+        "who have ",
     ] {
         if lower.starts_with(p) {
             return Some(t.to_string());
@@ -183,6 +201,34 @@ pub fn run(
     Ok(result)
 }
 
+/// Does this answer say "none"? Code that matches nothing usually has a matching bug, so such an
+/// answer over data that is not empty is checked once more.
+pub fn says_zero(answer: &str) -> bool {
+    answer
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w, "0" | "zero" | "none" | "nobody" | "nothing" | "no"))
+}
+
+/// Lines of real data loaded (empty markers such as `no messages` do not count).
+pub fn data_lines(data: &BTreeMap<String, String>) -> usize {
+    data.values()
+        .flat_map(|t| t.lines())
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("no ") && *l != "nothing")
+        .count()
+}
+
+/// What the model is told when its code found nothing in data that has lines.
+pub fn zero_feedback(answer: &str, lines: usize) -> String {
+    format!(
+        "Your code answered {answer:?}, but the data it loaded has {lines} lines. Code that \
+matches nothing usually has a matching bug: check that it matches lines exactly as they look in \
+the formats and example lines (incoming lines start with `from `, outgoing with `to `; names are \
+followed by ` (`; strangers have no name). If the answer really is none, return the same code \
+again."
+    )
+}
+
 /// The answer must be short: it goes to the model or the human, not the data itself.
 pub const MAX_ANSWER: usize = 2000;
 
@@ -197,6 +243,15 @@ mod tests {
         )
     }
     #[test]
+    fn zero_answers_and_line_counts() {
+        assert!(says_zero("Ravi made 0 calls to you") && says_zero("You received no promotional texts"));
+        assert!(!says_zero("Mum sent 4 texts") && !says_zero("10 offers"));
+        let mut d = BTreeMap::new();
+        d.insert("call_log".to_string(), "from Ravi (+91) ended\nto Mum (+92) ended".to_string());
+        d.insert("all_messages".to_string(), "no messages".to_string());
+        assert_eq!(data_lines(&d), 2);
+    }
+    #[test]
     fn questions_are_recognised() {
         assert_eq!(
             question_of("How many texts did Mum send?").as_deref(),
@@ -207,6 +262,8 @@ mod tests {
             Some("my calls for missed ones")
         );
         assert!(question_of("call mum").is_none());
+        assert_eq!(question_of("did Mum call me").as_deref(), Some("did Mum call me"));
+        assert!(question_of("what's on friday").is_none(), "commands stay commands");
     }
     #[test]
     fn only_read_only_sources_with_known_formats_load() {

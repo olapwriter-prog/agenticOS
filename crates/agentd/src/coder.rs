@@ -161,6 +161,8 @@ pub struct Job {
     pub schema: Value,
     /// Some(question) for analysis code (crate::analyst); None for a function to keep.
     pub question: Option<String>,
+    /// An answer of "none" over non-empty data has been sent back for one more look.
+    pub rechecked: bool,
 }
 
 /// Ask the model on another thread; the answer arrives on the returned channel.

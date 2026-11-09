@@ -381,10 +381,11 @@ impl Learner {
             format!("{src} {good}/{}", v.len())
         };
         format!(
-            "{n} episodes, {labelled} usable for learning, {fixes} corrections; rewarded/total by source: {}, {}, {}, {}",
+            "{n} episodes, {labelled} usable for learning, {fixes} corrections; rewarded/total by source: {}, {}, {}, {}, {}",
             by("intent"),
-            by("model"),
             by("shortcut"),
+            by("classifier"),
+            by("model"),
             by("function")
         )
     }

@@ -57,8 +57,11 @@ fn main() {
         let reply = if first.starts_with("GET /health") {
             json!({"status": "ok"})
         } else {
-            std::fs::write(format!("{model}.last.json"), &body).ok();
             let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            // agentd's warm-up (one token, at start) is not a request the tests look at
+            if req["max_tokens"] != 1 {
+                std::fs::write(format!("{model}.last.json"), &body).ok();
+            }
             let content = answer(&mode, &model, &req);
             json!({"choices": [{"message": {"role": "assistant", "content": content}}]})
         };
@@ -75,7 +78,20 @@ fn main() {
 const COUNT_BROKEN: &str = "fn run(args: &Args) -> Result<String, String> {\n    let n = args.get(\"all_messages\")?.lines().filter(|l| l.starts_with(\"from Mum \")).count();\n    Ok(n)\n}";
 const COUNT_FIXED: &str = "fn run(args: &Args) -> Result<String, String> {\n    let n = args.get(\"all_messages\")?.lines().filter(|l| l.starts_with(\"from Mum \")).count();\n    Ok(format!(\"Mum sent {} texts\", n))\n}";
 
+const COUNT_ZERO: &str = "fn run(args: &Args) -> Result<String, String> {\n    let n = args.get(\"all_messages\")?.lines().filter(|l| l.starts_with(\"from mum \")).count();\n    Ok(format!(\"Mum sent {} texts\", n))\n}";
+
 fn answer(mode: &str, model: &str, req: &Value) -> String {
+    if mode == "analyst-zero" && req.get("json_schema").is_some() {
+        // matches lowercase "mum" (finds nothing) until told its code matched nothing
+        let told = req["messages"].as_array().is_some_and(|m| {
+            m.iter().any(|m| m["content"].as_str().unwrap_or("").contains("matches nothing"))
+        });
+        return json!({
+            "sources": [{"tool": "all_messages", "args": {}}],
+            "code": if told { COUNT_FIXED } else { COUNT_ZERO }
+        })
+        .to_string();
+    }
     if mode == "analyst" && req.get("json_schema").is_some() {
         let shown_errors = req["messages"].as_array().is_some_and(|m| {
             m.iter()

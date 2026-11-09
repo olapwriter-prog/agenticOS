@@ -47,6 +47,7 @@ dependencies = [
  "agentos-stage",
  "agentos-status",
  "agentos-store",
+ "agentos-understand",
  "agentos-update",
  "agentos-vault",
  "getrandom",
@@ -343,6 +344,10 @@ version = "0.1.0"
 dependencies = [
  "rusqlite",
 ]
+
+[[package]]
+name = "agentos-understand"
+version = "0.1.0"
 
 [[package]]
 name = "agentos-update"

@@ -452,7 +452,7 @@ fn the_local_model_is_supervised_prioritised_and_answers_what_intents_cannot() {
     );
 
     // no intent matches this; the model answers, and the action runs through the executor
-    let a = ctl("chat is anything happening at the end of the week");
+    let a = ctl("chat zorble the quantum flux");
     assert!(a.starts_with("done:"), "{a}");
     let req = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
     assert!(
@@ -604,7 +604,7 @@ fn it_learns_from_corrections_and_approvals() {
     let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
 
     // the model guesses friday; the human says it was wrong and does it the right way
-    assert!(ctl("chat is anything on at the weekend").starts_with("done:"));
+    assert!(ctl("chat zorble the weekend").starts_with("done:"));
     assert!(ctl("chat that was wrong").contains("was wrong"));
     assert!(ctl("chat what's on saturday").starts_with("done:"));
 
@@ -614,18 +614,23 @@ fn it_learns_from_corrections_and_approvals() {
         .modified()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
-    assert!(ctl("chat Is anything on at the weekend?").starts_with("done:"));
+    assert!(ctl("chat Zorble the weekend!").starts_with("done:"));
     let after = std::fs::metadata(format!("{}.last.json", model.display()))
         .unwrap()
         .modified()
         .unwrap();
     assert_eq!(before, after, "the model was not asked");
 
-    // a similar request: the model is shown the correction as an example
-    ctl("chat anything on at the weekend for the kids");
-    let req = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
-    assert!(req.contains("Requests this person made before"), "{req}");
-    assert!(req.contains("saturday"), "{req}");
+    // a similar request: the classifier learned the correction, so it needs no model at all
+    assert!(ctl("chat zorble the weekend kids").starts_with("done:"));
+    let after2 = std::fs::metadata(format!("{}.last.json", model.display()))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(before, after2, "learned from the correction: the model was not asked");
+    let log = std::fs::read_to_string(d.join("experience.jsonl")).unwrap();
+    let last = log.lines().filter(|l| l.contains(r#""e":"ep""#)).last().unwrap();
+    assert!(last.contains("classifier") && last.contains("read_calendar"), "{last}");
 
     // an approved call is rewarded; a declined one is not repeated as a shortcut
     assert!(ctl("chat call mum").contains("approval required"));
@@ -666,7 +671,12 @@ fn questions_are_answered_by_code_in_the_sandbox_and_the_model_never_sees_the_da
     }
 
     // the model writes code (fixing a compile error on the way); the sandbox counts
+    // regular questions are answered by code, without the model
     let a = ctl("chat how many texts did Mum send me");
+    assert_eq!(a, "answer: Mum sent you 3 texts.", "{a}");
+    assert!(!std::path::Path::new(&format!("{}.coder-requests", model.display())).exists());
+    // one the classifier has no evidence for goes to the model, which writes the code
+    let a = ctl("chat analyse zorbly the texts");
     assert_eq!(a, "answer (attempt 2): Mum sent 3 texts", "{a}");
     let sent = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
     assert!(
@@ -732,6 +742,64 @@ fn questions_are_answered_by_code_in_the_sandbox_and_the_model_never_sees_the_da
             .contains("cannot ask the phone"),
         "{v}"
     );
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn an_answer_of_none_over_real_data_gets_a_second_look() {
+    let d = dir("zero");
+    let (models, model) = fake_model(&d, "analyst-zero");
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama_bin();
+    c.models = models;
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+    ctl("chat save Mum as +919876543210");
+    for text in ["dinner at 8", "bring milk"] {
+        ctl(&format!("sim-sms +919876543210|{text}"));
+    }
+    let a = ctl("chat analyse zorbly the texts");
+    assert_eq!(a, "answer (attempt 1): Mum sent 2 texts", "the recheck is not an attempt: {a}");
+    let sent = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
+    assert!(sent.contains("has 2 lines") && sent.contains("Mum sent 0 texts"), "{sent}");
+    assert!(!sent.contains("dinner at 8"), "still no data shown to the model");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn regular_requests_are_handled_by_code_and_the_model_is_not_asked() {
+    let d = dir("nollm");
+    let (models, model) = fake_model(&d, "tools");
+    let mut c = cfg(&d);
+    c.llama_server = fake_llama_bin();
+    c.models = models;
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+    ctl("chat save Mum as +919876543210");
+    ctl("chat save Ravi as +919812345678");
+    ctl("sim-sms +919876543210|dinner at 8?");
+    ctl("sim-sms +918000000001|big sale");
+    ctl("sim-call +919812345678");
+    ctl("chat hang up");
+    std::thread::sleep(std::time::Duration::from_millis(300)); // let the warm-up request land
+    let last = format!("{}.last.json", model.display());
+    let before = std::fs::metadata(&last).ok().and_then(|m| m.modified().ok());
+    // commands: classifier + rules
+    assert!(ctl("chat could you ring my mother").contains("approval required"));
+    assert!(ctl("pending").contains("call to=Mum"));
+    assert_eq!(ctl("chat switch the torch on"), "done: flashlight on");
+    assert_eq!(ctl("chat make it louder, 80"), "done: volume 80%");
+    // questions: classifier + exact code over every record
+    assert_eq!(ctl("chat did Ravi call me"), "answer: Yes, Ravi called you (1 time).");
+    assert_eq!(ctl("chat how many texts came from numbers not in my contacts"), "answer: 1 text came from numbers not in your contacts.");
+    assert_eq!(ctl("chat who texted me the most"), "answer: Mum and +918000000001 texted you the most (1 text).");
+    let after = std::fs::metadata(&last).ok().and_then(|m| m.modified().ok());
+    assert_eq!(before, after, "the model was never asked");
+    assert!(ctl("learn").contains("classifier"));
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
