@@ -1,0 +1,61 @@
+# request <TAB> the tool call agentd confirmed. Every 5th line is held out when training.
+ring up dad	{"tool":"call","args":{"to":"dad"}}
+text Priya that I'm running late	{"tool":"send_sms","args":{"to":"Priya","text":"I'm running late"}}
+what's on friday	{"tool":"read_calendar","args":{"day":"friday"}}
+torch off	{"tool":"flashlight","args":{"on":"off"}}
+can you call ravi	{"tool":"call","args":{"to":"ravi"}}
+remind me to take my pills at 9pm	{"tool":"set_reminder","args":{"text":"take my pills","when":"9pm"}}
+any missed calls?	{"tool":"list_calls","args":{}}
+turn the volume up to 80	{"tool":"set_volume","args":{"percent":"80"}}
+switch off mobile data	{"tool":"mobile_data","args":{"on":"off"}}
+phone mum please	{"tool":"call","args":{"to":"mum"}}
+put dentist on monday in my calendar	{"tool":"add_event","args":{"day":"monday","title":"dentist"}}
+what's Anil's number	{"tool":"find_contact","args":{"name":"Anil"}}
+read my texts	{"tool":"read_messages","args":{}}
+pick up	{"tool":"answer_call","args":{}}
+send Meera an sms saying happy birthday	{"tool":"send_sms","args":{"to":"Meera","text":"happy birthday"}}
+end the call	{"tool":"hangup","args":{}}
+check my balance with *123#	{"tool":"ussd","args":{"code":"*123#"}}
+how's my signal	{"tool":"phone_status","args":{}}
+I can't see anything, torch on	{"tool":"flashlight","args":{"on":"on"}}
+do I have anything tomorrow	{"tool":"read_calendar","args":{"day":"tomorrow"}}
+airplane mode on	{"tool":"airplane_mode","args":{"on":"on"}}
+which wifi networks are around	{"tool":"wifi_scan","args":{}}
+save Kiran as 9876543210	{"tool":"add_contact","args":{"name":"Kiran","number":"9876543210"}}
+where am I right now	{"tool":"where_am_i","args":{}}
+give the office a call	{"tool":"call","args":{"to":"the office"}}
+mute it, volume 0	{"tool":"set_volume","args":{"percent":"0"}}
+what did Sunil text me	{"tool":"messages_from","args":{"from":"Sunil"}}
+I lost my phone, make it ring	{"tool":"ring_phone","args":{}}
+show everyone in my contacts	{"tool":"list_contacts","args":{}}
+message Arjun on chat: see you at 6	{"tool":"send_message","args":{"to":"Arjun","text":"see you at 6"}}
+remind me about the electricity bill tomorrow morning	{"tool":"set_reminder","args":{"text":"the electricity bill","when":"tomorrow morning"}}
+dial 100	{"tool":"call","args":{"to":"100"}}
+turn mobile data back on	{"tool":"mobile_data","args":{"on":"on"}}
+tell Neha by text that the door is open	{"tool":"send_sms","args":{"to":"Neha","text":"the door is open"}}
+anything on the calendar for sunday	{"tool":"read_calendar","args":{"day":"sunday"}}
+light please	{"tool":"flashlight","args":{"on":"on"}}
+hang up	{"tool":"hangup","args":{}}
+who called me	{"tool":"list_calls","args":{}}
+connect to HomeNet with password sunflower	{"tool":"wifi_connect","args":{"ssid":"HomeNet","password":"sunflower"}}
+volume at half	{"tool":"set_volume","args":{"percent":"50"}}
+call my sister	{"tool":"call","args":{"to":"my sister"}}
+airplane mode off	{"tool":"airplane_mode","args":{"on":"off"}}
+add lunch with Ravi on thursday	{"tool":"add_event","args":{"day":"thursday","title":"lunch with Ravi"}}
+look up Deepa's number	{"tool":"find_contact","args":{"name":"Deepa"}}
+sms dad: reached safely	{"tool":"send_sms","args":{"to":"dad","text":"reached safely"}}
+any new messages	{"tool":"read_messages","args":{}}
+answer it	{"tool":"answer_call","args":{}}
+remind me to call the bank at 4pm	{"tool":"set_reminder","args":{"text":"call the bank","when":"4pm"}}
+am I on wifi or mobile data	{"tool":"phone_status","args":{}}
+ring Gopal	{"tool":"call","args":{"to":"Gopal"}}
+check my data pack with *121#	{"tool":"ussd","args":{"code":"*121#"}}
+switch the torch off	{"tool":"flashlight","args":{"on":"off"}}
+messages from mum	{"tool":"messages_from","args":{"from":"mum"}}
+what's my schedule on wednesday	{"tool":"read_calendar","args":{"day":"wednesday"}}
+let Kavya know by text I'll call later	{"tool":"send_sms","args":{"to":"Kavya","text":"I'll call later"}}
+make it louder, 90 percent	{"tool":"set_volume","args":{"percent":"90"}}
+find my phone	{"tool":"ring_phone","args":{}}
+store Rahul's number 9123456780	{"tool":"add_contact","args":{"name":"Rahul","number":"9123456780"}}
+where am I	{"tool":"where_am_i","args":{}}
+call grandma	{"tool":"call","args":{"to":"grandma"}}

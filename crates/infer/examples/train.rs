@@ -68,7 +68,15 @@ fn gradcheck(m: &Model, tok: &Tokenizer) {
             n += 1;
         }
     }
-    println!("loss trainer {l0:.4}  engine {:.4}", ce / n as f32);
+    tr.exact = false;
+    let (lf, _) = tr.loss(&ad0, &tokens, &train, false);
+    tr.exact = true;
+    // the engine quantizes matmul inputs to 8 bits and keeps the attention cache in f16, so it
+    // is closest to the trainer's fast (8-bit) path
+    println!("loss trainer {l0:.4} (exact), {lf:.4} (8-bit)  engine {:.4}", ce / n as f32);
+    if std::env::var("LOSS_ONLY").is_ok() {
+        return;
+    }
     // random B so every gradient is live
     let mut ad = ad0.clone();
     let mut s = 99u64;
