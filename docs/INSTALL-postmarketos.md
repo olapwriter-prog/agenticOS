@@ -35,7 +35,7 @@ When `init` asks:
 - **Channel**: `edge` or the latest stable `v2x.yy`
 - **Vendor / device**: your phone
 - **User interface**: `none`  ← headless; this is the whole point
-- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,callaudiod,wireplumber`
+- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,callaudiod,wireplumber,pipewire-pulse,evtest`
   (the agentd package also pulls in `llama-server`, `libggml-cpu` and `libggml-vulkan` on aarch64)
 
 Build and add the agentd package from this repository:
@@ -57,6 +57,7 @@ Enable the services once you are logged in over SSH (`ssh user@172.16.42.1` over
 ```bash
 sudo rc-update add modemmanager default
 sudo rc-update add networkmanager default
+sudo rc-update add agentd-session default   # call audio, vibration, volume
 sudo rc-update add agentd default
 sudo rc-service agentd start
 sudo cat /etc/agentd/gateway-token      # bearer token for the MCP endpoint
@@ -87,7 +88,7 @@ sudo agentd ctl -c /etc/agentd/agentd.toml phone            # operator, signal, 
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "save Mum as +91 98765 43210"
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "call mum"  # High: needs the key
 sudo agentd ctl -c /etc/agentd/agentd.toml pending
-sudo agentd ctl -c /etc/agentd/agentd.toml press 1          # the approval key
+sudo agentd ctl -c /etc/agentd/agentd.toml press 1          # or hold volume-down for 2 s
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "call mum"  # now it dials, once
 ```
 A Claude client can drive the same tools. Forward the port over SSH, then point the client at
@@ -192,15 +193,20 @@ llama.cpp can use on these phones.
   unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
   The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.
 
-- **Call audio, vibration and volume.** callaudiod, feedbackd and PipeWire run inside a *user session*
-  on postmarketOS. On a `ui=none` image no session starts, so `callaudiocli`, `fbcli` and `wpctl` fail
-  softly. Calls still connect and SMS still works, but the earpiece may not be routed. Next step: start
-  a session for a dedicated user at boot and run those daemons there.
-- **Polling, not signals.** Incoming calls and texts are found by polling `mmcli` every
-  `phone_poll_secs`. Subscribing to ModemManager's D-Bus signals would save battery and is the next
-  change.
-- **The approval key** is `agentd ctl press N` over SSH. On the phone it should be a hardware button
-  (for example volume-down held for two seconds) read from `/dev/input`.
+- **Call audio, vibration and volume** run in a user session that the `agentd-session` service
+  starts at boot for the `agentd-session` user (made when the package is installed): a session bus,
+  PipeWire, WirePlumber, pipewire-pulse, callaudiod and feedbackd. agentd runs `callaudiocli`,
+  `fbcli` and `wpctl` as that user inside it (`session_user` in agentd.toml). Tested with stand-in
+  programs only; on a real phone check `/var/log/agentd-session.log`, and set `FEEDBACKD` or
+  `CALLAUDIOD` in the service's environment if those daemons live elsewhere on your image.
+- **Calls and texts are seen as they arrive**, from ModemManager's D-Bus signals (CallAdded,
+  Messaging Added, call StateChanged) through `dbus-monitor`. A signal makes agentd look at once,
+  through `mmcli` as before; polling stays as a backup every `phone_signal_poll_secs` (60 s), and
+  goes back to every `phone_poll_secs` if the monitor stops. Not yet run against a real modem.
+- **The approval key** is volume-down held for two seconds (`approval_key` in agentd.toml; find the
+  device with `evtest`). It approves the waiting action only when exactly one is waiting: without a
+  screen you could not tell which of several you approved, so then use `agentd ctl press N`. A short
+  press is left to the volume. Tested with recorded key events, not yet on a phone's buttons.
 - **Untested on a phone.** The package and service pass `scripts/vm-test.sh` on Alpine 3.24 aarch64
   (kernel 6.18), with a real model. The ModemManager backend is only unit-tested against recorded
   `mmcli` and `nmcli` output, and has not yet run on a real modem.

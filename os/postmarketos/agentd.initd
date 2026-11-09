@@ -17,8 +17,8 @@ export AGENTD_PASSPHRASE_FILE
 
 depend() {
 	need dbus localmount
-	want modemmanager networkmanager feedbackd callaudiod
-	after modemmanager networkmanager bootmisc
+	want modemmanager networkmanager agentd-session
+	after modemmanager networkmanager bootmisc agentd-session
 	use logger
 }
 

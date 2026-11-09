@@ -21,6 +21,7 @@ depends="
 	networkmanager-wifi
 	networkmanager-wwan
 	pipewire
+	pipewire-pulse
 	wireplumber
 	wpa_supplicant
 	rust
@@ -33,10 +34,13 @@ depends="
 # agentd compiles them with rustc to WebAssembly for the sandbox. (check() compiles some.)
 makedepends="cargo cargo-auditable rust-wasm"
 subpackages="$pkgname-openrc"
+install="$pkgname.pre-install"
 source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
 	agentd.initd
 	agentd.confd
 	agentd.toml
+	agentd-session.initd
+	agentd-session.sh
 	"
 builddir="$srcdir/agenticOS-$pkgver"
 options="net" # cargo fetches crates
@@ -63,6 +67,9 @@ package() {
 	install -Dm644 "$srcdir"/agentd.toml "$pkgdir"/etc/agentd/agentd.toml
 	install -Dm755 "$srcdir"/agentd.initd "$pkgdir"/etc/init.d/agentd
 	install -Dm644 "$srcdir"/agentd.confd "$pkgdir"/etc/conf.d/agentd
+	# the user session for call audio, vibration and volume (user made by agentd.pre-install)
+	install -Dm755 "$srcdir"/agentd-session.initd "$pkgdir"/etc/init.d/agentd-session
+	install -Dm755 "$srcdir"/agentd-session.sh "$pkgdir"/usr/libexec/agentd/agentd-session
 	install -dm700 "$pkgdir"/var/lib/agentd
 	install -dm700 "$pkgdir"/var/lib/agentd/models
 }

@@ -40,8 +40,23 @@ pub struct Config {
     pub leds_dir: PathBuf,
     /// How often to look for incoming calls and texts.
     pub phone_poll_secs: u64,
+    /// Watch ModemManager's D-Bus signals (with this dbus-monitor) so calls and texts are seen
+    /// as they arrive; polling then only backs it up, every `phone_signal_poll_secs`.
+    /// Used with phone = "modemmanager". Unset: poll only.
+    pub dbus_monitor: Option<PathBuf>,
+    /// The user whose session runs callaudiod, feedbackd and PipeWire (the agentd-session
+    /// service). Unset: those tools run as agentd's own user.
+    pub session_user: Option<String>,
+    pub phone_signal_poll_secs: u64,
     /// The control socket. Defaults to control.sock in data_dir.
     pub control_socket: Option<PathBuf>,
+    /// The approval key: the input device of a hardware button (e.g.
+    /// /dev/input/by-path/platform-gpio-keys-event). Unset: approve with `agentd ctl press N`.
+    pub approval_key: Option<PathBuf>,
+    /// Which key on that device (Linux key code; 114 = volume down).
+    pub approval_keycode: u16,
+    /// How long the key must be held to approve.
+    pub approval_hold_ms: u64,
 
     /// llama.cpp's server binary. agentd starts one per configured model.
     pub llama_server: PathBuf,
@@ -102,7 +117,13 @@ impl Default for Config {
             phone: "sim".into(),
             leds_dir: PathBuf::from("/sys/class/leds"),
             phone_poll_secs: 2,
+            dbus_monitor: None,
+            session_user: None,
+            phone_signal_poll_secs: 60,
             control_socket: None,
+            approval_key: None,
+            approval_keycode: crate::button::KEY_VOLUMEDOWN,
+            approval_hold_ms: 2000,
             llama_server: PathBuf::from("/usr/bin/llama-server"),
             models_dir: None,
             models: vec![],

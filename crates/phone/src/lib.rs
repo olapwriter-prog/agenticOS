@@ -6,6 +6,7 @@
 //! Calling someone and sending a text are High tier, so they need the approval key.
 pub mod backend;
 pub mod linux;
+pub mod watch;
 
 use agentos_action::{Action, Tier, Tool};
 use agentos_executor::Connector;

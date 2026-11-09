@@ -19,7 +19,13 @@ kdf_mib = 32                      # vault cost; raise on the phone
 phone = "sim"                     # "modemmanager" on a real phone
 # leds_dir = "/sys/class/leds"
 phone_poll_secs = 2               # how often to look for incoming calls and texts
+# dbus_monitor = "/usr/bin/dbus-monitor"   # phone = "modemmanager": see calls and texts as they
+# phone_signal_poll_secs = 60     # arrive (ModemManager's D-Bus signals); poll this rarely as backup
+# session_user = "agentd-session" # run callaudiocli, fbcli, wpctl in this user's session
 # control_socket = "/run/agentd.sock"   # default: control.sock in data_dir
+# approval_key = "/dev/input/by-path/platform-gpio-keys-event"   # hardware button; see `evtest`
+# approval_keycode = 114          # volume down
+# approval_hold_ms = 2000         # hold this long to approve the one waiting action
 
 # ---- the local LLM (optional) -------------------------------------------------------------
 # agentd starts llama-server per model, gives it the fast cores, and stops it when the stage

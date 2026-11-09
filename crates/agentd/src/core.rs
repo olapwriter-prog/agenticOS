@@ -46,6 +46,10 @@ pub struct Core {
     notifier: Notifier,
     phone: agentos_phone::Shared,
     last_phone_poll_ms: u64,
+    /// ModemManager's signals are being watched, so polling can be slow.
+    signals_up: bool,
+    /// A signal came in: look again shortly, as a text can arrive in parts.
+    poll_again_at: Option<u64>,
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
@@ -160,7 +164,13 @@ impl Core {
         // 3. Tools: connectors behind the executor, behind the gateway.
         let backend: Box<dyn agentos_phone::backend::Backend> = match cfg.phone.as_str() {
             "sim" => Box::new(Sim::new()),
-            "modemmanager" => Box::new(Linux::new(cfg.leds_dir.clone(), dir.join("run"))),
+            "modemmanager" => {
+                let linux = Linux::new(cfg.leds_dir.clone(), dir.join("run"));
+                Box::new(match &cfg.session_user {
+                    Some(user) => linux.with_session(user)?,
+                    None => linux,
+                })
+            }
             other => {
                 return Err(format!("phone = {other:?}: use \"sim\" or \"modemmanager\"").into())
             }
@@ -286,6 +296,8 @@ impl Core {
             notifier,
             phone,
             last_phone_poll_ms: 0,
+            signals_up: false,
+            poll_again_at: None,
             prio,
             models,
             prio_error,
@@ -1039,6 +1051,29 @@ impl Core {
                 }
                 _ => "no such pending item".into(),
             },
+            // the hardware approval key: approves the one waiting action, never a guess among several
+            "key" => {
+                let p = self.gateway.pending();
+                match p.len() {
+                    0 => "nothing waiting".into(),
+                    1 => {
+                        let id = p[0].id;
+                        let what = p[0].action.tool.to_string();
+                        if self.gateway.press_key(id) {
+                            self.learner.approved(id, self.clock.now_ms());
+                            self.retrain();
+                            let _ = self.kernel.record(&format!("approved #{id} {what} with the approval key"));
+                            format!("approved #{id} {what}")
+                        } else {
+                            "no such pending item".into()
+                        }
+                    }
+                    n => {
+                        let _ = self.kernel.record(&format!("approval key held with {n} actions waiting; none approved"));
+                        format!("{n} actions waiting; the key approves only when one is: use press N")
+                    }
+                }
+            }
             "decline" => match rest.trim().trim_start_matches('#').parse::<u64>() {
                 Ok(id) if self.gateway.decline(id) => {
                     self.learner.declined(id);
@@ -1046,6 +1081,22 @@ impl Core {
                     format!("declined #{id}")
                 }
                 _ => "no such pending item".into(),
+            },
+            // from the D-Bus watcher (server.rs): "up", "down", or what arrived
+            "phone-signal" => match rest.trim() {
+                "up" => {
+                    self.signals_up = true;
+                    "watching ModemManager signals".into()
+                }
+                "down" => {
+                    self.signals_up = false;
+                    "polling".into()
+                }
+                _ => {
+                    self.poll_again_at = Some(self.clock.now_ms() + 2000);
+                    let said = self.poll_phone();
+                    if said.is_empty() { "nothing new".into() } else { said.join("\n") }
+                }
             },
             "power" => self.set_power(rest),
             "anchor" => match self.save_anchor() {
@@ -1151,7 +1202,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
             other => format!("unknown command: {other}"),
         }
     }
@@ -1303,7 +1354,10 @@ impl Core {
             let _ = self.kernel.handle(Event::WindDownDone);
         }
         self.react_to_power();
-        if now.saturating_sub(self.last_phone_poll_ms) >= self.cfg.phone_poll_secs * 1000 {
+        let every = if self.signals_up { self.cfg.phone_signal_poll_secs } else { self.cfg.phone_poll_secs };
+        let again = self.poll_again_at.is_some_and(|t| now >= t);
+        if again || now.saturating_sub(self.last_phone_poll_ms) >= every * 1000 {
+            self.poll_again_at = None;
             self.poll_phone();
         }
         if now.saturating_sub(self.last_anchor_ms) >= self.cfg.anchor_secs * 1000 {

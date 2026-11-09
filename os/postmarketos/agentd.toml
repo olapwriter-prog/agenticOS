@@ -6,7 +6,17 @@ allowed_origins = []
 
 phone = "modemmanager"            # real modem, Wi-Fi, LEDs, vibration
 leds_dir = "/sys/class/leds"
-phone_poll_secs = 2
+phone_poll_secs = 2               # used only while the D-Bus watcher is down
+# Calls and texts are seen as they arrive from ModemManager's D-Bus signals; polling backs it up.
+dbus_monitor = "/usr/bin/dbus-monitor"
+phone_signal_poll_secs = 60
+# Call audio, vibration and volume run in this user's session (/etc/init.d/agentd-session).
+session_user = "agentd-session"
+# The approval key: hold volume-down for two seconds to approve the one waiting call or text.
+# Find the device with `evtest` (apk add evtest); gpio-keys is usual on phones.
+approval_key = "/dev/input/by-path/platform-gpio-keys-event"
+approval_keycode = 114
+approval_hold_ms = 2000
 
 real_hardware = true              # real cgroup freezer and cpufreq governor
 power_dir = "/sys/class/power_supply/battery"   # check: ls /sys/class/power_supply

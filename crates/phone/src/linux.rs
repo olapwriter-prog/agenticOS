@@ -7,6 +7,10 @@
 //!   fbcli         feedbackd: vibration, ringtone, LED
 //!   wpctl         WirePlumber: volume
 //! Commands go through `Runner`, so tests check exactly what would be run.
+//!
+//! callaudiod, feedbackd and PipeWire live in a user session (the session bus only lets its own
+//! user in). On a phone without a desktop, the agentd-session service runs one for a dedicated
+//! user, and `SystemRunner` runs the last three tools as that user, inside that session.
 use crate::backend::{Backend, Call, CallState, NetStatus, Sms, WifiNet};
 use std::path::PathBuf;
 
@@ -15,14 +19,54 @@ pub trait Runner {
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String>;
 }
 
-/// Runs real programs.
-pub struct SystemRunner;
+/// The tools that talk to the user session (callaudiod, feedbackd, WirePlumber).
+pub const SESSION_TOOLS: [&str; 3] = ["callaudiocli", "fbcli", "wpctl"];
+
+/// A user session to run the session tools in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Session {
+    pub uid: u32,
+    pub gid: u32,
+    /// XDG_RUNTIME_DIR, where the session bus and PipeWire sockets are
+    pub runtime: PathBuf,
+}
+
+impl Session {
+    /// The session of `user`, from an /etc/passwd text; runtime dir /run/user/<uid>.
+    pub fn of(user: &str, passwd: &str) -> Option<Session> {
+        passwd.lines().find_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            if f.len() < 4 || f[0] != user {
+                return None;
+            }
+            let uid = f[2].parse().ok()?;
+            Some(Session { uid, gid: f[3].parse().ok()?, runtime: PathBuf::from(format!("/run/user/{uid}")) })
+        })
+    }
+    /// The environment a session tool needs to find the session.
+    pub fn env(&self) -> Vec<(&'static str, String)> {
+        let rt = self.runtime.display().to_string();
+        vec![
+            ("XDG_RUNTIME_DIR", rt.clone()),
+            ("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={rt}/bus")),
+        ]
+    }
+}
+
+/// Runs real programs; the session tools as the session's user when there is a session.
+#[derive(Default)]
+pub struct SystemRunner {
+    pub session: Option<Session>,
+}
 impl Runner for SystemRunner {
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
-        let out = std::process::Command::new(prog)
-            .args(args)
-            .output()
-            .map_err(|e| format!("{prog}: {e}"))?;
+        let mut cmd = std::process::Command::new(prog);
+        cmd.args(args);
+        if let Some(s) = self.session.as_ref().filter(|_| SESSION_TOOLS.contains(&prog)) {
+            use std::os::unix::process::CommandExt;
+            cmd.uid(s.uid).gid(s.gid).envs(s.env());
+        }
+        let out = cmd.output().map_err(|e| format!("{prog}: {e}"))?;
         if out.status.success() {
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
         } else {
@@ -108,10 +152,17 @@ fn on_off(on: bool) -> &'static str {
 impl Linux {
     pub fn new(leds_dir: PathBuf, scratch_dir: PathBuf) -> Self {
         Linux {
-            runner: Box::new(SystemRunner),
+            runner: Box::new(SystemRunner::default()),
             leds_dir,
             scratch_dir,
         }
+    }
+    /// Run callaudiocli, fbcli and wpctl in `user`'s session (see the agentd-session service).
+    pub fn with_session(mut self, user: &str) -> Result<Self, String> {
+        let passwd = std::fs::read_to_string("/etc/passwd").map_err(|e| format!("/etc/passwd: {e}"))?;
+        let session = Session::of(user, &passwd).ok_or(format!("no user {user:?} for the audio session"))?;
+        self.runner = Box::new(SystemRunner { session: Some(session) });
+        Ok(self)
     }
     fn mm(&mut self, args: &[&str]) -> Result<String, String> {
         self.runner.run("mmcli", args)
@@ -406,6 +457,21 @@ mod tests {
             scratch_dir: dir,
         };
         (l, log)
+    }
+
+    #[test]
+    fn session_tools_run_as_the_session_user_in_its_session() {
+        let passwd = "root:x:0:0:root:/root:/bin/sh\nagentd-session:x:1001:1002::/var/lib/agentd-session:/sbin/nologin\n";
+        let s = Session::of("agentd-session", passwd).unwrap();
+        assert_eq!((s.uid, s.gid), (1001, 1002));
+        assert_eq!(
+            s.env(),
+            vec![
+                ("XDG_RUNTIME_DIR", "/run/user/1001".to_string()),
+                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1001/bus".to_string())
+            ]
+        );
+        assert_eq!(Session::of("nobody", passwd), None);
     }
 
     #[test]

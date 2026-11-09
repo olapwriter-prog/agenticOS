@@ -888,3 +888,67 @@ fn on_the_charger_the_model_learns_the_confirmed_requests_and_can_be_rolled_back
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// One `struct input_event`, as the kernel writes it.
+fn key_event(ms: u64, code: u16, value: i32) -> Vec<u8> {
+    let mut e: libc::input_event = unsafe { std::mem::zeroed() };
+    e.time.tv_sec = (ms / 1000) as _;
+    e.time.tv_usec = ((ms % 1000) * 1000) as _;
+    e.type_ = 1; // EV_KEY
+    e.code = code;
+    e.value = value;
+    let p = &e as *const libc::input_event as *const u8;
+    unsafe { std::slice::from_raw_parts(p, std::mem::size_of::<libc::input_event>()) }.to_vec()
+}
+
+#[test]
+fn holding_the_hardware_key_approves_the_one_waiting_action() {
+    let d = dir("hwkey");
+    std::fs::create_dir_all(&d).unwrap();
+    // a named pipe stands in for /dev/input/eventN
+    let dev = d.join("event0");
+    let cpath = std::ffi::CString::new(dev.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+    let mut c = cfg(&d);
+    c.approval_key = Some(dev.clone());
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let tok = s.gateway_token.clone();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let mut key = std::fs::OpenOptions::new().write(true).open(&dev).unwrap();
+    let mut t = 100_000u64;
+    let mut hold = |ms: u64| {
+        key.write_all(&key_event(t, 114, 1)).unwrap();
+        key.write_all(&key_event(t + ms, 114, 0)).unwrap();
+        key.flush().unwrap();
+        t += ms + 1000;
+    };
+    let ledger_has = |what: &str| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < until {
+            let l = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+            if l.contains(what) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    };
+    let asha = json!({"to":"Asha","text":"running late"});
+    let ravi = json!({"to":"Ravi","text":"on my way"});
+    // two waiting: a hold approves neither
+    call(&r.http_addr, &tok, "send_message", asha.clone());
+    call(&r.http_addr, &tok, "send_message", ravi.clone());
+    hold(2500);
+    assert!(ledger_has("2 actions waiting; none approved"));
+    assert_eq!(call(&r.http_addr, &tok, "send_message", asha.clone())["result"]["isError"], true);
+    ctl_send(&r.ctl_path, "decline 2").unwrap();
+    // one waiting: a short press is the volume's; a two-second hold approves it
+    hold(300);
+    hold(2100);
+    assert!(ledger_has("with the approval key"), "{}", std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default());
+    let v = call(&r.http_addr, &tok, "send_message", asha);
+    assert_eq!(v["result"]["isError"], false, "{v}");
+    assert!(text(&v).contains("sent to Asha"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
