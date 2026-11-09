@@ -24,7 +24,11 @@ pub fn features(text: &str) -> Vec<String> {
         .map(|w| {
             // a number's shape is the signal, not its value: "80" and "30" are both a level
             if w.chars().all(|c| c.is_ascii_digit()) {
-                if w.len() >= 7 { "#phone".to_string() } else { "#num".to_string() }
+                if w.len() >= 7 {
+                    "#phone".to_string()
+                } else {
+                    "#num".to_string()
+                }
             } else {
                 // contractions lose their apostrophe above: "what's" -> "whats" -> "what"
                 match w {
@@ -102,7 +106,11 @@ impl Classifier {
         // et al., "Tackling the poor assumptions of naive Bayes text classifiers" (2003).
         let n_labels = self.labels.len().max(1) as f64;
         let weight = |w: &String| {
-            let df = self.labels.values().filter(|l| l.counts.contains_key(w)).count() as f64;
+            let df = self
+                .labels
+                .values()
+                .filter(|l| l.counts.contains_key(w))
+                .count() as f64;
             (n_labels / df.max(1.0)).ln().max(0.05)
         };
         let mut scores: Vec<(String, f64)> = self
@@ -112,7 +120,12 @@ impl Classifier {
                 let prior = (l.docs as f64 / self.docs.max(1) as f64).ln();
                 let like: f64 = known
                     .iter()
-                    .map(|w| weight(w) * ((*l.counts.get(*w).unwrap_or(&0) as f64 + 1.0) / (l.total as f64 + v)).ln())
+                    .map(|w| {
+                        weight(w)
+                            * ((*l.counts.get(*w).unwrap_or(&0) as f64 + 1.0)
+                                / (l.total as f64 + v))
+                                .ln()
+                    })
                     .sum();
                 (name.clone(), prior + like)
             })
@@ -131,7 +144,10 @@ impl Classifier {
     }
     /// The best label if it is clearly the best: probability at least `min`.
     pub fn decide(&self, text: &str, min: f32) -> Option<(String, f32)> {
-        self.predict(text).into_iter().next().filter(|(_, p)| *p >= min)
+        self.predict(text)
+            .into_iter()
+            .next()
+            .filter(|(_, p)| *p >= min)
     }
 }
 
@@ -153,15 +169,24 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// Words people use for family, and the names they often save them under.
 const RELATIONS: &[(&[&str], &[&str])] = &[
-    (&["mother", "mom", "mum", "mummy", "mommy", "ma", "amma"], &["mum", "mom", "mother", "amma", "ma"]),
-    (&["father", "dad", "daddy", "papa", "appa"], &["dad", "father", "papa", "appa"]),
+    (
+        &["mother", "mom", "mum", "mummy", "mommy", "ma", "amma"],
+        &["mum", "mom", "mother", "amma", "ma"],
+    ),
+    (
+        &["father", "dad", "daddy", "papa", "appa"],
+        &["dad", "father", "papa", "appa"],
+    ),
 ];
 
 /// Who the request is about: a saved contact (by name, a typo away, or a family word), else a
 /// capitalised name that is not the first word, else a phone number.
 pub fn person(text: &str, contacts: &[String]) -> Option<String> {
     let lower = text.to_lowercase();
-    let words: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric() && c != '+').filter(|w| !w.is_empty()).collect();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '+')
+        .filter(|w| !w.is_empty())
+        .collect();
     // whole contact names, longest first ("Ravi Kumar" before "Ravi")
     let mut by_len: Vec<&String> = contacts.iter().collect();
     by_len.sort_by_key(|c| std::cmp::Reverse(c.len()));
@@ -175,14 +200,22 @@ pub fn person(text: &str, contacts: &[String]) -> Option<String> {
     // a typo away (names of 4+ letters)
     for c in &by_len {
         let cl = c.to_lowercase();
-        if cl.len() >= 4 && !cl.contains(' ') && words.iter().any(|w| w.len() >= 4 && edit_distance(w, &cl) == 1) {
+        if cl.len() >= 4
+            && !cl.contains(' ')
+            && words
+                .iter()
+                .any(|w| w.len() >= 4 && edit_distance(w, &cl) == 1)
+        {
             return Some((*c).clone());
         }
     }
     // family words
     for (said, saved) in RELATIONS {
         if words.iter().any(|w| said.contains(w)) {
-            if let Some(c) = contacts.iter().find(|c| saved.contains(&c.to_lowercase().as_str())) {
+            if let Some(c) = contacts
+                .iter()
+                .find(|c| saved.contains(&c.to_lowercase().as_str()))
+            {
                 return Some(c.clone());
             }
         }
@@ -216,7 +249,18 @@ pub fn person(text: &str, contacts: &[String]) -> Option<String> {
 
 pub fn day(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
-    for d in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "today", "tomorrow", "tonight"] {
+    for d in [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "today",
+        "tomorrow",
+        "tonight",
+    ] {
         if lower.split(|c: char| !c.is_alphanumeric()).any(|w| w == d) {
             return Some(d.to_string());
         }
@@ -235,7 +279,17 @@ pub fn percent(text: &str) -> Option<String> {
 /// On or off: off if the request says so, otherwise on.
 pub fn on_off(text: &str) -> &'static str {
     let l = format!(" {} ", text.to_lowercase());
-    if [" off ", " disable", " stop ", " kill ", " no more ", "turn it off"].iter().any(|w| l.contains(w)) {
+    if [
+        " off ",
+        " disable",
+        " stop ",
+        " kill ",
+        " no more ",
+        "turn it off",
+    ]
+    .iter()
+    .any(|w| l.contains(w))
+    {
         "off"
     } else {
         "on"
@@ -247,7 +301,10 @@ pub fn message_text(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     for marker in [" saying ", " that says ", " to say ", ": ", " that "] {
         if let Some(i) = lower.find(marker) {
-            let t = text[i + marker.len()..].trim().trim_matches('"').to_string();
+            let t = text[i + marker.len()..]
+                .trim()
+                .trim_matches('"')
+                .to_string();
             if !t.is_empty() {
                 return Some(t);
             }
@@ -261,13 +318,28 @@ mod tests {
     use super::*;
     fn trained() -> Classifier {
         let mut c = Classifier::new();
-        for t in ["call mum", "phone dad", "phone my sister", "ring Asha", "give Ravi a call"] {
+        for t in [
+            "call mum",
+            "phone dad",
+            "phone my sister",
+            "ring Asha",
+            "give Ravi a call",
+        ] {
             c.train("call", t);
         }
-        for t in ["torch on", "turn on the flashlight", "light please", "switch the torch off"] {
+        for t in [
+            "torch on",
+            "turn on the flashlight",
+            "light please",
+            "switch the torch off",
+        ] {
             c.train("flashlight", t);
         }
-        for t in ["how many texts did mum send me", "count messages from ravi", "number of sms from asha"] {
+        for t in [
+            "how many texts did mum send me",
+            "count messages from ravi",
+            "number of sms from asha",
+        ] {
             c.train("q.msgs_from", t);
         }
         c
@@ -275,39 +347,85 @@ mod tests {
     #[test]
     fn it_classifies_unseen_phrasings_and_knows_when_it_does_not_know() {
         let c = trained();
-        assert_eq!(c.decide("could you phone my brother", 0.6).unwrap().0, "call");
-        assert_eq!(c.decide("put the torch on, it's dark", 0.6).unwrap().0, "flashlight");
-        assert_eq!(c.decide("how many messages did Ravi send", 0.6).unwrap().0, "q.msgs_from");
-        assert!(c.decide("write me a poem about rain", 0.6).is_none(), "no evidence, no decision");
+        assert_eq!(
+            c.decide("could you phone my brother", 0.6).unwrap().0,
+            "call"
+        );
+        assert_eq!(
+            c.decide("put the torch on, it's dark", 0.6).unwrap().0,
+            "flashlight"
+        );
+        assert_eq!(
+            c.decide("how many messages did Ravi send", 0.6).unwrap().0,
+            "q.msgs_from"
+        );
+        assert!(
+            c.decide("write me a poem about rain", 0.6).is_none(),
+            "no evidence, no decision"
+        );
     }
     #[test]
     fn it_learns_online() {
         let mut c = trained();
-        assert_ne!(c.decide("blow the candle out", 0.6).map(|d| d.0), Some("flashlight".into()));
+        assert_ne!(
+            c.decide("blow the candle out", 0.6).map(|d| d.0),
+            Some("flashlight".into())
+        );
         c.train("flashlight", "blow the candle out");
         c.train("flashlight", "candle on");
-        assert_eq!(c.decide("blow the candle out", 0.6).unwrap().0, "flashlight");
+        assert_eq!(
+            c.decide("blow the candle out", 0.6).unwrap().0,
+            "flashlight"
+        );
     }
     #[test]
     fn people_are_found_by_name_typo_relation_number_or_capital() {
-        let contacts = vec!["Mum".to_string(), "Ravi Kumar".to_string(), "Asha".to_string()];
-        assert_eq!(person("text ravi kumar I'm late", &contacts).as_deref(), Some("Ravi Kumar"));
+        let contacts = vec![
+            "Mum".to_string(),
+            "Ravi Kumar".to_string(),
+            "Asha".to_string(),
+        ];
+        assert_eq!(
+            person("text ravi kumar I'm late", &contacts).as_deref(),
+            Some("Ravi Kumar")
+        );
         assert_eq!(person("call Ashaa", &contacts).as_deref(), Some("Asha"));
-        assert_eq!(person("could you ring my mother", &contacts).as_deref(), Some("Mum"));
-        assert_eq!(person("phone my brother Arjun", &contacts).as_deref(), Some("Arjun"));
-        assert_eq!(person("call 98765 43210", &contacts).as_deref(), Some("9876543210"));
-        assert_eq!(person("call +919876543210 now", &contacts).as_deref(), Some("+919876543210"));
+        assert_eq!(
+            person("could you ring my mother", &contacts).as_deref(),
+            Some("Mum")
+        );
+        assert_eq!(
+            person("phone my brother Arjun", &contacts).as_deref(),
+            Some("Arjun")
+        );
+        assert_eq!(
+            person("call 98765 43210", &contacts).as_deref(),
+            Some("9876543210")
+        );
+        assert_eq!(
+            person("call +919876543210 now", &contacts).as_deref(),
+            Some("+919876543210")
+        );
         assert!(person("switch the torch on", &contacts).is_none());
     }
     #[test]
     fn days_numbers_switches_and_message_text() {
-        assert_eq!(day("put dentist on my calendar for Monday").as_deref(), Some("monday"));
+        assert_eq!(
+            day("put dentist on my calendar for Monday").as_deref(),
+            Some("monday")
+        );
         assert_eq!(percent("make it louder, 80").as_deref(), Some("80"));
         assert_eq!(percent("volume 250"), None);
         assert_eq!(on_off("switch the torch on"), "on");
         assert_eq!(on_off("turn the flashlight off"), "off");
-        assert_eq!(message_text("drop Mum a text saying I'll be late").as_deref(), Some("I'll be late"));
-        assert_eq!(message_text("tell Ravi: on my way").as_deref(), Some("on my way"));
+        assert_eq!(
+            message_text("drop Mum a text saying I'll be late").as_deref(),
+            Some("I'll be late")
+        );
+        assert_eq!(
+            message_text("tell Ravi: on my way").as_deref(),
+            Some("on my way")
+        );
         assert_eq!(message_text("text mum"), None);
     }
 }

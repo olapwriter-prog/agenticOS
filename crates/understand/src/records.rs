@@ -24,7 +24,11 @@ fn who(s: &str, number_end: &str) -> (Option<String>, String, String) {
     if let Some(open) = s.find(" (") {
         if let Some(close) = s[open..].find(')') {
             let close = open + close;
-            return (Some(s[..open].trim().to_string()), s[open + 2..close].to_string(), s[close + 1..].to_string());
+            return (
+                Some(s[..open].trim().to_string()),
+                s[open + 2..close].to_string(),
+                s[close + 1..].to_string(),
+            );
         }
     }
     let end = s.find(number_end).unwrap_or(s.len());
@@ -43,8 +47,17 @@ pub fn messages(text: &str) -> Vec<Message> {
         .filter_map(|line| {
             let (incoming, rest) = dir(line)?;
             let (name, number, after) = who(rest, ": ");
-            let text = after.strip_prefix(": ").or_else(|| after.strip_prefix(':')).unwrap_or(&after).to_string();
-            Some(Message { incoming, name, number, text })
+            let text = after
+                .strip_prefix(": ")
+                .or_else(|| after.strip_prefix(':'))
+                .unwrap_or(&after)
+                .to_string();
+            Some(Message {
+                incoming,
+                name,
+                number,
+                text,
+            })
         })
         .collect()
 }
@@ -55,7 +68,12 @@ pub fn calls(text: &str) -> Vec<Call> {
         .filter_map(|line| {
             let (incoming, rest) = dir(line)?;
             let (name, number, after) = who(rest, " ");
-            Some(Call { incoming, name, number, state: after.trim().to_string() })
+            Some(Call {
+                incoming,
+                name,
+                number,
+                state: after.trim().to_string(),
+            })
         })
         .collect()
 }
@@ -70,7 +88,10 @@ pub fn contacts(text: &str) -> Vec<(String, String)> {
 
 /// Does a record's party match a person (a contact name, or a number's last 10 digits)?
 pub fn is(name: &Option<String>, number: &str, person: &str) -> bool {
-    if name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(person)) {
+    if name
+        .as_deref()
+        .is_some_and(|n| n.eq_ignore_ascii_case(person))
+    {
         return true;
     }
     let digits = |s: &str| s.chars().filter(char::is_ascii_digit).collect::<String>();
@@ -85,7 +106,15 @@ mod tests {
     fn lines_become_records() {
         let m = messages("from Mum (+91999): dinner: at 8?\nto Ravi Kumar (+91888): ok\nfrom +91800: sale\nno messages");
         assert_eq!(m.len(), 3);
-        assert_eq!(m[0], Message { incoming: true, name: Some("Mum".into()), number: "+91999".into(), text: "dinner: at 8?".into() });
+        assert_eq!(
+            m[0],
+            Message {
+                incoming: true,
+                name: Some("Mum".into()),
+                number: "+91999".into(),
+                text: "dinner: at 8?".into()
+            }
+        );
         assert_eq!(m[1].name.as_deref(), Some("Ravi Kumar"));
         assert!(!m[1].incoming);
         assert_eq!(m[2].name, None);
@@ -93,7 +122,13 @@ mod tests {
         let c = calls("from Ravi (+91888) ended\nto +91800 active");
         assert_eq!(c[0].state, "ended");
         assert_eq!(c[1].number, "+91800");
-        assert_eq!(contacts("Mum: +91999\nRavi: +91888"), vec![("Mum".into(), "+91999".into()), ("Ravi".into(), "+91888".into())]);
+        assert_eq!(
+            contacts("Mum: +91999\nRavi: +91888"),
+            vec![
+                ("Mum".into(), "+91999".into()),
+                ("Ravi".into(), "+91888".into())
+            ]
+        );
         assert!(is(&None, "+919876543210", "98765 43210"));
         assert!(is(&Some("Mum".into()), "", "mum"));
     }

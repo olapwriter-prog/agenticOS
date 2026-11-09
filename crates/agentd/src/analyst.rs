@@ -244,10 +244,15 @@ mod tests {
     }
     #[test]
     fn zero_answers_and_line_counts() {
-        assert!(says_zero("Ravi made 0 calls to you") && says_zero("You received no promotional texts"));
+        assert!(
+            says_zero("Ravi made 0 calls to you") && says_zero("You received no promotional texts")
+        );
         assert!(!says_zero("Mum sent 4 texts") && !says_zero("10 offers"));
         let mut d = BTreeMap::new();
-        d.insert("call_log".to_string(), "from Ravi (+91) ended\nto Mum (+92) ended".to_string());
+        d.insert(
+            "call_log".to_string(),
+            "from Ravi (+91) ended\nto Mum (+92) ended".to_string(),
+        );
         d.insert("all_messages".to_string(), "no messages".to_string());
         assert_eq!(data_lines(&d), 2);
     }
@@ -262,8 +267,14 @@ mod tests {
             Some("my calls for missed ones")
         );
         assert!(question_of("call mum").is_none());
-        assert_eq!(question_of("did Mum call me").as_deref(), Some("did Mum call me"));
-        assert!(question_of("what's on friday").is_none(), "commands stay commands");
+        assert_eq!(
+            question_of("did Mum call me").as_deref(),
+            Some("did Mum call me")
+        );
+        assert!(
+            question_of("what's on friday").is_none(),
+            "commands stay commands"
+        );
     }
     #[test]
     fn only_read_only_sources_with_known_formats_load() {

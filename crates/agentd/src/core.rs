@@ -456,11 +456,17 @@ impl Core {
     /// Load read-only sources through the executor (Low tier only), then run the code over them
     /// in the sandbox. Only the answer comes back.
     fn analyze(&mut self, sources: &Value, code: &str, question: &str) -> Result<String, String> {
-        self.analyze_counted(sources, code, question).map(|(a, _)| a)
+        self.analyze_counted(sources, code, question)
+            .map(|(a, _)| a)
     }
 
     /// The same, also saying how many lines of data the code ran over.
-    fn analyze_counted(&mut self, sources: &Value, code: &str, question: &str) -> Result<(String, usize), String> {
+    fn analyze_counted(
+        &mut self,
+        sources: &Value,
+        code: &str,
+        question: &str,
+    ) -> Result<(String, usize), String> {
         let sources = crate::analyst::parse_sources(sources)?;
         let mut data = std::collections::BTreeMap::new();
         for (tool, args) in &sources {
@@ -584,7 +590,9 @@ impl Core {
             .iter()
             .filter_map(|e| {
                 let t = Learner::target(e)?;
-                let tool = serde_json::from_str::<Value>(t).ok()?["tool"].as_str()?.to_string();
+                let tool = serde_json::from_str::<Value>(t).ok()?["tool"]
+                    .as_str()?
+                    .to_string();
                 Some((tool, e.prompt.clone()))
             })
             .collect();
@@ -593,7 +601,10 @@ impl Core {
 
     fn contact_names(&mut self) -> Vec<String> {
         let (_, text) = self.call_tool("list_contacts", &[]);
-        agentos_understand::records::contacts(&text).into_iter().map(|(n, _)| n).collect()
+        agentos_understand::records::contacts(&text)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect()
     }
 
     /// A question the classifier recognises, answered by exact code over all the data, with no
@@ -609,7 +620,12 @@ impl Core {
         let data = crate::qa::Data::parse(&msgs, &calls, &contacts);
         let answer = crate::qa::answer(&label, text, &data)?;
         let now = self.clock.now_ms();
-        let ep = self.learner.begin(now, text, &json!({"tool": label, "args": {}}).to_string(), "classifier");
+        let ep = self.learner.begin(
+            now,
+            text,
+            &json!({"tool": label, "args": {}}).to_string(),
+            "classifier",
+        );
         self.learner.ran(ep, now, true);
         Some(format!("answer: {answer}"))
     }
@@ -795,10 +811,19 @@ impl Core {
                             })
                             .map(|(answer, lines)| {
                                 // "none" over data that has lines: one more look (not an attempt)
-                                if !job.rechecked && lines > 0 && crate::analyst::says_zero(&answer) {
+                                if !job.rechecked && lines > 0 && crate::analyst::says_zero(&answer)
+                                {
                                     job.rechecked = true;
-                                    job.messages.push(("user".into(), crate::analyst::zero_feedback(&answer, lines)));
-                                    job.rx = crate::coder::generate(&job.url, &job.messages, &job.schema, job.timeout);
+                                    job.messages.push((
+                                        "user".into(),
+                                        crate::analyst::zero_feedback(&answer, lines),
+                                    ));
+                                    job.rx = crate::coder::generate(
+                                        &job.url,
+                                        &job.messages,
+                                        &job.schema,
+                                        job.timeout,
+                                    );
                                     RECHECKING.to_string()
                                 } else {
                                     answer
@@ -940,8 +965,12 @@ impl Core {
             .pending()
             .iter()
             .map(|p| {
-                let args: serde_json::Map<String, Value> =
-                    p.action.args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+                let args: serde_json::Map<String, Value> = p
+                    .action
+                    .args
+                    .iter()
+                    .map(|(k, v)| (k.clone(), json!(v)))
+                    .collect();
                 json!({"id": p.id, "tool": p.action.tool, "args": args})
             })
             .collect();

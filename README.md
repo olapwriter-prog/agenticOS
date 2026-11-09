@@ -89,6 +89,22 @@ with `write_function`.
   The daemon carries the requests out afterwards through the executor, so a text still waits for the
   key, and a function can never write or install functions.
 
+## Regular requests: code first, the LLM last
+
+Everyday requests are handled without the LLM. A weighted Naive Bayes classifier
+(`crates/understand`: words, word pairs and number shapes; inverse-label-frequency weights; online
+updates) decides what kind of request it is, rules pull out the details (contacts by name, typo or
+"mother", days, numbers, on/off, message text), and questions are answered by exact code over every
+message, call and contact. The LLM is asked only when the classifier is unsure (below 0.6) or a detail
+is missing. Every request you approve, decline or correct retrains the classifier in milliseconds, so
+phrasings that once needed the LLM stop needing it.
+
+Order for each message: feedback words, exact phrases, your shortcuts, the classifier, then the LLM.
+
+With no LLM at all: 10/10 on the tool-choice benchmark, 9/9 on the data questions, and 11/12 on
+phrasings it had never seen (the twelfth it declined and would have passed to the LLM), each in
+milliseconds. The LLM on the same questions: 3/9, at 15 to 60 s each.
+
 ## Questions over the phone's data, answered in the sandbox
 
 Ask `how many texts did Mum send me?` or `look through my calls for missed ones`. The model is
@@ -145,6 +161,7 @@ cp agentd.example.toml agentd.toml
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
 | `crates/infer` | **agentos-llm**: GGUF, BPE tokenizer, Qwen2/3/3.5 forward pass, NEON kernels, grammar, server |
+| `crates/understand` | **Understanding without the LLM**: weighted Naive Bayes (online), detail extraction, typed records |
 | `crates/learn` | **Learning**: episodes, rewards from human signals, shortcuts, examples, datasets, eval |
 | `crates/functions` | **Agent-written Rust functions**: source check, rustc to WebAssembly, examples, versions, install/rollback |
 | `crates/{hal,stage,power,wake,freeze,ledger,kerneld}` | Vol 2: power stages, cgroup freezer, cpufreq, hash-chained ledger |

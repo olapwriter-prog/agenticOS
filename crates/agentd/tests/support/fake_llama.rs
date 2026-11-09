@@ -84,7 +84,12 @@ fn answer(mode: &str, model: &str, req: &Value) -> String {
     if mode == "analyst-zero" && req.get("json_schema").is_some() {
         // matches lowercase "mum" (finds nothing) until told its code matched nothing
         let told = req["messages"].as_array().is_some_and(|m| {
-            m.iter().any(|m| m["content"].as_str().unwrap_or("").contains("matches nothing"))
+            m.iter().any(|m| {
+                m["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("matches nothing")
+            })
         });
         return json!({
             "sources": [{"tool": "all_messages", "args": {}}],

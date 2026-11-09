@@ -590,7 +590,10 @@ mod tests {
 }"#).unwrap();
         let mut args = std::collections::BTreeMap::new();
         args.insert("m".to_string(), "from Mum (+91999): dinner: at 8?\nfrom Ravi K (+91888): hi\nto Mum (+91999): ok\nfrom +91800: sale!\nfrom Mum (+91999): milk".to_string());
-        args.insert("c".to_string(), "from Ravi K (+91888) ended\nto +91800 active\nno more".to_string());
+        args.insert(
+            "c".to_string(),
+            "from Ravi K (+91888) ended\nto +91800 active\nno more".to_string(),
+        );
         // two contacts texted; one stranger; Ravi K called once; text keeps its colon; state parsed
         assert_eq!(run(&w, &args).unwrap().result, "2|1|1|dinner: at 8?|active");
     }

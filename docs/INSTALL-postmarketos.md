@@ -168,6 +168,7 @@ llama.cpp can use on these phones.
   | Rust functions written and passing their tests | not tried | 7/10 | 8/10 |
   | Questions answered by code in the sandbox | 0/5 | 2/5 | 3/5 |
 
+  With the code-first layer (no LLM): tool choice 10/10, questions 9/9, never-seen phrasings 11/12.
   The misses are the model's reasoning (an EMI formula, reading "calls Ravi made to me" as text to
   match); every wrong function or answer was caught or is visible, and nothing acted without the key.
 - **The screen (agentos-ui) on a phone is not packaged yet.** It builds on Alpine aarch64 and its

@@ -627,10 +627,20 @@ fn it_learns_from_corrections_and_approvals() {
         .unwrap()
         .modified()
         .unwrap();
-    assert_eq!(before, after2, "learned from the correction: the model was not asked");
+    assert_eq!(
+        before, after2,
+        "learned from the correction: the model was not asked"
+    );
     let log = std::fs::read_to_string(d.join("experience.jsonl")).unwrap();
-    let last = log.lines().filter(|l| l.contains(r#""e":"ep""#)).last().unwrap();
-    assert!(last.contains("classifier") && last.contains("read_calendar"), "{last}");
+    let last = log
+        .lines()
+        .filter(|l| l.contains(r#""e":"ep""#))
+        .last()
+        .unwrap();
+    assert!(
+        last.contains("classifier") && last.contains("read_calendar"),
+        "{last}"
+    );
 
     // an approved call is rewarded; a declined one is not repeated as a shortcut
     assert!(ctl("chat call mum").contains("approval required"));
@@ -761,10 +771,19 @@ fn an_answer_of_none_over_real_data_gets_a_second_look() {
         ctl(&format!("sim-sms +919876543210|{text}"));
     }
     let a = ctl("chat analyse zorbly the texts");
-    assert_eq!(a, "answer (attempt 1): Mum sent 2 texts", "the recheck is not an attempt: {a}");
+    assert_eq!(
+        a, "answer (attempt 1): Mum sent 2 texts",
+        "the recheck is not an attempt: {a}"
+    );
     let sent = std::fs::read_to_string(format!("{}.last.json", model.display())).unwrap();
-    assert!(sent.contains("has 2 lines") && sent.contains("Mum sent 0 texts"), "{sent}");
-    assert!(!sent.contains("dinner at 8"), "still no data shown to the model");
+    assert!(
+        sent.contains("has 2 lines") && sent.contains("Mum sent 0 texts"),
+        "{sent}"
+    );
+    assert!(
+        !sent.contains("dinner at 8"),
+        "still no data shown to the model"
+    );
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
@@ -787,17 +806,30 @@ fn regular_requests_are_handled_by_code_and_the_model_is_not_asked() {
     ctl("chat hang up");
     std::thread::sleep(std::time::Duration::from_millis(300)); // let the warm-up request land
     let last = format!("{}.last.json", model.display());
-    let before = std::fs::metadata(&last).ok().and_then(|m| m.modified().ok());
+    let before = std::fs::metadata(&last)
+        .ok()
+        .and_then(|m| m.modified().ok());
     // commands: classifier + rules
     assert!(ctl("chat could you ring my mother").contains("approval required"));
     assert!(ctl("pending").contains("call to=Mum"));
     assert_eq!(ctl("chat switch the torch on"), "done: flashlight on");
     assert_eq!(ctl("chat make it louder, 80"), "done: volume 80%");
     // questions: classifier + exact code over every record
-    assert_eq!(ctl("chat did Ravi call me"), "answer: Yes, Ravi called you (1 time).");
-    assert_eq!(ctl("chat how many texts came from numbers not in my contacts"), "answer: 1 text came from numbers not in your contacts.");
-    assert_eq!(ctl("chat who texted me the most"), "answer: Mum and +918000000001 texted you the most (1 text).");
-    let after = std::fs::metadata(&last).ok().and_then(|m| m.modified().ok());
+    assert_eq!(
+        ctl("chat did Ravi call me"),
+        "answer: Yes, Ravi called you (1 time)."
+    );
+    assert_eq!(
+        ctl("chat how many texts came from numbers not in my contacts"),
+        "answer: 1 text came from numbers not in your contacts."
+    );
+    assert_eq!(
+        ctl("chat who texted me the most"),
+        "answer: Mum and +918000000001 texted you the most (1 text)."
+    );
+    let after = std::fs::metadata(&last)
+        .ok()
+        .and_then(|m| m.modified().ok());
     assert_eq!(before, after, "the model was never asked");
     assert!(ctl("learn").contains("classifier"));
     r.stop();
