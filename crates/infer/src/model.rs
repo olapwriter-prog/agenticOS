@@ -66,42 +66,44 @@ impl Config {
     }
 }
 
-struct Layer {
-    attn_norm: TensorInfo,
-    ffn_norm: TensorInfo,
-    ffn_gate: TensorInfo,
-    ffn_up: TensorInfo,
-    ffn_down: TensorInfo,
+pub(crate) struct Layer {
+    pub(crate) attn_norm: TensorInfo,
+    pub(crate) ffn_norm: TensorInfo,
+    pub(crate) ffn_gate: TensorInfo,
+    pub(crate) ffn_up: TensorInfo,
+    pub(crate) ffn_down: TensorInfo,
     // attention
-    q: Option<TensorInfo>,
-    k: Option<TensorInfo>,
-    v: Option<TensorInfo>,
-    o: Option<TensorInfo>,
-    q_bias: Option<Vec<f32>>,
-    k_bias: Option<Vec<f32>>,
-    v_bias: Option<Vec<f32>>,
-    q_norm: Option<Vec<f32>>,
-    k_norm: Option<Vec<f32>>,
+    pub(crate) q: Option<TensorInfo>,
+    pub(crate) k: Option<TensorInfo>,
+    pub(crate) v: Option<TensorInfo>,
+    pub(crate) o: Option<TensorInfo>,
+    pub(crate) q_bias: Option<Vec<f32>>,
+    pub(crate) k_bias: Option<Vec<f32>>,
+    pub(crate) v_bias: Option<Vec<f32>>,
+    pub(crate) q_norm: Option<Vec<f32>>,
+    pub(crate) k_norm: Option<Vec<f32>>,
     // Gated DeltaNet
-    qkv: Option<TensorInfo>,
-    gate: Option<TensorInfo>,
-    ssm_alpha: Option<TensorInfo>,
-    ssm_beta: Option<TensorInfo>,
-    ssm_out: Option<TensorInfo>,
+    pub(crate) qkv: Option<TensorInfo>,
+    pub(crate) gate: Option<TensorInfo>,
+    pub(crate) ssm_alpha: Option<TensorInfo>,
+    pub(crate) ssm_beta: Option<TensorInfo>,
+    pub(crate) ssm_out: Option<TensorInfo>,
     conv1d: Vec<f32>,
-    dt_bias: Vec<f32>,
-    ssm_a: Vec<f32>,
-    ssm_norm: Vec<f32>,
-    norms: (Vec<f32>, Vec<f32>),
+    pub(crate) dt_bias: Vec<f32>,
+    pub(crate) ssm_a: Vec<f32>,
+    pub(crate) ssm_norm: Vec<f32>,
+    pub(crate) norms: (Vec<f32>, Vec<f32>),
 }
 
 pub struct Model {
     pub cfg: Config,
-    g: Gguf,
-    embd: TensorInfo,
-    output: TensorInfo,
-    output_norm: Vec<f32>,
-    layers: Vec<Layer>,
+    pub(crate) g: Gguf,
+    pub(crate) embd: TensorInfo,
+    pub(crate) output: TensorInfo,
+    pub(crate) output_norm: Vec<f32>,
+    pub(crate) layers: Vec<Layer>,
+    /// A trained LoRA adapter on the attention projections, if one is loaded.
+    pub adapter: Option<crate::train::Adapter>,
 }
 
 /// Per-sequence memory: the attention cache (f16) and the recurrent states.
@@ -181,13 +183,13 @@ impl State {
     }
 }
 
-fn floats(g: &Gguf, t: &TensorInfo) -> Vec<f32> {
+pub(crate) fn floats(g: &Gguf, t: &TensorInfo) -> Vec<f32> {
     let mut v = vec![0f32; t.elements() as usize];
     crate::quant::decode_row(t.dtype, g.bytes(t), &mut v);
     v
 }
 
-fn rms_norm(x: &mut [f32], w: &[f32], eps: f32) {
+pub(crate) fn rms_norm(x: &mut [f32], w: &[f32], eps: f32) {
     let ms = x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32;
     let s = 1.0 / (ms + eps).sqrt();
     for (v, w) in x.iter_mut().zip(w) {
@@ -195,10 +197,10 @@ fn rms_norm(x: &mut [f32], w: &[f32], eps: f32) {
     }
 }
 
-fn silu(x: f32) -> f32 {
+pub(crate) fn silu(x: f32) -> f32 {
     x / (1.0 + (-x).exp())
 }
-fn sigmoid(x: f32) -> f32 {
+pub(crate) fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
 fn softplus(x: f32) -> f32 {
@@ -210,7 +212,7 @@ fn softplus(x: f32) -> f32 {
 }
 
 /// NeoX-style rotary embedding on the first `n_rot` values of one head.
-fn rope(v: &mut [f32], pos: usize, n_rot: usize, base: f32) {
+pub(crate) fn rope(v: &mut [f32], pos: usize, n_rot: usize, base: f32) {
     let half = n_rot / 2;
     for i in 0..half {
         let theta = pos as f32 * base.powf(-2.0 * i as f32 / n_rot as f32);
@@ -324,6 +326,7 @@ impl Model {
             output,
             output_norm,
             layers,
+            adapter: None,
         })
     }
 
@@ -413,7 +416,74 @@ impl Model {
         y
     }
 
-    fn embed(&self, tokens: &[u32]) -> Vec<f32> {
+    /// `w` times `n` vectors without quantizing the inputs (weights decoded to f32): slower,
+    /// but smooth, which training's gradient checks need.
+    pub fn matmul_exact(&self, w: &TensorInfo, x: &[f32], n: usize) -> Vec<f32> {
+        let cols = w.dims[0] as usize;
+        let rows = w.dims[1] as usize;
+        let (per, bytes) = w.dtype.block().expect("supported weight type");
+        let row_bytes = cols / per * bytes;
+        let data = self.g.bytes(w);
+        let mut t = vec![0f32; rows * n];
+        let chunk = (rows / (rayon::current_num_threads() * 8)).clamp(8, 256);
+        t.par_chunks_mut(chunk * n).enumerate().for_each(|(ci, out)| {
+            for (k, o) in out.chunks_mut(n).enumerate() {
+                let r = ci * chunk + k;
+                row_dot_many(w.dtype, &data[r * row_bytes..(r + 1) * row_bytes], cols, x, n, o);
+            }
+        });
+        let mut y = vec![0f32; n * rows];
+        for r in 0..rows {
+            for k in 0..n {
+                y[k * rows + r] = t[r * n + k];
+            }
+        }
+        y
+    }
+
+    /// The transpose: `dx = wᵀ · dy` for `n` vectors `dy` (n x rows) -> n x cols. This is how a
+    /// gradient flows back through a frozen (still compressed) weight matrix.
+    pub fn matmul_t(&self, w: &TensorInfo, dy: &[f32], n: usize) -> Vec<f32> {
+        let cols = w.dims[0] as usize;
+        let rows = w.dims[1] as usize;
+        let (per, bytes) = w.dtype.block().expect("supported weight type");
+        let row_bytes = cols / per * bytes;
+        let data = self.g.bytes(w);
+        let mut dx = vec![0f32; n * cols];
+        // A block of rows is decoded once (in parallel), then each thread adds it into its own
+        // tile of tokens, small enough to stay in cache. No partial sums to add up afterwards.
+        const ROWS: usize = 128;
+        let tile = (n.div_ceil(rayon::current_num_threads().max(1))).clamp(1, 16);
+        let mut block = vec![0f32; ROWS * cols];
+        for r0 in (0..rows).step_by(ROWS) {
+            let nr = ROWS.min(rows - r0);
+            block[..nr * cols]
+                .par_chunks_mut(cols)
+                .enumerate()
+                .for_each(|(i, out)| {
+                    let r = r0 + i;
+                    crate::quant::decode_row(w.dtype, &data[r * row_bytes..(r + 1) * row_bytes], out);
+                });
+            let block = &block;
+            dx.par_chunks_mut(tile * cols)
+                .enumerate()
+                .for_each(|(ti, acc)| {
+                    for (kk, a) in acc.chunks_mut(cols).enumerate() {
+                        let k = ti * tile + kk;
+                        let g = &dy[k * rows + r0..k * rows + r0 + nr];
+                        for (i, &gi) in g.iter().enumerate() {
+                            if gi != 0.0 {
+                                let wr = &block[i * cols..(i + 1) * cols];
+                                a.iter_mut().zip(wr).for_each(|(a, w)| *a += gi * w);
+                            }
+                        }
+                    }
+                });
+        }
+        dx
+    }
+
+    pub(crate) fn embed(&self, tokens: &[u32]) -> Vec<f32> {
         let d = self.cfg.n_embd;
         let (per, bytes) = self.embd.dtype.block().unwrap();
         let row_bytes = d / per * bytes;
@@ -477,9 +547,15 @@ impl Model {
         let hd = c.head_dim;
         let kvd = c.n_head_kv * hd;
         let gated = c.arch == Arch::Qwen35;
-        let q_full = self.matmul(l.q.as_ref().unwrap(), h, n);
+        let mut q_full = self.matmul(l.q.as_ref().unwrap(), h, n);
         let mut k = self.matmul(l.k.as_ref().unwrap(), h, n);
         let mut v = self.matmul(l.v.as_ref().unwrap(), h, n);
+        if let Some(ad) = &self.adapter {
+            use crate::train::Target;
+            ad.apply((li, Target::Q), h, n, &mut q_full);
+            ad.apply((li, Target::K), h, n, &mut k);
+            ad.apply((li, Target::V), h, n, &mut v);
+        }
         let q_w = if gated {
             2 * c.n_head * hd
         } else {
@@ -577,7 +653,11 @@ impl Model {
                 .zip(&gate)
                 .for_each(|(a, g)| *a *= sigmoid(*g));
         }
-        self.matmul(l.o.as_ref().unwrap(), &out, n)
+        let mut y = self.matmul(l.o.as_ref().unwrap(), &out, n);
+        if let Some(ad) = &self.adapter {
+            ad.apply((li, crate::train::Target::O), &out, n, &mut y);
+        }
+        y
     }
 
     fn delta_net(&self, li: usize, l: &Layer, st: &mut State, h: &[f32], n: usize) -> Vec<f32> {

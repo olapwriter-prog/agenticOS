@@ -5,3 +5,5 @@ pub mod grammar;
 pub mod model;
 pub mod quant;
 pub mod tokenizer;
+pub mod train;
+pub mod finetune;

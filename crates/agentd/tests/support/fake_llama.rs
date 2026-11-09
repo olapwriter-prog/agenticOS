@@ -4,7 +4,9 @@
 //! `coder` writes a Rust function that does not compile, then fixes it once shown the errors;
 //! `analyst` does the same with analysis code that counts Mum's texts.
 //! Every request is saved next to the model file, as <model>.last.json, and each code request
-//! adds a line to <model>.coder-requests.
+//! adds a line to <model>.coder-requests. The command line goes to <model>.args.
+//! `train ...` stands in for `agentos-llm train`: it checks the exported data is there, writes
+//! an adapter and reports that it beat the model without it.
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -12,8 +14,26 @@ use std::net::TcpListener;
 const BROKEN: &str = "fn run(args: &Args) -> Result<String, String> {\n    let each: f64 = args.get(\"total\")? / args.num(\"people\")?;\n    Ok(format!(\"{:.2}\", each))\n}";
 const FIXED: &str = "fn run(args: &Args) -> Result<String, String> {\n    let each = args.num(\"total\")? / args.num(\"people\")?;\n    Ok(format!(\"{:.2}\", each))\n}";
 
+fn train(args: &[String]) {
+    let after = |flag: &str| {
+        let i = args.iter().position(|a| a == flag).expect(flag);
+        args[i + 1].clone()
+    };
+    let data = std::fs::read_to_string(after("--data")).expect("training data");
+    assert!(data.contains("\"assistant\""), "{data}");
+    assert!(std::fs::metadata(after("--grammar")).is_ok());
+    std::fs::write(after("--out"), "adapter").unwrap();
+    println!(
+        "{}",
+        json!({"done": true, "base": 0.5, "tuned": 0.8, "kept": true, "step": 3, "adapter": after("--out")})
+    );
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|a| a == "train") {
+        return train(&args);
+    }
     let after = |flag: &str| {
         args.iter()
             .position(|a| a == flag)
@@ -22,6 +42,7 @@ fn main() {
             .unwrap_or_else(|| panic!("missing {flag}"))
     };
     let (port, model) = (after("--port"), after("-m"));
+    std::fs::write(format!("{model}.args"), args[1..].join(" ")).ok();
     let mode = std::fs::read_to_string(&model)
         .unwrap_or_default()
         .trim()

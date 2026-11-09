@@ -67,6 +67,16 @@ pub struct Config {
     /// How long one model request may take. A CPU engine on a phone reading a long prompt
     /// for the first time needs a while; after that the prompt is reused.
     pub model_timeout_secs: u64,
+    /// Overnight training of the small model on the requests the human confirmed.
+    pub train_enabled: bool,
+    /// Train again once this many new confirmed requests have come in.
+    pub train_min_new: usize,
+    /// Battery the phone must have (on the charger) to train.
+    pub train_min_battery: u8,
+    /// Optimizer steps per training run.
+    pub train_steps: usize,
+    /// A run stops and checkpoints after this long, and continues on the next tick.
+    pub train_chunk_secs: u64,
 }
 
 impl Default for Config {
@@ -105,6 +115,11 @@ impl Default for Config {
             coder_timeout_secs: 300,
             rustc: PathBuf::from("rustc"),
             model_timeout_secs: 180,
+            train_enabled: true,
+            train_min_new: 20,
+            train_min_battery: 50,
+            train_steps: 60,
+            train_chunk_secs: 1800,
         }
     }
 }

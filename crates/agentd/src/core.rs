@@ -60,6 +60,7 @@ pub struct Core {
     system: String,
     /// Functions being written by the local model, each for someone waiting on the control socket.
     coder_jobs: Vec<crate::coder::Job>,
+    trainer: crate::trainer::Trainer,
     coder_prompt: String,
     phone_tool_names: Vec<&'static str>,
     small_url: Option<String>,
@@ -295,6 +296,7 @@ impl Core {
             grammar: grammar_copy,
             system: system_copy,
             coder_jobs: Vec::new(),
+            trainer: crate::trainer::Trainer::new(&dir),
             coder_prompt,
             phone_tool_names,
             small_url: small_url.clone(),
@@ -306,6 +308,7 @@ impl Core {
             fixed_minute_of_day: None,
         };
         let _ = core.kernel.record("agentd started");
+        core.serve_adapter();
         core.retrain();
         core.phone.borrow_mut().poll(); // learn what is already in the inbox
         core.sync_models();
@@ -353,6 +356,10 @@ impl Core {
         // On the charger with enough battery, power is not the limit: keep the large model
         // loaded while the human is here too, so asking for a function does not unload it.
         let plugged = self.power.on_charger() && self.power.level_percent() >= 30;
+        if self.trainer.running.is_some() {
+            // training needs the memory the large model would take
+            return vec![Role::Small];
+        }
         match self.kernel.model_budget() {
             ModelBudget::Large => vec![Role::Small, Role::Large],
             _ if plugged => vec![Role::Small, Role::Large],
@@ -917,6 +924,8 @@ impl Core {
         if let Err(e) = write("sft.jsonl", &sft)
             .and_then(|_| write("dpo.jsonl", &dpo))
             .and_then(|_| write("eval.jsonl", &eval_rows))
+            // the grammar the model answers under, so training judges it the same way
+            .and_then(|_| std::fs::write(dir.join("grammar.gbnf"), &self.grammar).map_err(io))
         {
             return format!("export failed: {e}");
         }
@@ -1089,6 +1098,35 @@ impl Core {
             "bad" => self.chat_inner("that was wrong"),
             "learn" => match rest.trim() {
                 "eval" => self.evaluate_model(),
+                "status" => self.learn_status(),
+                "train" => {
+                    if self.trainer.running.is_some() {
+                        return "already training".into();
+                    }
+                    self.trainer.forced = true;
+                    self.train_tick();
+                    if self.trainer.running.is_none() {
+                        self.trainer.forced = false;
+                    }
+                    self.learn_status()
+                }
+                "stop" => {
+                    if self.trainer.stop() {
+                        let _ = self.kernel.record("training stopped by the human");
+                        "stopped; the checkpoint is kept".into()
+                    } else {
+                        "not training".into()
+                    }
+                }
+                "rollback" => match self.trainer.rollback() {
+                    Ok(now) => {
+                        self.serve_adapter();
+                        let what = now.map_or("no adapter".to_string(), |p| p.display().to_string());
+                        let _ = self.kernel.record(&format!("adapter rolled back; now {what}"));
+                        format!("rolled back; now serving {what}")
+                    }
+                    Err(e) => e,
+                },
                 _ => self.export_learning(),
             },
             "functions" => {
@@ -1271,9 +1309,136 @@ impl Core {
         if now.saturating_sub(self.last_anchor_ms) >= self.cfg.anchor_secs * 1000 {
             let _ = self.save_anchor();
         }
+        self.train_tick();
         self.sync_models();
         self.prio.set_mode(self.baseline_mode());
         self.prio.tick();
+    }
+
+    /// Only agentos-llm reads our adapter format (llama-server's --lora wants its own).
+    fn serves_adapters(&self) -> bool {
+        self.cfg
+            .llama_server
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("agentos-llm"))
+    }
+
+    fn small_spec(&self) -> Option<agentos_models::ModelSpec> {
+        self.models.spec(Role::Small).cloned()
+    }
+
+    /// Serve the small model with the current trained adapter (or none).
+    fn serve_adapter(&mut self) {
+        let (Some(spec), true) = (self.small_spec(), self.serves_adapters()) else {
+            return;
+        };
+        let active = self.trainer.active();
+        if self.models.set_adapter(&spec.name, active.clone()) {
+            let what = active.map_or("no adapter".to_string(), |p| p.display().to_string());
+            let _ = self.kernel.record(&format!("model {} now served with {what}", spec.name));
+        }
+    }
+
+    fn train_conditions(&self) -> crate::trainer::Conditions {
+        crate::trainer::Conditions {
+            deep: self.kernel.stage == Stage::Deep,
+            charging: self.power.on_charger(),
+            battery: self.power.level_percent(),
+            min_battery: self.cfg.train_min_battery,
+            temperature: self.prio.temperature(),
+            cool_c: self.cfg.cool_c,
+            busy: !self.coder_jobs.is_empty(),
+            new_examples: self.learner.labelled().saturating_sub(self.trainer.trained_on),
+            min_new: self.cfg.train_min_new,
+            forced: self.trainer.forced,
+        }
+    }
+
+    /// Start, stop or finish overnight training.
+    fn train_tick(&mut self) {
+        if let Some(outcome) = self.trainer.poll() {
+            use crate::trainer::Outcome;
+            let line = match outcome {
+                Outcome::Kept { adapter, base, tuned } => {
+                    self.serve_adapter();
+                    format!(
+                        "training kept {}: {:.0}% -> {:.0}% on held-out requests",
+                        adapter.display(),
+                        base * 100.0,
+                        tuned * 100.0
+                    )
+                }
+                Outcome::Discarded { base, tuned } => format!(
+                    "training discarded: {:.0}% -> {:.0}% on held-out requests, not better",
+                    base * 100.0,
+                    tuned * 100.0
+                ),
+                Outcome::Paused { step } => format!("training paused at step {step}; continues next time"),
+                Outcome::Failed(why) => format!("training failed: {why}"),
+            };
+            let _ = self.kernel.record(&line);
+            self.trainer.last = Some(line);
+        }
+        let blocker = self.train_conditions().blocker();
+        if self.trainer.running.is_some() {
+            if let Some(why) = blocker.filter(|w| !w.contains("busy") || !self.coder_jobs.is_empty()) {
+                if self.trainer.stop() {
+                    let line = format!("training stopped ({why}); continues from its checkpoint next time");
+                    let _ = self.kernel.record(&line);
+                    self.trainer.last = Some(line);
+                }
+            }
+            return;
+        }
+        if !self.cfg.train_enabled || blocker.is_some() || !self.serves_adapters() {
+            return;
+        }
+        let Some(spec) = self.small_spec() else {
+            return;
+        };
+        let export = self.export_learning();
+        if export.starts_with("export failed") {
+            self.trainer.last = Some(export);
+            return;
+        }
+        let examples = self.learner.labelled();
+        let model = self.models.path(&spec);
+        let bin = self.cfg.llama_server.clone();
+        match self.trainer.start(&bin, &model, examples, self.cfg.train_steps, self.cfg.train_chunk_secs) {
+            Ok(pid) => {
+                self.prio.adopt(pid);
+                let line = format!("training {} on {examples} confirmed requests (pid {pid})", spec.name);
+                let _ = self.kernel.record(&line);
+                self.trainer.last = Some(line);
+            }
+            Err(e) => {
+                self.trainer.forced = false;
+                self.trainer.last = Some(format!("training could not start: {e}"));
+            }
+        }
+    }
+
+    fn learn_status(&self) -> String {
+        let state = if self.trainer.running.is_some() {
+            "training now".to_string()
+        } else {
+            match self.train_conditions().blocker() {
+                Some(why) => format!("waiting: {why}"),
+                None => "ready to train".into(),
+            }
+        };
+        let adapter = self
+            .trainer
+            .active()
+            .map_or("none".to_string(), |p| p.display().to_string());
+        format!(
+            "{state}
+adapter in use: {adapter}
+last: {}
+{}",
+            self.trainer.last.as_deref().unwrap_or("-"),
+            self.learner.stats()
+        )
     }
 
     pub fn tier_of(&self, tool: &str) -> Option<Tier> {

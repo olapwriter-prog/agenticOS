@@ -15,6 +15,7 @@ struct Args {
     ctx: usize,
     threads: usize,
     mlock: bool,
+    lora: Option<String>,
 }
 
 fn args() -> Result<Args, String> {
@@ -25,6 +26,7 @@ fn args() -> Result<Args, String> {
         ctx: 4096,
         threads: 0,
         mlock: false,
+        lora: None,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -56,6 +58,10 @@ fn args() -> Result<Args, String> {
                 i += 1;
             }
             "--mlock" => a.mlock = true,
+            "--lora" => {
+                a.lora = Some(val(i)?);
+                i += 1;
+            }
             "-ngl" | "--n-gpu-layers" => i += 1,
             // llama-server flags this engine does not need; skip a value if one follows
             other if other.starts_with('-') && v.get(i + 1).is_some_and(|n| !n.starts_with('-')) => i += 1,
@@ -190,7 +196,58 @@ fn serve_one(e: &mut Engine, conn: TcpStream) {
     }
 }
 
+/// `agentos-llm train -m MODEL --data sft.jsonl --out adapter.lora [--grammar FILE]
+/// [--steps N] [--batch N] [--rank N] [--lr X] [--max-seconds N] [-t N]`
+/// Prints progress on stderr and one JSON summary line on stdout.
+fn train_main(v: &[String]) -> Result<(), String> {
+    use agentos_infer::finetune::{run, Job};
+    let mut job = Job::default();
+    let mut model = String::new();
+    let mut i = 0;
+    let val = |i: usize| v.get(i + 1).cloned().ok_or(format!("{} needs a value", v[i]));
+    let num = |i: usize| val(i).and_then(|s| s.parse::<f64>().map_err(|_| format!("bad {}", v[i])));
+    while i < v.len() {
+        match v[i].as_str() {
+            "-m" | "--model" => model = val(i)?,
+            "--data" => job.data = val(i)?.into(),
+            "--out" => job.out = val(i)?.into(),
+            "--grammar" => {
+                let path = val(i)?;
+                job.grammar = Some(std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?);
+            }
+            "--steps" => job.steps = num(i)? as usize,
+            "--batch" => job.batch = num(i)? as usize,
+            "--rank" => job.rank = num(i)? as usize,
+            "--lr" => job.lr = num(i)? as f32,
+            "--max-seconds" => job.max_secs = Some(num(i)? as u64),
+            "-t" | "--threads" => {
+                let _ = rayon::ThreadPoolBuilder::new().num_threads(num(i)? as usize).build_global();
+            }
+            other => return Err(format!("unknown option {other}")),
+        }
+        i += 2;
+    }
+    if model.is_empty() || job.data.as_os_str().is_empty() || job.out.as_os_str().is_empty() {
+        return Err("train needs -m, --data and --out".into());
+    }
+    let g = Gguf::open(std::path::Path::new(&model))?;
+    let tok = Tokenizer::from_gguf(&g)?;
+    let m = Model::load(g, 4096)?;
+    let mut engine = agentos_infer::engine::Engine::new(m, tok);
+    let out = run(&mut engine, &job, &mut |line| eprintln!("agentos-llm train: {line}"))?;
+    println!("{out}");
+    Ok(())
+}
+
 fn main() {
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).is_some_and(|a| a == "train") {
+        if let Err(e) = train_main(&argv[2..]) {
+            eprintln!("agentos-llm train: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let a = args().unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(2)
@@ -213,10 +270,20 @@ fn main() {
         eprintln!("agentos-llm: {e}");
         std::process::exit(1)
     });
-    let model = Model::load(g, a.ctx).unwrap_or_else(|e| {
+    let mut model = Model::load(g, a.ctx).unwrap_or_else(|e| {
         eprintln!("agentos-llm: {e}");
         std::process::exit(1)
     });
+    if let Some(path) = &a.lora {
+        let ad = agentos_infer::train::Adapter::load(std::path::Path::new(path))
+            .and_then(|ad| ad.fits(&model).map(|_| ad))
+            .unwrap_or_else(|e| {
+                eprintln!("agentos-llm: adapter {path}: {e}");
+                std::process::exit(1)
+            });
+        eprintln!("agentos-llm: adapter {path} ({} parameters)", ad.params());
+        model.adapter = Some(ad);
+    }
     eprintln!(
         "agentos-llm: {:?}, {} layers, ctx {}, {} threads, state {} MiB; listening on {}:{}",
         model.cfg.arch,

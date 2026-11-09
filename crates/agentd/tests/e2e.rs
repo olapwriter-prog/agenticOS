@@ -835,3 +835,56 @@ fn regular_requests_are_handled_by_code_and_the_model_is_not_asked() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn on_the_charger_the_model_learns_the_confirmed_requests_and_can_be_rolled_back() {
+    let d = dir("train");
+    let (models, model) = fake_model(&d, "tools");
+    // the server must be agentos-llm: only it reads our adapters
+    let bin = d.join("agentos-llm");
+    std::fs::copy(fake_llama_bin(), &bin).unwrap();
+    let mut c = cfg(&d);
+    c.llama_server = bin;
+    c.models = models;
+    c.train_min_new = 1;
+    c.idle_secs = 1; // the human goes quiet: Active -> Asleep -> Deep on the charger
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let ctl = |l: &str| ctl_send(&r.ctl_path, l).unwrap();
+    let args = || std::fs::read_to_string(format!("{}.args", model.display())).unwrap_or_default();
+
+    assert!(ctl("chat save Mum as +919876543210").starts_with("done"));
+    assert!(ctl("learn status").contains("not on the charger"), "{}", ctl("learn status"));
+    ctl("power 90 charger");
+    let ledger = || std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !ledger().contains("training kept") && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let l = ledger();
+    assert!(l.contains("training small on 1 confirmed requests"), "{l}");
+    assert!(l.contains("training kept") && l.contains("50% -> 80%"), "{l}");
+    assert!(d.join("learn/adapter.lora").exists());
+    assert!(d.join("learn/sft.jsonl").exists() && d.join("learn/grammar.gbnf").exists());
+    // the model server comes back with the adapter
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !args().contains("--lora") && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(args().contains("--lora") && args().contains("adapter.lora"), "{}", args());
+    assert!(ctl("learn status").contains("adapter in use:"));
+    // nothing new confirmed since: no second run
+    assert!(ctl("learn status").contains("0 new confirmed requests"), "{}", ctl("learn status"));
+
+    // and back
+    assert!(ctl("learn rollback").contains("no adapter"));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while args().contains("--lora") && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(!args().contains("--lora"), "{}", args());
+    assert!(ledger().contains("adapter rolled back"));
+    assert!(ctl("verify").contains("ledger ok"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

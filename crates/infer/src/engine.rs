@@ -59,6 +59,14 @@ impl Engine {
         }
     }
 
+    /// Load or remove a LoRA adapter. Cached state was computed without it, so it is dropped.
+    pub fn set_adapter(&mut self, ad: Option<crate::train::Adapter>) {
+        self.model.adapter = ad;
+        self.held.clear();
+        self.snap = None;
+        self.state.reset();
+    }
+
     /// ChatML, as Qwen models expect. With thinking off, Qwen3/3.5 get an empty think block so
     /// they answer at once.
     pub fn chat_prompt(&self, msgs: &[Msg], thinking: bool) -> String {

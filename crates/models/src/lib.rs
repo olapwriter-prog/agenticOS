@@ -82,6 +82,8 @@ pub struct Supervisor {
     procs: BTreeMap<String, Proc>,
     crashes: BTreeMap<String, Vec<Instant>>,
     failed: BTreeMap<String, String>,
+    /// LoRA adapters the model servers load (agentos-llm's own format), by model name.
+    adapters: BTreeMap<String, PathBuf>,
 }
 
 impl Supervisor {
@@ -102,7 +104,28 @@ impl Supervisor {
             procs: BTreeMap::new(),
             crashes: BTreeMap::new(),
             failed: BTreeMap::new(),
+            adapters: BTreeMap::new(),
         }
+    }
+
+    /// Serve a model with a trained adapter, or without one. A running server is stopped so
+    /// the next `want` starts it with the change. Returns whether anything changed.
+    pub fn set_adapter(&mut self, name: &str, adapter: Option<PathBuf>) -> bool {
+        let changed = match adapter {
+            Some(p) => self.adapters.insert(name.to_string(), p.clone()) != Some(p),
+            None => self.adapters.remove(name).is_some(),
+        };
+        if !changed {
+            return false;
+        }
+        self.failed.remove(name);
+        self.crashes.remove(name);
+        self.stop(name);
+        true
+    }
+
+    pub fn adapter(&self, name: &str) -> Option<&PathBuf> {
+        self.adapters.get(name)
     }
 
     pub fn path(&self, s: &ModelSpec) -> PathBuf {
@@ -142,6 +165,10 @@ impl Supervisor {
             // keep the weights in RAM: a model paged out to flash answers in seconds, not ms
             "--mlock".into(),
         ];
+        if let Some(ad) = self.adapters.get(&s.name) {
+            a.push("--lora".into());
+            a.push(ad.display().to_string());
+        }
         a.extend(s.extra_args.iter().cloned());
         a
     }

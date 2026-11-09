@@ -363,6 +363,11 @@ impl Learner {
             .collect()
     }
 
+    /// How many episodes have a human-confirmed answer (what training can use).
+    pub fn labelled(&self) -> usize {
+        self.episodes.iter().filter(|e| Self::target(e).is_some()).count()
+    }
+
     pub fn stats(&self) -> String {
         let n = self.episodes.len();
         let labelled = self
