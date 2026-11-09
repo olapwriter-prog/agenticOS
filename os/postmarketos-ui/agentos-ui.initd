@@ -1,0 +1,28 @@
+#!/sbin/openrc-run
+# The phone's screen: agentos-ui full screen under the cage kiosk compositor, as a client of
+# agentd's control socket. Optional: the phone works headless without it.
+
+name="agentos-ui"
+description="Agentic OS screen (agentos-ui in cage)"
+command="/usr/bin/cage"
+# -d: no client-side decorations; the app is the only window
+command_args="-d -- /usr/bin/agentos-ui"
+supervisor="supervise-daemon"
+respawn_delay=3
+respawn_max=10
+respawn_period=300
+output_log="/var/log/agentos-ui.log"
+error_log="/var/log/agentos-ui.log"
+: ${XDG_RUNTIME_DIR:=/run/agentos-ui}
+: ${AGENTD_SOCK:=/run/agentd.sock}
+export XDG_RUNTIME_DIR AGENTD_SOCK
+export LIBSEAT_BACKEND=seatd
+
+depend() {
+	need seatd localmount
+	after agentd
+}
+
+start_pre() {
+	checkpath -d -m 0700 "$XDG_RUNTIME_DIR"
+}

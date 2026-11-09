@@ -1,8 +1,8 @@
 //! A training job: the human-confirmed requests agentd exported (sft.jsonl) in, a LoRA adapter
 //! out, kept only if it answers held-out requests better than the model without it.
 //!
-//! The job checkpoints as it goes and picks up from the checkpoint when run again, so agentd can
-//! stop it whenever the phone is unplugged, warm or needed, and continue the next night.
+//! The job checkpoints after every step and picks up from the checkpoint when run again, so
+//! agentd can stop it whenever the phone is unplugged, warm or needed, and continue the next night.
 use crate::engine::{Engine, Msg, Request};
 use crate::train::{example, Adapter, AdamW, Grads, Trainer};
 use serde_json::{json, Value};
@@ -226,9 +226,8 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
         last_loss = total / b as f32;
         step += 1;
         log(&format!("step {step}/{} loss {last_loss:.4}", job.steps));
-        if step % 10 == 0 {
-            save(&ad, step)?;
-        }
+        // every step: a step takes minutes on a phone, the adapter a few hundred KB to write
+        save(&ad, step)?;
     }
     e.set_adapter(Some(ad.clone()));
     let tuned = judge(e, &held, &job.grammar)?;

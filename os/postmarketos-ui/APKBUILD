@@ -1,0 +1,37 @@
+# Maintainer: M V Raghunadh <olapwriter@gmail.com>
+# The phone's screen, packaged apart from agentd: the headless OS never pulls in a GPU stack.
+pkgname=agentos-ui
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Agentic OS screen: a Rune app that shows and drives agentd"
+url="https://github.com/olapwriter-prog/agenticOS"
+arch="aarch64 x86_64"
+license="Apache-2.0"
+# cage: kiosk Wayland compositor; seatd: gives it the display and input without logind.
+# The Vulkan driver is the phone's: mesa-vulkan-freedreno (Turnip, Adreno) or
+# mesa-vulkan-panfrost (PanVK, Mali); add the one for your GPU to the image.
+depends="agentd cage seatd"
+makedepends="cargo cargo-auditable"
+subpackages="$pkgname-openrc"
+source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
+	agentos-ui.initd
+	"
+builddir="$srcdir/agenticOS-$pkgver/ui"
+options="net !check" # cargo fetches crates (Rune from git); the UI's tests need a GPU
+
+prepare() {
+	default_prepare
+	rm -f rust-toolchain.toml
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	cargo auditable build --release --frozen
+}
+
+package() {
+	install -Dm755 target/release/agentos-ui "$pkgdir"/usr/bin/agentos-ui
+	install -Dm755 "$srcdir"/agentos-ui.initd "$pkgdir"/etc/init.d/agentos-ui
+}
+
+sha512sums=""

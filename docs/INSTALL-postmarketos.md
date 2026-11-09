@@ -172,10 +172,13 @@ llama.cpp can use on these phones.
   With the code-first layer (no LLM): tool choice 10/10, questions 9/9, never-seen phrasings 11/12.
   The misses are the model's reasoning (an EMI formula, reading "calls Ravi made to me" as text to
   match); every wrong function or answer was caught or is visible, and nothing acted without the key.
-- **The screen (agentos-ui) on a phone is not packaged yet.** It builds on Alpine aarch64 and its
-  tests pass, but rendering with Mesa's software Vulkan driver (lavapipe) in the VM crashes, and it
-  has not run on a phone GPU (Turnip on Adreno, PanVK on Mali). The plan: run it full screen under
-  the `cage` kiosk compositor (`apk add cage seatd mesa-vulkan-freedreno`), as a client of agentd.
+- **The screen (agentos-ui)** is packaged apart from agentd (`os/postmarketos-ui`), so the headless
+  image never pulls in a GPU stack: `cage` runs it full screen, `seatd` gives cage the display and
+  input, and `/etc/init.d/agentos-ui` starts it after agentd, as a client of `/run/agentd.sock`.
+  Add your GPU's Vulkan driver to the image (`mesa-vulkan-freedreno` for Adreno,
+  `mesa-vulkan-panfrost` for Mali), then `rc-update add seatd default` and
+  `rc-update add agentos-ui default`. The package and service are written but not yet built or
+  run on a phone: rendering with lavapipe in the VM crashes, and no phone GPU has been tried.
 - **Own engine speed.** On an Apple M-series CPU, Qwen3.5-4B Q4_K_M: agentos-llm generates
   ~10 tokens/s and reads prompts at ~17 tokens/s; llama.cpp on the same CPU does ~22 and ~42.
   agentd's requests take 2 to 3 s once the system prompt is cached (it is read once, at start).
