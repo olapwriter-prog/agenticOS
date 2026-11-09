@@ -27,10 +27,10 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 | Backpropagation, dense Qwen2 + LoRA, gradient check | done | worst relative error 5% (h=0.05), most ≤1% (Qwen2.5-0.5B) |
 | Training loop (AdamW, answer-only loss) | done | loss 4.29 → 0.0002 in 30 steps |
 | Adapter save / load in agentos-llm | done | `AGLORA1`, `--lora`, `agentos-llm train` |
-| Improvement on held-out requests (eval gate) | done (gate); trained accuracy not yet measured | base 0.5B: 60% on 10 held-out |
+| Improvement on held-out requests (eval gate) | done | Qwen2.5-0.5B: 46% → 67% on 12 held-out phone requests, adapter kept |
 | agentd: overnight on the charger, swap or roll back | done | e2e test passes |
 | Qwen3 backward (per-head q/k norms) | done | gradient check on a tiny random model: worst 1.2% |
-| Qwen3.5 backward (Gated DeltaNet + gated attention) | done | gradient check on a tiny random model: worst 2.0%, trainer loss = engine loss |
+| Qwen3.5 backward (Gated DeltaNet + gated attention) | done | gradient check: tiny random model worst 2.0%; real Qwen3.5-4B Q4_K_M worst 2.4% |
 | Activation checkpointing | done | same gradients as keeping everything; memory of one layer |
 
 ## Trainer update (2026-11-09, Qwen2.5-0.5B, Mac CPU)
@@ -47,4 +47,11 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 - DeltaNet states are not kept for the backward pass (one d x d matrix per head per token, 2 MiB per token per layer on Qwen3.5-4B): a state is kept every 32 steps and each chunk is recomputed from it.
 - Activation checkpointing: when an example's saved activations would pass the budget (default 256 MiB, `agentos-llm train --memory-mb`), only each layer's input is kept and the layer runs again on the way back. Measured on the tiny models: identical gradients. Estimated for 743 tokens: Qwen2.5-0.5B goes from 1 GB to ~65 MB of layer inputs plus one layer (~45 MB); Qwen3.5-4B needs ~245 MB of layer inputs plus one layer. The extra forward is about a third more compute; not yet timed on a real model.
 - Gradient checks now run in `cargo test` with no download: tiny random Qwen2, Qwen3 and Qwen3.5 models are written as GGUF files by the test. Each checks the trainer's loss against the inference engine (token by token, adapter on), every adapter tensor against central differences, and checkpointed against kept gradients. Deliberately breaking the DeltaNet backward (β, α, or the state decay) fails the test.
-- Still open: trained accuracy on the 10 held-out requests (needs the real model; this session could not download it), timing of Qwen3.5-4B training on a phone, gradient check on real Qwen3.5 weights (`cargo run --release -p agentos-infer --example train -- gradcheck MODEL`).
+
+## Trainer measured on real models (2026-11-09, x86-64 cloud VM, 4 cores, 15 GB)
+- Gradient check on real weights (16 entries across first, middle and last attention layers): Qwen2.5-0.5B Q4_K_M worst relative error 3.4% (most ≤1%); Qwen3.5-4B Q4_K_M worst 2.4%. On Qwen3.5 the first attention layer's gradients pass back through every DeltaNet layer above it, so the DeltaNet backward is checked on real weights too.
+- Loss, trainer vs engine on the same example: 0.5B 5.380 (exact) / 5.586 (8-bit) vs 5.392; 4B 7.668 / 7.521 vs 7.549. The gap is the 8-bit input rounding (it changes sign between models); the gradients match the trainer's own loss.
+- Data: 60 phone requests with their tool calls (`crates/infer/examples/phone-requests.tsv`), made into agentd's own export with its real system prompt and grammar (`cargo run -p agentd --example prompt -- phone-requests.tsv DIR`). Every 5th is held out: 48 train, 12 judge.
+- Training Qwen2.5-0.5B, rank 8, 30 steps of batch 2 (60 example passes, about 1.25 epochs): loss 0.35 → 0.03–0.07; held-out score 46% → 67%, adapter kept by the gate. 7,538 s in all, including judging before and after.
+- Speed on this VM, 743-token example: forward 59 s, forward+backward 137 s keeping activations (986 MiB), 194 s recomputing layers (+42%). The forward is the engine's prompt-reading speed (~12 tok/s here), so faster prompt reading speeds training as much as answering.
+- Still open: Qwen3.5-4B training run and its timing on a phone; the AdamW moments are not checkpointed, so a resumed job restarts them.
