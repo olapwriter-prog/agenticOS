@@ -470,10 +470,7 @@ pub fn answer(label: &str, text: &str, d: &Data) -> Option<String> {
         },
         "q.last_from" => {
             let p = who()?;
-            match incoming()
-                .filter(|m| records::is(&m.name, &m.number, &p))
-                .next_back()
-            {
+            match incoming().rfind(|m| records::is(&m.name, &m.number, &p)) {
                 Some(m) => format!("{p}'s last text: {}", m.text),
                 None => format!("{p} has not texted you."),
             }
