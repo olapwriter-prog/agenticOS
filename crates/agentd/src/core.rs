@@ -46,6 +46,8 @@ pub struct Core {
     notifier: Notifier,
     phone: agentos_phone::Shared,
     last_phone_poll_ms: u64,
+    /// The last screen a tool answered with (a UI document), for the display.
+    screen: Option<Value>,
     /// ModemManager's signals are being watched, so polling can be slow.
     signals_up: bool,
     /// A signal came in: look again shortly, as a text can arrive in parts.
@@ -183,6 +185,10 @@ impl Core {
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
+        if let Some(pc) = &cfg.partner {
+            let p = agentos_partner::Partner::open(pc.clone(), dir.join("partner.json"))?;
+            connectors.push(Box::new(p));
+        }
         // What a function may ask the phone to do: every tool except the function tools.
         let phone_tools: Vec<agentos_action::Tool> =
             connectors.iter().flat_map(|c| c.tools()).collect();
@@ -199,7 +205,8 @@ impl Core {
             clock.clone(),
             Gate::new(&secrets.gate_secret, clock.clone(), 10 * 60_000),
         );
-        let registry = Registry::new(exec.tools().to_vec());
+        let registry_tools = exec.tools().to_vec();
+        let registry = Registry::new(registry_tools.clone());
         let grammar = registry.gbnf();
         let system = crate::model::system_prompt(exec.tools());
         let gateway = Gateway::new(exec, clock.clone());
@@ -271,6 +278,7 @@ impl Core {
         let local = Local {
             intents: default_intents(),
             host,
+            tools: registry_tools.clone(),
         };
         let model: Box<dyn Model> = match (&secrets.commercial_key, commercial_on) {
             (Some(key), true) => Box::new(CommercialClient::new(local, key, &cfg.commercial_model)),
@@ -296,6 +304,7 @@ impl Core {
             notifier,
             phone,
             last_phone_poll_ms: 0,
+            screen: None,
             signals_up: false,
             poll_again_at: None,
             prio,
@@ -670,6 +679,11 @@ impl Core {
         if !ok {
             return format!("not done: {text}");
         }
+        // a screen: kept for the display; the conversation gets its text form
+        if let Some((ui, said)) = agentos_partner::Ui::from_reply(&text) {
+            self.screen = Some(json!({"tool": a.tool, "ui": ui}));
+            return format!("done: {said}");
+        }
         if a.tool == "run_function" {
             if let Some(out) = self.carry_out_requests(&text) {
                 return out;
@@ -1020,6 +1034,7 @@ impl Core {
             "phone": self.phone.borrow_mut().status_text().unwrap_or_else(|e| format!("phone: {e}")),
             "pending": pending,
             "recent": recent,
+            "screen": self.screen,
             "models": lines(self.models.report()),
             "prio": self.prio.report().lines().next().unwrap_or_default(),
             "functions": lines(self.functions.borrow().list()),
@@ -1036,6 +1051,7 @@ impl Core {
             "stage" => format!("{:?}", self.kernel.stage),
             "chat" => self.chat(rest),
             "state" => self.ui_state().to_string(),
+            "screen" => self.screen.as_ref().map_or("no screen yet".into(), |s| s.to_string()),
             "pending" => {
                 let p = self.gateway.pending();
                 if p.is_empty() {

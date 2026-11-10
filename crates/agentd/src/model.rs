@@ -42,7 +42,7 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        _ => "",
+        other => agentos_partner::describe(other),
     }
 }
 
@@ -117,6 +117,9 @@ pub fn system_prompt(tools: &[agentos_action::Tool]) -> String {
 pub struct Local {
     pub intents: IntentTable,
     pub host: Option<LlamaHost>,
+    /// Every tool's argument names: a phrase that leaves an argument out ("news", "suggest
+    /// something") gets it empty, which the tool reads as its default.
+    pub tools: Vec<agentos_action::Tool>,
 }
 
 pub fn action_json(a: &Action) -> String {
@@ -161,6 +164,51 @@ pub fn default_intents() -> IntentTable {
     t.add("torch {on}", "flashlight");
     t.add("volume {percent}", "set_volume");
     t.add("find my phone", "ring_phone");
+    // the business partner (with a [partner] table) — specific patterns before general ones
+    t.add("inbox", "inbox");
+    t.add("business inbox", "inbox");
+    t.add("whatsapp", "inbox");
+    t.add("who is waiting for a reply", "inbox");
+    t.add("show chat with {who}", "read_thread");
+    t.add("open {who}'s chat", "read_thread");
+    t.add("thread {who}", "read_thread");
+    t.add("reply to {to}: {text}", "reply");
+    t.add("reply to {to} saying {text}", "reply");
+    t.add("add customer {name} gstin {gstin} phone {phone}", "add_customer");
+    t.add("add customer {name} phone {phone}", "add_customer");
+    t.add("add item {name} at {price} gst {gst}", "add_item");
+    t.add("add item {name} at {price}", "add_item");
+    t.add("invoice {customer} for {items}", "invoice");
+    t.add("send invoice {number}", "send_invoice");
+    t.add("mark {number} paid", "mark_paid");
+    t.add("invoices", "invoices");
+    t.add("show invoices", "invoices");
+    t.add("who owes me", "invoices");
+    t.add("gst for {period}", "gst_summary");
+    t.add("gst summary for {period}", "gst_summary");
+    t.add("file {form} for {period}", "file_gst");
+    t.add("bills", "bills");
+    t.add("show bills", "bills");
+    t.add("what bills are due", "bills");
+    t.add("pay bill {id}", "pay_bill");
+    t.add("expenses for {period}", "expenses");
+    t.add("wallet", "wallet");
+    t.add("wallet balance", "wallet");
+    t.add("pay {amount} to {to} for {note}", "pay");
+    t.add("my orders", "orders");
+    t.add("order history", "orders");
+    t.add("what do i usually buy", "orders");
+    t.add("best price for {item}", "best_price");
+    t.add("compare {item}", "best_price");
+    t.add("buy {option}", "buy");
+    t.add("news about {topic}", "news");
+    t.add("news", "news");
+    t.add("my interests", "interests");
+    t.add("i like {topic}", "like");
+    t.add("suggest {kind}", "suggest");
+    t.add("what should i do this weekend", "suggest");
+    t.add("book {event} for {qty}", "book");
+    t.add("book {event}", "book");
     // functions the agent wrote
     t.add("list functions", "list_functions");
     t.add("my functions", "list_functions");
@@ -180,7 +228,14 @@ impl Model for Local {
         // The fast path is for local brains. A commercial call has already been redacted and
         // rewritten by the engine, so it is not matched against phrases.
         if brain != Brain::Commercial {
-            if let Some(a) = self.intents.resolve(prompt) {
+            if let Some(mut a) = self.intents.resolve(prompt) {
+                if let Some(t) = self.tools.iter().find(|t| t.name == a.tool) {
+                    for name in t.args {
+                        if !a.args.iter().any(|(k, _)| k == name) {
+                            a.args.push((name.to_string(), String::new()));
+                        }
+                    }
+                }
                 return action_json(&a);
             }
         }
@@ -199,6 +254,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         let out = m.complete(Brain::LocalSmall, "Remind me to call mum at 6pm");
         assert!(out.contains("set_reminder") && out.contains("call mum"));
@@ -208,6 +264,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         assert_eq!(m.complete(Brain::LocalSmall, "write me a poem"), "");
     }
@@ -239,6 +296,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         assert_eq!(m.complete(Brain::Commercial, "what's on friday"), "");
     }

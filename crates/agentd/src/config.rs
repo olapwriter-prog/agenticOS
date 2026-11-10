@@ -92,6 +92,9 @@ pub struct Config {
     pub train_steps: usize,
     /// A run stops and checkpoints after this long, and continues on the next tick.
     pub train_chunk_secs: u64,
+    /// The business partner and personal assistant (`[partner]` table): channels, invoices
+    /// and GST, payments, shopping, news and bookings. Absent: not offered.
+    pub partner: Option<agentos_partner::Config>,
 }
 
 impl Default for Config {
@@ -141,6 +144,7 @@ impl Default for Config {
             train_min_battery: 50,
             train_steps: 60,
             train_chunk_secs: 1800,
+            partner: None,
         }
     }
 }

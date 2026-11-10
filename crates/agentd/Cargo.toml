@@ -30,6 +30,7 @@ agentos-phone = { path = "../phone" }
 agentos-prio = { path = "../prio" }
 agentos-models = { path = "../models" }
 agentos-functions = { path = "../functions" }
+agentos-partner = { path = "../partner" }
 agentos-learn = { path = "../learn" }
 agentos-understand = { path = "../understand" }
 serde = { version = "1", features = ["derive"] }
