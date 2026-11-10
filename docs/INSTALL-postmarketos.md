@@ -35,7 +35,7 @@ When `init` asks:
 - **Channel**: `edge` or the latest stable `v2x.yy`
 - **Vendor / device**: your phone
 - **User interface**: `none`  ← headless; this is the whole point
-- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,callaudiod,wireplumber,pipewire-pulse,evtest`
+- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,feedbackd-udev,callaudiod,callaudiocli,wireplumber,pipewire-pulse,evtest`
   (the agentd package also pulls in `llama-server`, `libggml-cpu` and `libggml-vulkan` on aarch64)
 
 Build and add the agentd package from this repository:
@@ -80,6 +80,32 @@ Find the battery directory and put it in `/etc/agentd/agentd.toml` as `power_dir
 ```bash
 ls /sys/class/power_supply/
 ```
+
+## Bring-up on a new phone (Phase 5)
+
+Two scripts, installed with the package in `/usr/share/agentd/`, take a phone from "installed" to
+"known to work". Over SSH, as root:
+
+1. **Preflight**: checks the tools, services, cgroup v2, the modem and SIM, the audio session and
+   its user's groups, finds the input device with the volume-down key and the vibration motor
+   (and its permissions), the flash LED and the battery, and prints the `agentd.toml` lines for
+   this phone. Fix every FAIL, copy the suggested lines into `/etc/agentd/agentd.toml`, then
+   `rc-service agentd restart` and run it again until it is clean.
+   ```bash
+   sudo sh /usr/share/agentd/phone-preflight.sh
+   ```
+2. **The guided run**, with a second phone in hand: it tells you when to text or call this phone,
+   answer or hang up on the other one, and hold volume-down; it asks what only a person can tell
+   (did it vibrate, can both sides hear each other) and checks the rest itself: texts (one over
+   160 characters), calls in, answered and missed, calls and texts out with the key, volume,
+   torch, USSD, Wi-Fi, mobile data, airplane mode and getting back on the network, location, and
+   restarts of the audio session and of agentd. About 20 minutes.
+   ```bash
+   sudo USSD_CODE='*123#' WIFI_SSID=HomeNet WIFI_PASS=... \
+     sh /usr/share/agentd/phone-scenarios.sh +91XXXXXXXXXX     # the other phone's number
+   ```
+   It writes `phase5-report.md` (and the preflight output beside it): paste it back to Claude.
+   `phone-scenarios.sh --sim NUMBER` runs the same steps on the simulated phone (`crates/phonesim`).
 
 ## Using it
 

@@ -11,10 +11,16 @@ url="https://github.com/olapwriter-prog/agenticOS"
 arch="aarch64 armv7 x86_64"
 license="Apache-2.0"
 # The phone's hardware is reached through these services; agentd shells out to their CLIs.
+# Checked against Alpine edge aarch64 (2026-11-10): callaudiocli is its own package (not in
+# callaudiod); dbus-monitor ships in dbus; feedbackd's udev rules (LEDs to the feedbackd group,
+# vibration motors) are feedbackd-udev, pulled in explicitly rather than by install_if udev.
 depends="
 	callaudiod
+	callaudiocli
 	dbus
+	evtest
 	feedbackd
+	feedbackd-udev
 	modemmanager
 	networkmanager
 	networkmanager-cli
@@ -70,6 +76,9 @@ package() {
 	# the user session for call audio, vibration and volume (user made by agentd.pre-install)
 	install -Dm755 "$srcdir"/agentd-session.initd "$pkgdir"/etc/init.d/agentd-session
 	install -Dm755 "$srcdir"/agentd-session.sh "$pkgdir"/usr/libexec/agentd/agentd-session
+	# Phase 5 bring-up: checks for this phone and the guided run with a second phone
+	install -Dm755 scripts/phone-preflight.sh "$pkgdir"/usr/share/agentd/phone-preflight.sh
+	install -Dm755 scripts/phone-scenarios.sh "$pkgdir"/usr/share/agentd/phone-scenarios.sh
 	install -dm700 "$pkgdir"/var/lib/agentd
 	install -dm700 "$pkgdir"/var/lib/agentd/models
 }

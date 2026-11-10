@@ -12,7 +12,14 @@ export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 pids=""
 stop() {
 	# shellcheck disable=SC2086
-	[ -n "$pids" ] && kill $pids 2>/dev/null
+	if [ -n "$pids" ]; then
+		kill $pids 2>/dev/null
+		# wait until they are gone: a session bus still shutting down would delete the socket
+		# of the next one when it exits (a restart would then leave the session unreachable)
+		for p in $pids; do
+			while kill -0 "$p" 2>/dev/null; do sleep 0.1; done
+		done
+	fi
 	exit 0
 }
 trap stop TERM INT
@@ -39,5 +46,7 @@ while :; do
 	for p in $pids; do
 		kill -0 "$p" 2>/dev/null || { echo "agentd-session: process $p exited" >&2; stop; }
 	done
-	sleep 5
+	# in the background, so a stop signal is handled at once rather than after the sleep
+	sleep 5 &
+	wait $!
 done

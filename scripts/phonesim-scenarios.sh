@@ -291,21 +291,21 @@ say "not a USSD code" "ussd abc" "digits, \\* and #"
 say "Wi-Fi scan, strongest first" "scan wifi" "HomeNet \(81%\).*Cafe Guest \(44%\)|HomeNet \(81%\)"
 say "wrong Wi-Fi password" "join wifi HomeNet password daisy" "Secrets were required"
 say "unknown network" "join wifi Nowhere password x" "No network with SSID"
-say "join Wi-Fi" "join wifi HomeNet password sunflower" "successfully activated|joined|done"
+say "join Wi-Fi" "join wifi HomeNet password sunflower" "^done"
 say "status shows Wi-Fi" "phone status" "wifi HomeNet"
-say "mobile data on" "mobile data on" "done"
+say "mobile data on" "mobile data on" "^done"
 say "status shows data" "phone status" "mobile data on"
-say "mobile data off" "mobile data off" "done"
-say "airplane mode on" "airplane mode on" "done"
+say "mobile data off" "mobile data off" "^done"
+say "airplane mode on" "airplane mode on" "^done"
 say "status: airplane mode" "phone status" "airplane mode"
 say "no Wi-Fi networks with the radios off" "scan wifi" "no networks found"
-say "no mobile data in airplane mode" "mobile data on" "not done|radio is off"
-say "no USSD in airplane mode" "check balance *123#" "not done|not registered"
+say "no mobile data in airplane mode" "mobile data on" "^not done|radio is off"
+say "no USSD in airplane mode" "check balance *123#" "^not done|not registered"
 say "calls need approval even in airplane mode" "call mum" "approval required"
 approve
 say "... and fail with the modem's reason" "call mum" "not registered"
 decline_all
-say "airplane mode off" "airplane mode off" "done"
+say "airplane mode off" "airplane mode off" "^done"
 $SIM service off
 approve 2>/dev/null
 say "no service: a call fails" "call mum" "approval required|not registered"
@@ -319,19 +319,19 @@ say "no GPS fix: the cell" "where am i" "no GPS fix; cell mcc 404 mnc 45 lac 1A2
 $SIM gps none
 say "no location at all" "where am i" "no location available"
 $SIM gps fix
-say "torch on" "torch on" "done"
+say "torch on" "torch on" "^done"
 check "flash LED at full brightness" grep -qx 255 "$PHONESIM_DIR/leds/white:flash/brightness"
-say "torch off" "flashlight off" "done"
+say "torch off" "flashlight off" "^done"
 check "flash LED off" grep -qx 0 "$PHONESIM_DIR/leds/white:flash/brightness"
 say "not on or off" "torch maybe" "on or off"
 n=$(hwlines)
-say "volume 30" "volume 30" "done"
+say "volume 30" "volume 30" "^done"
 check "WirePlumber, as the session user" hw_after "$n" "^uid=$SU wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.30"
-say "volume 0" "volume 0" "done"
+say "volume 0" "volume 0" "^done"
 n=$(hwlines)
 say "volume above 100 is refused" "volume 150" "volume is 0 to 100"
 check "... without touching the hardware" sh -c "! tail -n +$((n + 1)) $PHONESIM_DIR/hw.log | grep -q wpctl"
-say "not a volume" "volume loud" "not done|percent"
+say "not a volume" "volume loud" "^not done|percent"
 n=$(hwlines)
 say "find my phone" "find my phone" "ringing"
 check "rings through feedbackd" hw_after "$n" "^uid=$SU fbcli -E phone-incoming-call"
@@ -369,7 +369,7 @@ $SIM fail mmcli off
 n=$(count "sms received" "$(LEDGER)")
 if ms=$(waitmore "sms received" "$(LEDGER)" 8 "$n"); then ok "a text that came while the modem was away is found soon after it is back (${ms} ms)"; else bad "a text that came while the modem was away was not found within 8 s of it coming back"; fi
 $SIM fail nmcli on
-say "Wi-Fi scan without NetworkManager says why" "scan wifi" "not done|NetworkManager is not running"
+say "Wi-Fi scan without NetworkManager says why" "scan wifi" "^not done|NetworkManager is not running"
 $SIM fail nmcli off
 
 section "13. the audio session goes away"
@@ -379,10 +379,10 @@ sleep 0.5
 check "the failed alert is logged as failed, not as alerted" grep -q "incoming call from Ravi.*alert failed" "$W/agentd.log"
 say "answering still works without call audio" "answer" "answered Ravi"
 ctl chat "hang up" >/dev/null
-say "volume says why it failed" "volume 40" "not done|session bus"
+say "volume says why it failed" "volume 40" "^not done|session bus"
 start_session
 n=$(hwlines)
-say "with the session back, volume works" "volume 40" "done"
+say "with the session back, volume works" "volume 40" "^done"
 check "as the session user" hw_after "$n" "^uid=$SU wpctl"
 
 section "14. the session tools need the session user"
