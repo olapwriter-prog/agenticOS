@@ -7,8 +7,31 @@ functions in Rust, a tiered approval model with a hardware key, a hash-chained l
 inference engine and trainer, and overnight training on what the human confirmed.
 
 What is asked for next is a different kind of thing: the phone as a **business partner and a
-worker**. Below, each capability is scoped with what it needs. None of it is built yet; the
-order is by what the existing pieces already support.
+worker**. Below, each capability is scoped with what it needs.
+
+## Status (2026-11-10): built, against a simulated world
+
+`crates/partner` (agentos-partner) implements phases 8–13 below as one connector in agentd,
+enabled by a `[partner]` table: channels, invoices and GST, bills, wallet, shopping, news,
+suggestions and booking, screens instead of text, and nightly training (`train_nightly`). The
+outside systems are reached over HTTP with request shapes taken from the real ones;
+`agentos-phonesim world` serves them all, seeded and fictional, and checks what they would.
+Tests: `cargo test -p agentos-partner -p agentos-phonesim` (unit and every tool against the
+world), `scripts/phonesim-partner.sh` (40 checks through agentd with the approval key), and a
+video: `scripts/phonesim-demo.py record-partner`.
+
+What a real deployment still needs, per service (the code does not change; a URL and a key do):
+- **WhatsApp Business**: a Meta-verified business, a phone number id and a token; a small
+  webhook receiver that keeps incoming messages per conversation (the shape agentd reads).
+- **Email**: an IMAP/SMTP bridge exposing the inbox and send endpoints.
+- **GST filing**: a GSP account (the business's own); the payloads are GSTR-1 and GSTR-3B JSON.
+- **Payments**: a payout-capable account (an aggregator) for UPI payouts and collections.
+- **Shopping and events**: per-platform adapters to their partner APIs or pages.
+- **Tokens in the vault** rather than the config (`token` is read from the config today).
+- **The screen**: agentos-ui (Rune) rendering the screen documents agentd keeps (`ctl screen`);
+  today the demo renders them.
+
+The phases below are the original scoping, kept for the reasoning.
 
 ## The one design rule that carries over
 

@@ -98,3 +98,11 @@ Losses identical to four decimals. A batch of 4 now costs about what one example
 - Checked under QEMU as four ARM CPUs, each kernel against the portable one (3 rows x 1–5 tokens, Q4_K, Q5_K, Q6_K): max and Neoverse-N2 (i8mm + SDOT), Cortex-A76 (SDOT), Cortex-A53 (portable): all agree; a deliberately swapped SMMLA output lane fails the test. The whole engine test suite (training included) passes on the emulated i8mm CPU.
 - End to end, real Qwen2.5-0.5B Q4_K_M: the aarch64 build under QEMU (i8mm path) and the x86 build (portable) give the same 40 greedy tokens for the same 43-token prompt.
 - **Speed is not measured yet**: this machine is x86, and QEMU says nothing about speed. `scripts/phone-bench.sh` measures prompt and answer tokens per second with each kernel on the phone (`AGENTOS_NO_I8MM=1`, `AGENTOS_NO_DOTPROD=1` turn kernels off for the comparison).
+
+## The business partner and personal assistant (2026-11-10)
+`crates/partner` with `agentos-phonesim world` (see docs/ROADMAP.md, Status):
+- 9 unit tests: Indian money formatting, dates and financial years, GSTIN check digits (the portal's own example), invoices with CGST+SGST or IGST and rounding, GSTR-1/3B figures, the ITC set-off order, bills from email, RSS, screens.
+- 1 end-to-end test of all 24 tools against the world, checking the world's side (WhatsApp messages, payouts, a return filed once, orders and tickets paid for).
+- `scripts/phonesim-partner.sh`: 40 of 40 through agentd, every send, payment, filing, purchase and booking waiting for the volume-down key; the 145 phone scenarios and agentd's tests still pass.
+- Found while testing: a price request with the quantity after the item ("widgets? We may need 40") was taken as an order of 1; a two-item order priced only the first; a phrase without an optional argument ("news") was refused. All fixed.
+- Nightly training (`train_nightly`, on by default): every night on the charger, the model trains on what was confirmed that day, once a day, however few.

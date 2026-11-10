@@ -22,6 +22,9 @@ pub struct Conditions {
     pub new_examples: usize,
     pub min_new: usize,
     pub forced: bool,
+    /// Train every night on what was confirmed that day, however little: something new, and
+    /// no run started today yet.
+    pub nightly_due: bool,
 }
 
 impl Conditions {
@@ -46,7 +49,7 @@ impl Conditions {
         if !self.deep {
             return Some("not in the Deep stage".into());
         }
-        if self.new_examples < self.min_new {
+        if self.new_examples < self.min_new && !self.nightly_due {
             return Some(format!(
                 "{} new confirmed requests since the last run (needs {})",
                 self.new_examples, self.min_new
@@ -70,6 +73,8 @@ pub struct Trainer {
     pub trained_on: usize,
     pub last: Option<String>,
     pub forced: bool,
+    /// the day (days since 1970, local) the last run started on
+    pub last_day: Option<i64>,
 }
 
 /// What happened, for the ledger and for `learn status`.
@@ -87,13 +92,22 @@ impl Trainer {
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
+        let last_day = std::fs::read_to_string(dir.join("last_day")).ok().and_then(|s| s.trim().parse().ok());
         Trainer {
             dir,
             running: None,
             trained_on,
             last: None,
             forced: false,
+            last_day,
         }
+    }
+
+    /// A run started today: remembered across restarts.
+    pub fn started_on(&mut self, day: i64) {
+        self.last_day = Some(day);
+        let _ = std::fs::create_dir_all(&self.dir);
+        let _ = std::fs::write(self.dir.join("last_day"), day.to_string());
     }
 
     pub fn current(&self) -> PathBuf {
@@ -254,7 +268,18 @@ mod tests {
             new_examples: 30,
             min_new: 20,
             forced: false,
+            nightly_due: false,
         }
+    }
+
+    #[test]
+    fn every_night_it_learns_the_day_however_little_once() {
+        // 3 new requests is below the threshold, but nightly training takes them
+        assert!(Conditions { new_examples: 3, nightly_due: true, ..ok() }.blocker().is_none());
+        assert!(Conditions { new_examples: 3, nightly_due: false, ..ok() }.blocker().unwrap().contains("new confirmed"));
+        // never off the charger, hot, or outside the Deep stage, nightly or not
+        assert!(Conditions { new_examples: 3, nightly_due: true, charging: false, ..ok() }.blocker().is_some());
+        assert!(Conditions { new_examples: 3, nightly_due: true, deep: false, ..ok() }.blocker().is_some());
     }
 
     #[test]

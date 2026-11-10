@@ -337,6 +337,11 @@ impl Core {
         Ok(core)
     }
 
+    /// Today, in days since 1970, at the configured UTC offset.
+    fn local_day(&self) -> i64 {
+        (self.wall_secs() as i64 + self.cfg.utc_offset_minutes as i64 * 60).div_euclid(86_400)
+    }
+
     fn wall_secs(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1429,6 +1434,9 @@ impl Core {
             new_examples: self.learner.labelled().saturating_sub(self.trainer.trained_on),
             min_new: self.cfg.train_min_new,
             forced: self.trainer.forced,
+            nightly_due: self.cfg.train_nightly
+                && self.learner.labelled() > self.trainer.trained_on
+                && self.trainer.last_day != Some(self.local_day()),
         }
     }
 
@@ -1485,6 +1493,8 @@ impl Core {
         match self.trainer.start(&bin, &model, examples, self.cfg.train_steps, self.cfg.train_chunk_secs) {
             Ok(pid) => {
                 self.prio.adopt(pid);
+                let today = self.local_day();
+                self.trainer.started_on(today);
                 let line = format!("training {} on {examples} confirmed requests (pid {pid})", spec.name);
                 let _ = self.kernel.record(&line);
                 self.trainer.last = Some(line);

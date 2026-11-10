@@ -45,3 +45,20 @@ phone_poll_secs = 2               # how often to look for incoming calls and tex
 # port = 8080
 # ctx = 4096
 # gpu_layers = 99
+
+# ---- the business partner and personal assistant (optional) ----------------------------------
+# WhatsApp Business and email inbox, GST invoices and returns, bills and payments, shopping from
+# the order history, news and bookings. Without this table none of it is offered. world_url is
+# where the outside services are: `agentos-phonesim world` for development, a gateway to the
+# real accounts on a phone. Sending, paying, filing, buying and booking wait for the key.
+# [partner]
+# world_url = "http://127.0.0.1:18900"
+# business_name = "Lakshmi Widgets"
+# gstin = "29AAACM1234A1Z4"          # checked: state code, PAN, check character
+# vpa = "lakshmiwidgets@upi"         # customers pay invoices here
+# wa_phone_id = "100200300"          # WhatsApp Cloud API phone number id
+# city = "Bengaluru"
+# interests = ["music", "trekking"]  # a start; learned from then on
+# platforms = ["shopkart", "bazaarnow", "quickmart"]
+# feeds = ["business", "tech", "travel", "music", "movies", "sports"]   # or full RSS URLs
+# train_nightly = true               # (top level) learn every night from what was confirmed that day
