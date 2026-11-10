@@ -15,3 +15,7 @@ libc = "0.2"
 
 [dev-dependencies]
 agentos-phone = { path = "../phone" }
+agentos-partner = { path = "../partner" }
+agentos-action = { path = "../action" }
+agentos-executor = { path = "../executor" }
+ureq = { version = "2", features = ["json"] }

@@ -33,6 +33,14 @@
 //!   agentos-phonesim fail mmcli|nmcli on|off   the modem or NetworkManager gone
 //!   agentos-phonesim gps fix|cell|none     what --location-get reports
 //!   agentos-phonesim state | log | stop
+//!
+//! And the world beyond the phone, for the partner services (see world.rs):
+//!   agentos-phonesim world [PORT]          serve WhatsApp, mail, UPI, a GSP, shops, news, events
+//!   agentos-phonesim wa NUMBER NAME TEXT   a customer writes on WhatsApp   } to the world at
+//!   agentos-phonesim mail FROM SUBJECT BODY   an email arrives             } $PHONESIM_WORLD
+//!   agentos-phonesim collect FROM_VPA RUPEES NOTE   a customer pays by UPI } (127.0.0.1:18900)
+mod world;
+
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
@@ -621,6 +629,13 @@ fn control(args: &[String]) {
     match a.as_slice() {
         ["init"] => init(),
         ["stop"] => stop_bus(&dir()),
+        ["world", rest @ ..] => world::run(rest.first().and_then(|p| p.parse().ok()).unwrap_or(18900)),
+        ["wa", number, name, text @ ..] if !text.is_empty() => world_post("/sim/whatsapp", json!({"wa_id": number.trim_start_matches('+'), "name": name, "text": text.join(" ")})),
+        ["mail", from, subject, body @ ..] if !body.is_empty() => world_post("/sim/mail", json!({"from": from, "from_name": from.split('@').next().unwrap_or(from), "subject": subject, "body": body.join(" ")})),
+        ["collect", from, rupees, note @ ..] => {
+            let paise = (rupees.parse::<f64>().unwrap_or_else(|_| die("collect FROM_VPA RUPEES NOTE")) * 100.0).round() as i64;
+            world_post("/sim/pay/collect", json!({"from_vpa": from, "amount_paise": paise, "note": note.join(" ")}))
+        }
         ["keep-input"] => keep_input(),
         ["call", number] => {
             let mut l = Locked::open();
@@ -711,6 +726,14 @@ fn control(args: &[String]) {
         }
         ["log"] => print!("{}", std::fs::read_to_string(dir().join("hw.log")).unwrap_or_default()),
         _ => die("usage: agentos-phonesim init|call N|sms N TEXT|hangup [ID]|pickup [ID]|key MS [CODE]|waiting N|sms-parts N TEXT|sms-complete ID TEXT|service on|off|fail mmcli|nmcli on|off|gps fix|cell|none|state|log|stop"),
+    }
+}
+
+fn world_post(path: &str, body: serde_json::Value) {
+    let url = std::env::var("PHONESIM_WORLD").unwrap_or_else(|_| "http://127.0.0.1:18900".into());
+    match world::post(&url, path, &body) {
+        Ok(v) => println!("{v}"),
+        Err(e) => die(&e),
     }
 }
 
