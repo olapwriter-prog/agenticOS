@@ -59,3 +59,64 @@ find my phone	{"tool":"ring_phone","args":{}}
 store Rahul's number 9123456780	{"tool":"add_contact","args":{"name":"Rahul","number":"9123456780"}}
 where am I	{"tool":"where_am_i","args":{}}
 call grandma	{"tool":"call","args":{"to":"grandma"}}
+# more phrasings, more tools, longer arguments (added for a larger held-out set)
+could you ring Priya for me	{"tool":"call","args":{"to":"Priya"}}
+I need to talk to the plumber, call him	{"tool":"call","args":{"to":"the plumber"}}
+text Ravi: can you pick up milk on the way home	{"tool":"send_sms","args":{"to":"Ravi","text":"can you pick up milk on the way home"}}
+send a message to Aunt Lakshmi saying we arrive at noon	{"tool":"send_sms","args":{"to":"Aunt Lakshmi","text":"we arrive at noon"}}
+what have I got on saturday	{"tool":"read_calendar","args":{"day":"saturday"}}
+anything in the diary for the 15th	{"tool":"read_calendar","args":{"day":"the 15th"}}
+put team meeting on tuesday	{"tool":"add_event","args":{"day":"tuesday","title":"team meeting"}}
+schedule Ravi's birthday dinner for friday	{"tool":"add_event","args":{"day":"friday","title":"Ravi's birthday dinner"}}
+remind me at 7 to water the plants	{"tool":"set_reminder","args":{"text":"water the plants","when":"7"}}
+set a reminder for the gas cylinder tomorrow at 10am	{"tool":"set_reminder","args":{"text":"the gas cylinder","when":"tomorrow at 10am"}}
+ping Meera on chat that the meeting moved to 3	{"tool":"send_message","args":{"to":"Meera","text":"the meeting moved to 3"}}
+chat message to Sunil: running 10 minutes late	{"tool":"send_message","args":{"to":"Sunil","text":"running 10 minutes late"}}
+do I have signal	{"tool":"phone_status","args":{}}
+is the wifi connected	{"tool":"phone_status","args":{}}
+what number do I have for the dentist	{"tool":"find_contact","args":{"name":"the dentist"}}
+Ravi's number please	{"tool":"find_contact","args":{"name":"Ravi"}}
+who's in my address book	{"tool":"list_contacts","args":{}}
+show my contacts	{"tool":"list_contacts","args":{}}
+add Dr Rao, 080 2234 5678	{"tool":"add_contact","args":{"name":"Dr Rao","number":"080 2234 5678"}}
+new contact Anjali +91 99887 76655	{"tool":"add_contact","args":{"name":"Anjali","number":"+91 99887 76655"}}
+take the call	{"tool":"answer_call","args":{}}
+answer the phone	{"tool":"answer_call","args":{}}
+cut the call	{"tool":"hangup","args":{}}
+disconnect	{"tool":"hangup","args":{}}
+did anyone call while I was out	{"tool":"list_calls","args":{}}
+show recent calls	{"tool":"list_calls","args":{}}
+any texts from the bank	{"tool":"messages_from","args":{"from":"the bank"}}
+what did Priya say	{"tool":"messages_from","args":{"from":"Priya"}}
+show my latest texts	{"tool":"read_messages","args":{}}
+what messages came in	{"tool":"read_messages","args":{}}
+dial *199# for my number	{"tool":"ussd","args":{"code":"*199#"}}
+send the ussd code *567*1#	{"tool":"ussd","args":{"code":"*567*1#"}}
+look for wifi	{"tool":"wifi_scan","args":{}}
+what networks can you see	{"tool":"wifi_scan","args":{}}
+join the wifi Office5G, the password is Welcome2024	{"tool":"wifi_connect","args":{"ssid":"Office5G","password":"Welcome2024"}}
+connect to wifi CafeFree with no password	{"tool":"wifi_connect","args":{"ssid":"CafeFree","password":""}}
+flight mode please	{"tool":"airplane_mode","args":{"on":"on"}}
+turn off flight mode	{"tool":"airplane_mode","args":{"on":"off"}}
+enable data	{"tool":"mobile_data","args":{"on":"on"}}
+no more mobile data, I'm roaming	{"tool":"mobile_data","args":{"on":"off"}}
+what's my location	{"tool":"where_am_i","args":{}}
+where are we	{"tool":"where_am_i","args":{}}
+flashlight on please	{"tool":"flashlight","args":{"on":"on"}}
+kill the torch	{"tool":"flashlight","args":{"on":"off"}}
+turn it down to 20	{"tool":"set_volume","args":{"percent":"20"}}
+full volume	{"tool":"set_volume","args":{"percent":"100"}}
+silence the phone	{"tool":"set_volume","args":{"percent":"0"}}
+make my phone ring, I can't find it	{"tool":"ring_phone","args":{}}
+ring yourself	{"tool":"ring_phone","args":{}}
+call 112	{"tool":"call","args":{"to":"112"}}
+phone +91 98450 12345	{"tool":"call","args":{"to":"+91 98450 12345"}}
+text 9876501234 that I'll be there in five	{"tool":"send_sms","args":{"to":"9876501234","text":"I'll be there in five"}}
+sms mum: landed, all good	{"tool":"send_sms","args":{"to":"mum","text":"landed, all good"}}
+call back the last missed call	{"tool":"list_calls","args":{}}
+is my mobile data on	{"tool":"phone_status","args":{}}
+remind me to renew the insurance on the 30th	{"tool":"set_reminder","args":{"text":"renew the insurance","when":"the 30th"}}
+what's happening monday	{"tool":"read_calendar","args":{"day":"monday"}}
+add yoga to thursday	{"tool":"add_event","args":{"day":"thursday","title":"yoga"}}
+what are the functions you have written	{"tool":"list_functions","args":{}}
+show me the function split_bill	{"tool":"show_function","args":{"name":"split_bill"}}

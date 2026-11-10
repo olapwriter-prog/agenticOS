@@ -127,6 +127,13 @@ pub struct Snapshot {
     ssm: Vec<Vec<f32>>,
 }
 
+/// Where a sequence was before a batch of tokens (see `State::mark`).
+pub struct Mark {
+    pub pos: usize,
+    conv: Vec<Vec<f32>>,
+    ssm: Vec<Vec<f32>>,
+}
+
 impl Snapshot {
     pub fn bytes(&self) -> usize {
         self.k
@@ -171,6 +178,19 @@ impl State {
             .zip(&s.conv)
             .chain(self.ssm.iter_mut().zip(&s.ssm))
         {
+            dst.copy_from_slice(src);
+        }
+    }
+    /// The part of the state that cannot be rewound by moving `pos` back: the recurrent layers'
+    /// states (constant size, nothing for a dense model). Taken before a speculative batch so
+    /// the state can go back to before the tokens that turned out wrong.
+    pub fn mark(&self) -> Mark {
+        Mark { pos: self.pos, conv: self.conv.clone(), ssm: self.ssm.clone() }
+    }
+    /// Back to a mark: the attention cache entries after it are simply written over later.
+    pub fn rewind(&mut self, m: &Mark) {
+        self.pos = m.pos;
+        for (dst, src) in self.conv.iter_mut().zip(&m.conv).chain(self.ssm.iter_mut().zip(&m.ssm)) {
             dst.copy_from_slice(src);
         }
     }
@@ -520,6 +540,16 @@ impl Model {
 
     /// Run `tokens` (positions st.pos..) through the model. Returns the logits of the last token.
     pub fn forward(&self, st: &mut State, tokens: &[u32]) -> Result<Vec<f32>, String> {
+        self.forward_logits(st, tokens, false)
+    }
+
+    /// The same, returning the logits after every token (n x vocab): what checking a batch of
+    /// drafted tokens needs.
+    pub fn forward_all(&self, st: &mut State, tokens: &[u32]) -> Result<Vec<f32>, String> {
+        self.forward_logits(st, tokens, true)
+    }
+
+    fn forward_logits(&self, st: &mut State, tokens: &[u32], all: bool) -> Result<Vec<f32>, String> {
         let c = &self.cfg;
         let n = tokens.len();
         if st.pos + n > c.ctx {
@@ -554,6 +584,12 @@ impl Model {
             let _ = (&l.attn_norm, &l.ffn_norm);
         }
         st.pos += n;
+        if all {
+            for row in x.chunks_mut(d) {
+                rms_norm(row, &self.output_norm, c.eps);
+            }
+            return Ok(self.matmul(&self.output, &x, n));
+        }
         let mut last = x[(n - 1) * d..].to_vec();
         rms_norm(&mut last, &self.output_norm, c.eps);
         let logits = self.matmul(&self.output, &last, 1);

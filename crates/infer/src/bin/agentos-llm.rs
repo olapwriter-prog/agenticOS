@@ -16,6 +16,8 @@ struct Args {
     threads: usize,
     mlock: bool,
     lora: Option<String>,
+    draft: Option<String>,
+    draft_n: usize,
 }
 
 fn args() -> Result<Args, String> {
@@ -27,6 +29,8 @@ fn args() -> Result<Args, String> {
         threads: 0,
         mlock: false,
         lora: None,
+        draft: None,
+        draft_n: 5,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -62,6 +66,14 @@ fn args() -> Result<Args, String> {
                 a.lora = Some(val(i)?);
                 i += 1;
             }
+            "--draft" => {
+                a.draft = Some(val(i)?);
+                i += 1;
+            }
+            "--draft-n" => {
+                a.draft_n = val(i)?.parse().map_err(|_| "bad --draft-n")?;
+                i += 1;
+            }
             "-ngl" | "--n-gpu-layers" => i += 1,
             // llama-server flags this engine does not need; skip a value if one follows
             other if other.starts_with('-') && v.get(i + 1).is_some_and(|n| !n.starts_with('-')) => i += 1,
@@ -70,7 +82,7 @@ fn args() -> Result<Args, String> {
         i += 1;
     }
     if a.model.is_empty() {
-        return Err("usage: agentos-llm -m model.gguf [--host H] [--port P] [-c CTX] [-t THREADS] [--mlock]".into());
+        return Err("usage: agentos-llm -m model.gguf [--host H] [--port P] [-c CTX] [-t THREADS] [--mlock] [--lora A] [--draft small.gguf] [--draft-n N]".into());
     }
     Ok(a)
 }
@@ -90,6 +102,8 @@ fn timings_json(t: &Timings) -> Value {
         "predicted_n": t.predicted_n,
         "predicted_ms": t.predicted_ms,
         "predicted_per_second": t.predicted_n as f64 / (t.predicted_ms / 1000.0).max(1e-9),
+        "draft_n": t.drafted,
+        "draft_n_accepted": t.accepted,
     })
 }
 
@@ -297,6 +311,20 @@ fn main() {
         a.port
     );
     let mut engine = Engine::new(model, tok);
+    if let Some(path) = &a.draft {
+        let mut load = || -> Result<(), String> {
+            let g = Gguf::open(std::path::Path::new(path))?;
+            let dtok = Tokenizer::from_gguf(&g)?;
+            let dm = Model::load(g, a.ctx)?;
+            engine.set_draft(dm, &dtok)
+        };
+        if let Err(e) = load() {
+            eprintln!("agentos-llm: draft {path}: {e}");
+            std::process::exit(1)
+        }
+        engine.draft_n = a.draft_n.max(1);
+        eprintln!("agentos-llm: draft {path}, {} tokens a round", engine.draft_n);
+    }
     let listener = TcpListener::bind((a.host.as_str(), a.port)).unwrap_or_else(|e| {
         eprintln!("agentos-llm: cannot listen on {}:{}: {e}", a.host, a.port);
         std::process::exit(1)

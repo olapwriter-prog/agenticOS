@@ -1,7 +1,13 @@
 //! Generation: prompt in, text out, with the grammar enforced, and a long shared prefix (agentd's
 //! system prompt and tool list) processed once and reused from a snapshot.
-use crate::grammar::Grammar;
-use crate::model::{Arch, Model, Snapshot, State};
+//!
+//! With a draft model (`Engine::set_draft`): speculative decoding. The small model proposes a few
+//! tokens, the big one checks them all in one batch (a batch costs it little more than one token:
+//! each weight is decoded once per batch). Accepted tokens are kept, the first wrong one is
+//! replaced by the big model's own choice, and the text is exactly what the big model alone would
+//! have produced (greedy: identical; sampling: the same distribution).
+use crate::grammar::{Grammar, Matcher};
+use crate::model::{Arch, Mark, Model, Snapshot, State};
 use crate::tokenizer::Tokenizer;
 use std::time::Instant;
 
@@ -14,6 +20,59 @@ pub struct Engine {
     /// A snapshot after a shared prefix, and that prefix.
     snap: Option<(Vec<u32>, Snapshot)>,
     seed: u64,
+    draft: Option<Draft>,
+    /// drafted tokens per round
+    pub draft_n: usize,
+}
+
+/// The draft model and where it is: its state holds exactly `held`, `logits` are for the next.
+struct Draft {
+    model: Model,
+    state: State,
+    held: Vec<u32>,
+    logits: Vec<f32>,
+}
+
+impl Draft {
+    /// Bring the draft to hold exactly `tokens`, from a `mark` taken when it held `mark_len`
+    /// tokens (the rewind point: at most one round back).
+    fn sync(&mut self, tokens: &[u32], mark: Option<(&Mark, usize)>) -> Result<(), String> {
+        let common = self.held.iter().zip(tokens).take_while(|(a, b)| a == b).count();
+        let start = if common < self.held.len() || self.logits.is_empty() {
+            // rewind: to the mark if there is one this side of the difference, else start over
+            match mark {
+                Some((m, len)) if len <= common => {
+                    self.state.rewind(m);
+                    len
+                }
+                _ => {
+                    self.state.reset();
+                    0
+                }
+            }
+        } else {
+            common
+        };
+        self.held.truncate(start);
+        if start == tokens.len() {
+            if self.logits.is_empty() {
+                return Err("draft has no logits".into());
+            }
+            return Ok(());
+        }
+        const BATCH: usize = 64;
+        let mut at = start;
+        while at < tokens.len() {
+            let end = (at + BATCH).min(tokens.len());
+            if self.state.pos + (end - at) > self.model.cfg.ctx {
+                return Err("draft context full".into());
+            }
+            self.logits = self.model.forward(&mut self.state, &tokens[at..end])?;
+            self.held.extend_from_slice(&tokens[at..end]);
+            at = end;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +92,9 @@ pub struct Timings {
     pub prompt_ms: f64,
     pub predicted_n: usize,
     pub predicted_ms: f64,
+    /// speculative decoding: tokens the draft proposed, and how many of them the model kept
+    pub drafted: usize,
+    pub accepted: usize,
 }
 
 /// One chat message.
@@ -56,7 +118,29 @@ impl Engine {
             held: vec![],
             snap: None,
             seed,
+            draft: None,
+            draft_n: 5,
         }
+    }
+
+    /// Use a smaller model of the same family to draft tokens. It must share the vocabulary:
+    /// checked on the token tables, and on encoding a sentence.
+    pub fn set_draft(&mut self, draft: Model, draft_tok: &Tokenizer) -> Result<(), String> {
+        if draft.cfg.n_vocab != self.model.cfg.n_vocab {
+            return Err(format!("draft vocabulary has {} tokens, the model's {}", draft.cfg.n_vocab, self.model.cfg.n_vocab));
+        }
+        let probe = "Call Mum at 9pm; text Ravi \"I'm late\" {\"tool\":\"call\"} 12345 émoji 😀";
+        if draft_tok.encode(probe) != self.tok.encode(probe) {
+            return Err("the draft model tokenizes differently from the model".into());
+        }
+        let state = draft.new_state();
+        self.draft = Some(Draft { model: draft, state, held: vec![], logits: vec![] });
+        Ok(())
+    }
+
+    /// Is a draft model loaded?
+    pub fn has_draft(&self) -> bool {
+        self.draft.is_some()
     }
 
     /// Load or remove a LoRA adapter. Cached state was computed without it, so it is dropped.
@@ -170,6 +254,12 @@ impl Engine {
         };
         let t1 = Instant::now();
         let mut out: Vec<u32> = Vec::new();
+        if self.draft.is_some() {
+            let r = self.generate_speculative(req, &prompt, logits, matcher.as_mut(), &mut out, &mut timings);
+            timings.predicted_n = out.len();
+            timings.predicted_ms = t1.elapsed().as_secs_f64() * 1000.0;
+            return r.map(|()| (self.tok.decode(&out), timings));
+        }
         for _ in 0..req.max_tokens {
             let Some(next) = self.sample(&logits, req, matcher.as_ref()) else {
                 break;
@@ -198,22 +288,218 @@ impl Engine {
         Ok((self.tok.decode(&out), timings))
     }
 
-    /// Pick the next token: top-k by logit among what the grammar allows, then temperature.
-    fn sample(
+    /// Speculative rounds until the answer ends: the draft proposes, the model checks the batch.
+    fn generate_speculative(
         &mut self,
-        logits: &[f32],
         req: &Request,
-        m: Option<&crate::grammar::Matcher>,
-    ) -> Option<u32> {
+        prompt: &[u32],
+        mut logits: Vec<f32>,
+        mut matcher: Option<&mut Matcher>,
+        out: &mut Vec<u32>,
+        timings: &mut Timings,
+    ) -> Result<(), String> {
+        let ctx = self.model.cfg.ctx;
+        let recurrent = (0..self.model.cfg.n_layer).any(|l| self.model.cfg.is_recurrent(l));
+        let mut draft = self.draft.take().ok_or("no draft")?;
+        let r = (|| -> Result<(), String> {
+            let mut draft_mark: Option<(Mark, usize)> = None;
+            while out.len() < req.max_tokens {
+                // where the draft and the model are: the same tokens
+                let held_len = self.held.len();
+                draft.sync(&self.held, draft_mark.as_ref().map(|(m, l)| (m, *l)))?;
+                draft_mark = Some((draft.state.mark(), held_len));
+                let model_mark = recurrent.then(|| self.state.mark());
+                let pos_before = self.state.pos;
+                // 1. the draft proposes up to draft_n tokens, each allowed by the grammar
+                let n = self.draft_n.min(req.max_tokens - out.len()).min(ctx.saturating_sub(pos_before + 2));
+                let mut m_draft = matcher.as_deref().cloned();
+                let mut drafted: Vec<u32> = Vec::with_capacity(n);
+                let mut q_dists: Vec<Vec<(u32, f32)>> = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let q = self.dist(&draft.logits, req, m_draft.as_ref());
+                    if q.is_empty() {
+                        break;
+                    }
+                    let d = self.pick(&q);
+                    q_dists.push(q);
+                    drafted.push(d);
+                    if self.tok.eot.contains(&d) {
+                        break;
+                    }
+                    if let Some(m) = m_draft.as_mut() {
+                        m.accept_bytes(&self.tok.token_bytes(d));
+                        if m.complete() && !m.can_continue() {
+                            break;
+                        }
+                    }
+                    draft.logits = draft.model.forward(&mut draft.state, &[d])?;
+                    draft.held.push(d);
+                }
+                timings.drafted += drafted.len();
+                // 2. the model checks them all in one batch: logits after each drafted token
+                let all = if drafted.is_empty() { vec![] } else { self.model.forward_all(&mut self.state, &drafted)? };
+                let nv = self.model.cfg.n_vocab;
+                // 3. accept while the model agrees; the first disagreement is replaced
+                let mut accepted = 0;
+                let mut next: Option<u32> = None;
+                let mut finished = false;
+                let mut m_check = matcher.as_deref().cloned();
+                let mut cur = logits.clone();
+                for (i, &d) in drafted.iter().enumerate() {
+                    let p = self.dist(&cur, req, m_check.as_ref());
+                    let q = &q_dists[i];
+                    let pd = p.iter().find(|(t, _)| *t == d).map_or(0.0, |(_, x)| *x);
+                    let qd = q.iter().find(|(t, _)| *t == d).map_or(1.0, |(_, x)| *x);
+                    if pd > 0.0 && (pd >= qd || self.rand() < pd / qd) {
+                        accepted += 1;
+                        out.push(d);
+                        if self.tok.eot.contains(&d) {
+                            out.pop();
+                            finished = true;
+                            break;
+                        }
+                        if let Some(m) = m_check.as_mut() {
+                            m.accept_bytes(&self.tok.token_bytes(d));
+                            if m.complete() && !m.can_continue() {
+                                finished = true;
+                                break;
+                            }
+                        }
+                        cur = all[i * nv..(i + 1) * nv].to_vec();
+                    } else {
+                        // the residual p − q, as speculative sampling prescribes (greedy: p's top)
+                        let mut res: Vec<(u32, f32)> = p
+                            .iter()
+                            .map(|(t, x)| (*t, (x - q.iter().find(|(u, _)| u == t).map_or(0.0, |(_, y)| *y)).max(0.0)))
+                            .collect();
+                        let total: f32 = res.iter().map(|(_, x)| x).sum();
+                        if total <= 0.0 {
+                            res = p.clone();
+                        }
+                        next = Some(self.pick(&res));
+                        break;
+                    }
+                }
+                timings.accepted += accepted;
+                if !finished && next.is_none() {
+                    // every drafted token was right: one more from the model's last logits
+                    let p = self.dist(&cur, req, m_check.as_ref());
+                    if p.is_empty() {
+                        finished = true;
+                    } else {
+                        next = Some(self.pick(&p));
+                    }
+                }
+                // 4. the model's state: keep the accepted tokens, drop the rest
+                self.held.extend_from_slice(&drafted[..accepted]);
+                if accepted < drafted.len() {
+                    match &model_mark {
+                        Some(m) => {
+                            // recurrent layers cannot step back: redo the accepted tokens from
+                            // the mark, together with the replacement
+                            self.state.rewind(m);
+                            let mut redo = drafted[..accepted].to_vec();
+                            if let Some(e) = next {
+                                redo.push(e);
+                            }
+                            if !redo.is_empty() {
+                                logits = self.model.forward(&mut self.state, &redo)?;
+                            }
+                            if let Some(e) = next {
+                                self.held.push(e);
+                            }
+                        }
+                        None => {
+                            self.state.pos = pos_before + accepted;
+                            if let Some(e) = next {
+                                logits = self.model.forward(&mut self.state, &[e])?;
+                                self.held.push(e);
+                            }
+                        }
+                    }
+                } else if let Some(e) = next {
+                    if self.state.pos + 1 >= ctx {
+                        finished = true;
+                    } else {
+                        logits = self.model.forward(&mut self.state, &[e])?;
+                        self.held.push(e);
+                    }
+                }
+                if let Some(e) = next {
+                    if self.tok.eot.contains(&e) {
+                        finished = true;
+                    } else {
+                        out.push(e);
+                        if let Some(m) = matcher.as_deref_mut() {
+                            // the matcher follows the tokens kept: the accepted, then e
+                            for &t in &drafted[..accepted] {
+                                m.accept_bytes(&self.tok.token_bytes(t));
+                            }
+                            m.accept_bytes(&self.tok.token_bytes(e));
+                            if m.complete() && !m.can_continue() {
+                                finished = true;
+                            }
+                        }
+                    }
+                } else if let Some(m) = matcher.as_deref_mut() {
+                    for &t in &drafted[..accepted] {
+                        m.accept_bytes(&self.tok.token_bytes(t));
+                    }
+                }
+                if finished || self.state.pos + 1 >= ctx {
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        let _ = prompt;
+        self.draft = Some(draft);
+        r
+    }
+
+    /// The next-token distribution `sample` draws from: top-k among what the grammar allows,
+    /// softmax at the temperature (one-hot at the top when greedy). Sorted, best first.
+    fn dist(&self, logits: &[f32], req: &Request, m: Option<&Matcher>) -> Vec<(u32, f32)> {
+        let mut cands = self.candidates(logits, req, m);
+        if cands.is_empty() {
+            return cands;
+        }
+        cands.sort_by(|a, b| b.1.total_cmp(&a.1));
+        if req.temperature <= 0.0 {
+            return vec![(cands[0].0, 1.0)];
+        }
+        let mx = cands[0].1;
+        let mut total = 0.0;
+        for c in cands.iter_mut() {
+            c.1 = ((c.1 - mx) / req.temperature).exp();
+            total += c.1;
+        }
+        cands.iter_mut().for_each(|c| c.1 /= total);
+        cands
+    }
+
+    /// Draw from a distribution (tokens with weights).
+    fn pick(&mut self, d: &[(u32, f32)]) -> u32 {
+        let total: f32 = d.iter().map(|(_, w)| w).sum();
+        let mut r = self.rand() * total;
+        for (t, w) in d {
+            r -= w;
+            if r <= 0.0 {
+                return *t;
+            }
+        }
+        d[0].0
+    }
+
+    /// The top-k tokens the grammar allows, with their logits.
+    fn candidates(&self, logits: &[f32], req: &Request, m: Option<&Matcher>) -> Vec<(u32, f32)> {
         let mut order: Vec<u32> = (0..logits.len() as u32).collect();
         let k = req.top_k.max(1);
         let mut cands: Vec<(u32, f32)> = Vec::with_capacity(k);
         match m {
             None => {
                 let nth = k.min(order.len() - 1);
-                order.select_nth_unstable_by(nth, |a, b| {
-                    logits[*b as usize].total_cmp(&logits[*a as usize])
-                });
+                order.select_nth_unstable_by(nth, |a, b| logits[*b as usize].total_cmp(&logits[*a as usize]));
                 order.truncate(k);
                 cands = order.iter().map(|&t| (t, logits[t as usize])).collect();
             }
@@ -233,6 +519,17 @@ impl Engine {
                 }
             }
         }
+        cands
+    }
+
+    /// Pick the next token: top-k by logit among what the grammar allows, then temperature.
+    fn sample(
+        &mut self,
+        logits: &[f32],
+        req: &Request,
+        m: Option<&crate::grammar::Matcher>,
+    ) -> Option<u32> {
+        let mut cands = self.candidates(logits, req, m);
         if cands.is_empty() {
             return None;
         }

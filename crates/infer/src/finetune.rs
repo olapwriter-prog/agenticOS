@@ -150,8 +150,8 @@ pub fn judge(e: &mut Engine, cases: &[Chat], grammar: &Option<String>) -> Result
     Ok(total / cases.len() as f32)
 }
 
-fn ckpt(out: &std::path::Path) -> (PathBuf, PathBuf) {
-    (out.with_extension("ckpt"), out.with_extension("ckpt.json"))
+fn ckpt(out: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+    (out.with_extension("ckpt"), out.with_extension("ckpt.json"), out.with_extension("ckpt.opt"))
 }
 
 /// Run (or continue) the job. Returns a JSON summary; `log` gets progress lines.
@@ -177,7 +177,7 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
     let examples: Vec<_> = train.iter().map(|c| example(&e.tok, &prompt_of(e, c), &c.2)).collect();
 
     // continue from a checkpoint, or start: score the model without an adapter first
-    let (ck, ck_meta) = ckpt(&job.out);
+    let (ck, ck_meta, ck_opt) = ckpt(&job.out);
     let meta: Option<Value> = std::fs::read_to_string(&ck_meta).ok().and_then(|s| serde_json::from_str(&s).ok());
     let resumed = meta
         .as_ref()
@@ -196,16 +196,26 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
         }
     };
     e.set_adapter(None);
-    let mut opt = AdamW::new(job.lr);
+    // the optimizer's moments come back too, so a resumed job continues exactly
+    let mut opt = match AdamW::load(&ck_opt, job.lr, &ad) {
+        Ok(o) if start > 0 => o,
+        Ok(_) | Err(_) => {
+            if start > 0 {
+                log("optimizer state missing or stale: moments restart");
+            }
+            AdamW::new(job.lr)
+        }
+    };
     let mut last_loss = f32::NAN;
     let mut step = start;
-    let save = |ad: &Adapter, step: usize| -> Result<(), String> {
+    let save = |ad: &Adapter, opt: &AdamW, step: usize| -> Result<(), String> {
         ad.save(&ck)?;
+        opt.save(&ck_opt)?;
         std::fs::write(&ck_meta, json!({"step": step, "base": base}).to_string()).map_err(|e| e.to_string())
     };
     while step < job.steps {
         if job.max_secs.is_some_and(|s| t0.elapsed().as_secs() >= s) {
-            save(&ad, step)?;
+            save(&ad, &opt, step)?;
             return Ok(json!({"done": false, "step": step, "steps": job.steps, "loss": last_loss}));
         }
         let mut tr = Trainer::new(&e.model);
@@ -219,7 +229,7 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
         step += 1;
         log(&format!("step {step}/{} loss {last_loss:.4}", job.steps));
         // every step: a step takes minutes on a phone, the adapter a few hundred KB to write
-        save(&ad, step)?;
+        save(&ad, &opt, step)?;
     }
     e.set_adapter(Some(ad.clone()));
     let tuned = judge(e, &held, &job.grammar)?;
@@ -230,6 +240,7 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
     }
     let _ = std::fs::remove_file(&ck);
     let _ = std::fs::remove_file(&ck_meta);
+    let _ = std::fs::remove_file(&ck_opt);
     log(&format!(
         "with the adapter: {:.0}% (was {:.0}%): {}",
         tuned * 100.0,

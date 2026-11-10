@@ -1176,6 +1176,71 @@ impl AdamW {
     pub fn new(lr: f32) -> Self {
         AdamW { lr, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0, step: 0, m: BTreeMap::new(), v: BTreeMap::new() }
     }
+    /// Save the optimizer's moments and step count, so a job that stops mid-way continues
+    /// exactly rather than restarting them from zero (the first steps after a cold restart are
+    /// too large: AdamW's bias correction assumes fresh moments).
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        let mut out = Vec::new();
+        out.extend(b"AGADAM1\0");
+        out.extend(self.step.to_le_bytes());
+        out.extend((self.m.len() as u32).to_le_bytes());
+        for ((layer, t), (ma, mb)) in &self.m {
+            let (va, vb) = &self.v[&(*layer, *t)];
+            out.extend((*layer as u32).to_le_bytes());
+            out.push(t.tag() as u8);
+            out.extend((ma.len() as u32).to_le_bytes());
+            out.extend((mb.len() as u32).to_le_bytes());
+            for x in ma.iter().chain(mb).chain(va).chain(vb) {
+                out.extend(x.to_le_bytes());
+            }
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    }
+
+    /// The saved moments, into an optimizer with the given learning rate. Fails if the file does
+    /// not match the adapter (shapes), so a changed adapter starts fresh.
+    pub fn load(path: &std::path::Path, lr: f32, ad: &Adapter) -> Result<AdamW, String> {
+        let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if b.len() < 16 || &b[..8] != b"AGADAM1\0" {
+            return Err("not an agentos optimizer state".into());
+        }
+        let u32_at = |i: usize| u32::from_le_bytes(b[i..i + 4].try_into().unwrap());
+        let mut o = AdamW::new(lr);
+        o.step = u32_at(8);
+        let n = u32_at(12) as usize;
+        let mut at = 16;
+        for _ in 0..n {
+            let layer = u32_at(at) as usize;
+            let t = match b[at + 4] {
+                b'q' => Target::Q,
+                b'k' => Target::K,
+                b'v' => Target::V,
+                b'o' => Target::O,
+                x => return Err(format!("bad target {x}")),
+            };
+            let (la, lb) = (u32_at(at + 5) as usize, u32_at(at + 9) as usize);
+            at += 13;
+            let p = ad.pairs.get(&(layer, t)).ok_or("optimizer state is for another adapter")?;
+            if (la, lb) != (p.a.len(), p.b.len()) {
+                return Err("optimizer state is for another adapter".into());
+            }
+            let count = 2 * (la + lb);
+            if at + count * 4 > b.len() {
+                return Err("optimizer state is cut short".into());
+            }
+            let vals: Vec<f32> = b[at..at + count * 4].chunks(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+            at += count * 4;
+            o.m.insert((layer, t), (vals[..la].to_vec(), vals[la..la + lb].to_vec()));
+            o.v.insert((layer, t), (vals[la + lb..2 * la + lb].to_vec(), vals[2 * la + lb..].to_vec()));
+        }
+        if o.m.len() != ad.pairs.len() {
+            return Err("optimizer state is for another adapter".into());
+        }
+        Ok(o)
+    }
+
     pub fn step(&mut self, ad: &mut Adapter, g: &Grads) {
         self.step += 1;
         let (b1, b2) = (self.beta1, self.beta2);
@@ -1505,6 +1570,48 @@ mod tests {
         assert_eq!(lay.before(6, 1), Some(2), "an example's first token follows the prefix");
         assert_eq!(lay.before(6, 4), None);
         assert_eq!(Layout::one(&a.0, &a.1).shared, 0);
+    }
+
+    #[test]
+    fn optimizer_state_round_trips_and_resumes_exactly() {
+        let m = tiny("qwen2", 2);
+        let (tokens, train) = data(12);
+        let tr = Trainer::new(&m);
+        // two steps straight through
+        let mut ad1 = Adapter::new(&m, 2, 4.0, 3).unwrap();
+        let mut o1 = AdamW::new(1e-2);
+        for _ in 0..2 {
+            let g = tr.loss(&ad1, &tokens, &train, true).1.unwrap();
+            o1.step(&mut ad1, &g);
+        }
+        // one step, save both, load, one more step
+        let mut ad2 = Adapter::new(&m, 2, 4.0, 3).unwrap();
+        let mut o2 = AdamW::new(1e-2);
+        let g = tr.loss(&ad2, &tokens, &train, true).1.unwrap();
+        o2.step(&mut ad2, &g);
+        let dir = std::env::temp_dir().join(format!("agentos-opt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        o2.save(&dir.join("o.opt")).unwrap();
+        ad2.save(&dir.join("a.lora")).unwrap();
+        let mut ad3 = Adapter::load(&dir.join("a.lora")).unwrap();
+        let mut o3 = AdamW::load(&dir.join("o.opt"), 1e-2, &ad3).unwrap();
+        let g = tr.loss(&ad3, &tokens, &train, true).1.unwrap();
+        o3.step(&mut ad3, &g);
+        for (k, p1) in &ad1.pairs {
+            let p3 = &ad3.pairs[k];
+            assert!(p1.a.iter().chain(&p1.b).zip(p3.a.iter().chain(&p3.b)).all(|(x, y)| (x - y).abs() <= 1e-6 * (1.0 + x.abs())), "{k:?} differs after resume");
+        }
+        // a fresh optimizer would have taken a different (larger) step
+        let mut ad4 = Adapter::load(&dir.join("a.lora")).unwrap();
+        let mut o4 = AdamW::new(1e-2);
+        let g = tr.loss(&ad4, &tokens, &train, true).1.unwrap();
+        o4.step(&mut ad4, &g);
+        let (p1, p4) = (&ad1.pairs[&(0, Target::Q)], &ad4.pairs[&(0, Target::Q)]);
+        assert!(p1.b.iter().zip(&p4.b).any(|(x, y)| (x - y).abs() > 1e-6), "a cold restart should differ");
+        // the state of another adapter is refused
+        let other = Adapter::new(&m, 3, 4.0, 3).unwrap();
+        assert!(AdamW::load(&dir.join("o.opt"), 1e-2, &other).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
