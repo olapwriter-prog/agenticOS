@@ -93,3 +93,8 @@ Measured on Qwen2.5-0.5B with agentd's real prompt (x86-64 VM, 4 cores), one tra
 | 4 | 2,985 | 819 (722 shared) | 451 s | 127 s | 3.6x |
 
 Losses identical to four decimals. A batch of 4 now costs about what one example did; the training job (`agentos-llm train`, agentd's overnight runs) uses it.
+
+**ARM kernels for reading prompts.** The SDOT kernels unpacked a weight block again for every token of a batch; they now unpack each 256-value block once and use it for every token. A new SMMLA kernel (ARMv8.6 i8mm: Cortex-A510/A710 and later) takes weight rows in pairs against tokens in pairs (inputs interleaved once per matrix product), 32 multiply-adds per instruction against SDOT's 16. Phones without either (Cortex-A53, PinePhone) keep the portable code.
+- Checked under QEMU as four ARM CPUs, each kernel against the portable one (3 rows x 1–5 tokens, Q4_K, Q5_K, Q6_K): max and Neoverse-N2 (i8mm + SDOT), Cortex-A76 (SDOT), Cortex-A53 (portable): all agree; a deliberately swapped SMMLA output lane fails the test. The whole engine test suite (training included) passes on the emulated i8mm CPU.
+- End to end, real Qwen2.5-0.5B Q4_K_M: the aarch64 build under QEMU (i8mm path) and the x86 build (portable) give the same 40 greedy tokens for the same 43-token prompt.
+- **Speed is not measured yet**: this machine is x86, and QEMU says nothing about speed. `scripts/phone-bench.sh` measures prompt and answer tokens per second with each kernel on the phone (`AGENTOS_NO_I8MM=1`, `AGENTOS_NO_DOTPROD=1` turn kernels off for the comparison).

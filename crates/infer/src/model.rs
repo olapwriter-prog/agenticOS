@@ -387,6 +387,12 @@ impl Model {
         } else {
             vec![]
         };
+        // ARMv8.6 i8mm: two rows at a time against inputs interleaved in pairs (once, here)
+        let pairs = if n >= 2 && !q8.is_empty() && crate::quant::has_pair_kernel(w.dtype) {
+            crate::quant::pair_inputs(&q8, cols)
+        } else {
+            vec![]
+        };
         let mut t = vec![0f32; rows * n]; // rows x n
                                           // big enough tasks that scheduling is cheap, small enough that every core stays busy
         let chunk = (rows / (rayon::current_num_threads() * 8)).clamp(8, 256);
@@ -394,14 +400,26 @@ impl Model {
             .enumerate()
             .for_each(|(ci, out)| {
                 let r0 = ci * chunk;
-                for (k, o) in out.chunks_mut(n).enumerate() {
+                let here = out.len() / n;
+                let mut k = 0;
+                while k < here {
                     let r = r0 + k;
                     let row = &data[r * row_bytes..(r + 1) * row_bytes];
+                    if !pairs.is_empty() && k + 1 < here {
+                        let next = &data[(r + 1) * row_bytes..(r + 2) * row_bytes];
+                        let (o0, o1) = out[k * n..(k + 2) * n].split_at_mut(n);
+                        if crate::quant::rows2_dot_q8(w.dtype, row, next, cols, &q8, &pairs, o0, o1) {
+                            k += 2;
+                            continue;
+                        }
+                    }
+                    let o = &mut out[k * n..(k + 1) * n];
                     if q8.is_empty() {
                         row_dot_many(w.dtype, row, cols, x, n, o);
                     } else {
                         crate::quant::row_dot_q8(w.dtype, row, cols, &q8, o);
                     }
+                    k += 1;
                 }
             });
         if n == 1 {

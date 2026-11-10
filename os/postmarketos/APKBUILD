@@ -79,6 +79,7 @@ package() {
 	# Phase 5 bring-up: checks for this phone and the guided run with a second phone
 	install -Dm755 scripts/phone-preflight.sh "$pkgdir"/usr/share/agentd/phone-preflight.sh
 	install -Dm755 scripts/phone-scenarios.sh "$pkgdir"/usr/share/agentd/phone-scenarios.sh
+	install -Dm755 scripts/phone-bench.sh "$pkgdir"/usr/share/agentd/phone-bench.sh
 	install -dm700 "$pkgdir"/var/lib/agentd
 	install -dm700 "$pkgdir"/var/lib/agentd/models
 }

@@ -1029,7 +1029,7 @@ impl<'m> Trainer<'m> {
                     let mut marks = Vec::with_capacity((b - a).div_ceil(CHUNK));
                     let mut st = s0.to_vec();
                     for t in a..b {
-                        if (t - a) % CHUNK == 0 {
+                        if (t - a).is_multiple_of(CHUNK) {
                             marks.push(st.clone());
                         }
                         delta_step(&mut st, &self.step(mixed, &bs, &decays, t, vh), qs, None);

@@ -295,6 +295,66 @@ fn idot(a: &[i8], b: &[i8]) -> i32 {
     a.iter().zip(b).map(|(x, y)| *x as i32 * *y as i32).sum()
 }
 
+/// One K-quant superblock's 256 weights as integers (Q4_K, Q5_K: 0..31 before the per-32 scale
+/// and min; Q6_K: -32..31 before the per-16 scale), in value order.
+pub fn unpack_k(dtype: DType, blk: &[u8], w: &mut [i8; 256]) {
+    match dtype {
+        DType::Q4K => {
+            let qs = &blk[16..144];
+            for c in 0..4 {
+                for l in 0..32 {
+                    let q = qs[c * 32 + l];
+                    w[c * 64 + l] = (q & 0xf) as i8;
+                    w[c * 64 + 32 + l] = (q >> 4) as i8;
+                }
+            }
+        }
+        DType::Q5K => {
+            let qh = &blk[16..48];
+            let qs = &blk[48..176];
+            for c in 0..4 {
+                let (u1, u2) = (1u8 << (2 * c), 2u8 << (2 * c));
+                for l in 0..32 {
+                    let q = qs[c * 32 + l];
+                    w[c * 64 + l] = ((q & 0xf) + if qh[l] & u1 != 0 { 16 } else { 0 }) as i8;
+                    w[c * 64 + 32 + l] = ((q >> 4) + if qh[l] & u2 != 0 { 16 } else { 0 }) as i8;
+                }
+            }
+        }
+        DType::Q6K => {
+            for n in 0..2 {
+                let ql = &blk[n * 64..n * 64 + 64];
+                let qh = &blk[128 + n * 32..128 + n * 32 + 32];
+                for l in 0..32 {
+                    w[n * 128 + l] = ((ql[l] & 0xf) | ((qh[l] & 3) << 4)) as i8 - 32;
+                    w[n * 128 + l + 32] = ((ql[l + 32] & 0xf) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
+                    w[n * 128 + l + 64] = ((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
+                    w[n * 128 + l + 96] = ((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
+                }
+            }
+        }
+        _ => unreachable!("unpack_k is for K-quants"),
+    }
+}
+
+/// A K-quant superblock's scales: Q4_K/Q5_K give 8 (scale, min) pairs per 32 values; Q6_K 16
+/// scales per 16 values (in `sc`, `mn` unused).
+fn k_scales(dtype: DType, blk: &[u8], sc: &mut [f32; 16], mn: &mut [f32; 8]) {
+    if dtype == DType::Q6K {
+        let d = f16(blk, 208);
+        for (i, v) in sc.iter_mut().enumerate() {
+            *v = d * (blk[192 + i] as i8) as f32;
+        }
+    } else {
+        let (d, dmin) = (f16(blk, 0), f16(blk, 2));
+        for j in 0..8 {
+            let (s, m) = scale_min_k4(j, &blk[4..16]);
+            sc[j] = d * s as f32;
+            mn[j] = dmin * m as f32;
+        }
+    }
+}
+
 /// One weight row against several quantized inputs. Each 256-value superblock of the row is
 /// unpacked to integers once and used for every input (that is what makes prompt batches fast).
 pub fn row_dot_q8(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out: &mut [f32]) {
@@ -344,84 +404,26 @@ pub fn row_dot_q8_portable(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out
                 }
             }
         }
-        DType::Q4K | DType::Q5K => {
+        DType::Q4K | DType::Q5K | DType::Q6K => {
             let bytes = dtype.block().unwrap().1;
+            let (mut sc, mut mn) = ([0f32; 16], [0f32; 8]);
             for sb in 0..cols / 256 {
                 let blk = &row[sb * bytes..(sb + 1) * bytes];
-                let d = f16(blk, 0);
-                let dmin = f16(blk, 2);
-                let scales = &blk[4..16];
-                let mut sc = [0f32; 8];
-                let mut mn = [0f32; 8];
-                for j in 0..8 {
-                    let (s, m) = scale_min_k4(j, scales);
-                    sc[j] = d * s as f32;
-                    mn[j] = dmin * m as f32;
-                }
-                if dtype == DType::Q4K {
-                    let qs = &blk[16..144];
-                    for c in 0..4 {
-                        for l in 0..32 {
-                            let q = qs[c * 32 + l];
-                            w[c * 64 + l] = (q & 0xf) as i8;
-                            w[c * 64 + 32 + l] = (q >> 4) as i8;
-                        }
-                    }
-                } else {
-                    let qh = &blk[16..48];
-                    let qs = &blk[48..176];
-                    for c in 0..4 {
-                        let (u1, u2) = (1u8 << (2 * c), 2u8 << (2 * c));
-                        for l in 0..32 {
-                            let q = qs[c * 32 + l];
-                            w[c * 64 + l] =
-                                ((q & 0xf) + if qh[l] & u1 != 0 { 16 } else { 0 }) as i8;
-                            w[c * 64 + 32 + l] =
-                                ((q >> 4) + if qh[l] & u2 != 0 { 16 } else { 0 }) as i8;
-                        }
-                    }
-                }
-                for (k, x) in xs.iter().enumerate() {
-                    let mut acc = 0f32;
-                    for j in 0..8 {
-                        let b = sb * 8 + j;
-                        let s = idot(&w[j * 32..j * 32 + 32], &x.q[b * 32..b * 32 + 32]);
-                        acc += x.d[b] * (sc[j] * s as f32 - mn[j] * x.sum[b] as f32);
-                    }
-                    out[k] += acc;
-                }
-            }
-        }
-        DType::Q6K => {
-            for sb in 0..cols / 256 {
-                let blk = &row[sb * 210..(sb + 1) * 210];
-                let d = f16(blk, 208);
-                let sc_all = &blk[192..208];
-                for n in 0..2 {
-                    let ql = &blk[n * 64..n * 64 + 64];
-                    let qh = &blk[128 + n * 32..128 + n * 32 + 32];
-                    for l in 0..32 {
-                        w[n * 128 + l] = ((ql[l] & 0xf) | ((qh[l] & 3) << 4)) as i8 - 32;
-                        w[n * 128 + l + 32] =
-                            ((ql[l + 32] & 0xf) | (((qh[l] >> 2) & 3) << 4)) as i8 - 32;
-                        w[n * 128 + l + 64] = ((ql[l] >> 4) | (((qh[l] >> 4) & 3) << 4)) as i8 - 32;
-                        w[n * 128 + l + 96] =
-                            ((ql[l + 32] >> 4) | (((qh[l] >> 6) & 3) << 4)) as i8 - 32;
-                    }
-                }
-                // 16 scales, one per 16 values, in value order
-                let mut sc = [0f32; 16];
-                for (i, s) in sc.iter_mut().enumerate() {
-                    *s = d * (sc_all[i] as i8) as f32;
-                }
+                unpack_k(dtype, blk, &mut w);
+                k_scales(dtype, blk, &mut sc, &mut mn);
                 for (k, x) in xs.iter().enumerate() {
                     let mut acc = 0f32;
                     for b in 0..8 {
                         let ab = sb * 8 + b;
                         let xq = &x.q[ab * 32..ab * 32 + 32];
-                        let s0 = idot(&w[b * 32..b * 32 + 16], &xq[..16]);
-                        let s1 = idot(&w[b * 32 + 16..b * 32 + 32], &xq[16..]);
-                        acc += x.d[ab] * (sc[2 * b] * s0 as f32 + sc[2 * b + 1] * s1 as f32);
+                        if dtype == DType::Q6K {
+                            let s0 = idot(&w[b * 32..b * 32 + 16], &xq[..16]);
+                            let s1 = idot(&w[b * 32 + 16..b * 32 + 32], &xq[16..]);
+                            acc += x.d[ab] * (sc[2 * b] * s0 as f32 + sc[2 * b + 1] * s1 as f32);
+                        } else {
+                            let s = idot(&w[b * 32..b * 32 + 32], xq);
+                            acc += x.d[ab] * (sc[b] * s as f32 - mn[b] * x.sum[ab] as f32);
+                        }
                     }
                     out[k] += acc;
                 }
@@ -431,10 +433,11 @@ pub fn row_dot_q8_portable(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out
     }
 }
 
-/// ARM NEON kernels for the K-quants, using SDOT (ARMv8.2 dot product, on phones since ~2018):
-/// nibbles are split in vector registers and fed straight into SDOT, 16 multiply-adds per
-/// instruction, with independent accumulators per 32-value sub-block. SDOT itself is emitted with
-/// inline assembly because its intrinsic is not yet stable in Rust.
+/// ARM NEON kernels for the K-quants, over weights already unpacked to integers (once per
+/// superblock, for every input): SDOT (ARMv8.2 dot product, on phones since ~2018), 16
+/// multiply-adds per instruction; and SMMLA (ARMv8.6 i8mm), a 2x8 by 8x2 integer matrix product,
+/// 32 per instruction, for two rows against two inputs at once. Both are emitted with inline
+/// assembly because their intrinsics are not yet stable in Rust.
 #[cfg(target_arch = "aarch64")]
 mod neon {
     use std::arch::aarch64::*;
@@ -456,96 +459,73 @@ mod neon {
         vaddvq_s32(vaddq_s32(a, b))
     }
 
-    /// Per 32-value sub-block integer sums for one Q4_K superblock (qs: 128 bytes).
+    /// Eight sums of 32 products: unpacked weights `w` (256) against inputs `y` (256).
     #[target_feature(enable = "neon,dotprod")]
-    pub unsafe fn q4k_sums(qs: *const u8, y: *const i8, out: &mut [i32; 8]) {
-        let m4 = vdupq_n_u8(0x0f);
-        for c in 0..4 {
-            let q0 = vld1q_u8(qs.add(c * 32));
-            let q1 = vld1q_u8(qs.add(c * 32 + 16));
-            let lo0 = vreinterpretq_s8_u8(vandq_u8(q0, m4));
-            let lo1 = vreinterpretq_s8_u8(vandq_u8(q1, m4));
-            let hi0 = vreinterpretq_s8_u8(vshrq_n_u8(q0, 4));
-            let hi1 = vreinterpretq_s8_u8(vshrq_n_u8(q1, 4));
-            out[2 * c] = dot32(lo0, lo1, y.add(c * 64));
-            out[2 * c + 1] = dot32(hi0, hi1, y.add(c * 64 + 32));
+    pub unsafe fn sums32(w: *const i8, y: *const i8, out: &mut [i32; 8]) {
+        for (j, o) in out.iter_mut().enumerate() {
+            *o = dot32(vld1q_s8(w.add(j * 32)), vld1q_s8(w.add(j * 32 + 16)), y.add(j * 32));
         }
     }
 
-    /// Q5_K: like Q4_K plus a fifth bit per value from qh (32 bytes).
+    /// Sixteen sums of 16 products (Q6_K's scale groups).
     #[target_feature(enable = "neon,dotprod")]
-    pub unsafe fn q5k_sums(qh: *const u8, qs: *const u8, y: *const i8, out: &mut [i32; 8]) {
-        let m4 = vdupq_n_u8(0x0f);
-        let one = vdupq_n_u8(1);
-        let h0 = vld1q_u8(qh);
-        let h1 = vld1q_u8(qh.add(16));
-        for c in 0..4 {
-            let q0 = vld1q_u8(qs.add(c * 32));
-            let q1 = vld1q_u8(qs.add(c * 32 + 16));
-            let sl = vdupq_n_s8(-(2 * c as i8));
-            let sh = vdupq_n_s8(-(2 * c as i8 + 1));
-            // bit (2c) of qh -> 16 for the low nibbles, bit (2c+1) for the high
-            let bl0 = vshlq_n_u8(vandq_u8(vshlq_u8(h0, sl), one), 4);
-            let bl1 = vshlq_n_u8(vandq_u8(vshlq_u8(h1, sl), one), 4);
-            let bh0 = vshlq_n_u8(vandq_u8(vshlq_u8(h0, sh), one), 4);
-            let bh1 = vshlq_n_u8(vandq_u8(vshlq_u8(h1, sh), one), 4);
-            let lo0 = vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q0, m4), bl0));
-            let lo1 = vreinterpretq_s8_u8(vorrq_u8(vandq_u8(q1, m4), bl1));
-            let hi0 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q0, 4), bh0));
-            let hi1 = vreinterpretq_s8_u8(vorrq_u8(vshrq_n_u8(q1, 4), bh1));
-            out[2 * c] = dot32(lo0, lo1, y.add(c * 64));
-            out[2 * c + 1] = dot32(hi0, hi1, y.add(c * 64 + 32));
-        }
-    }
-
-    /// Q6_K: per 16-value group integer sums (16 groups) for one superblock.
-    #[target_feature(enable = "neon,dotprod")]
-    pub unsafe fn q6k_sums(blk: *const u8, y: *const i8, out: &mut [i32; 16]) {
-        let m4 = vdupq_n_u8(0x0f);
-        let m3 = vdupq_n_u8(0x03);
-        let off = vdupq_n_s8(32);
+    pub unsafe fn sums16(w: *const i8, y: *const i8, out: &mut [i32; 16]) {
         let z = vdupq_n_s32(0);
-        for n in 0..2 {
-            let ql = blk.add(n * 64);
-            let qh = blk.add(128 + n * 32);
-            for half in 0..2 {
-                // values l in half*16..half*16+16 of each 32-wide quarter
-                let a = vld1q_u8(ql.add(half * 16));
-                let b = vld1q_u8(ql.add(32 + half * 16));
-                let h = vld1q_u8(qh.add(half * 16));
-                let v0 = vorrq_u8(vandq_u8(a, m4), vshlq_n_u8(vandq_u8(h, m3), 4));
-                let v1 = vorrq_u8(
-                    vandq_u8(b, m4),
-                    vshlq_n_u8(vandq_u8(vshrq_n_u8(h, 2), m3), 4),
-                );
-                let v2 = vorrq_u8(
-                    vshrq_n_u8(a, 4),
-                    vshlq_n_u8(vandq_u8(vshrq_n_u8(h, 4), m3), 4),
-                );
-                let v3 = vorrq_u8(vshrq_n_u8(b, 4), vshlq_n_u8(vshrq_n_u8(h, 6), 4));
-                let base = n * 128 + half * 16;
-                let ws = [v0, v1, v2, v3];
-                for (q, w) in ws.iter().enumerate() {
-                    let wi = vsubq_s8(vreinterpretq_s8_u8(*w), off);
-                    let start = base + q * 32;
-                    out[start / 16] = vaddvq_s32(sdot(z, wi, vld1q_s8(y.add(start))));
-                }
-            }
+        for (g, o) in out.iter_mut().enumerate() {
+            *o = vaddvq_s32(sdot(z, vld1q_s8(w.add(g * 16)), vld1q_s8(y.add(g * 16))));
         }
     }
+
+    #[inline(always)]
+    unsafe fn smmla(acc: int32x4_t, a: int8x16_t, b: int8x16_t) -> int32x4_t {
+        let mut r = acc;
+        core::arch::asm!("smmla {0:v}.4s, {1:v}.16b, {2:v}.16b",
+            inout(vreg) r, in(vreg) a, in(vreg) b, options(pure, nomem, nostack));
+        r
+    }
+
+    /// Two weight rows against two inputs over one superblock, with SMMLA (ARMv8.6 i8mm): `w` and
+    /// `y` hold their pair interleaved per 8 values ([row0 8 | row1 8] x 32, the same for the
+    /// inputs); each output is the 2x2 block [r0·x0, r0·x1, r1·x0, r1·x1] over `per` values.
+    #[target_feature(enable = "neon,i8mm")]
+    pub unsafe fn mm2x2(w: *const i8, y: *const i8, per: usize, out: &mut [[i32; 4]]) {
+        let groups = per / 8;
+        for (s, o) in out.iter_mut().enumerate() {
+            let mut acc = vdupq_n_s32(0);
+            for g in 0..groups {
+                let at = (s * groups + g) * 16;
+                acc = smmla(acc, vld1q_s8(w.add(at)), vld1q_s8(y.add(at)));
+            }
+            vst1q_s32(o.as_mut_ptr(), acc);
+        }
+    }
+
+}
+
+fn has_i8mm() -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        // AGENTOS_NO_I8MM=1 turns the kernel off, to measure what it gains on a device
+        *D.get_or_init(|| std::arch::is_aarch64_feature_detected!("i8mm") && std::env::var_os("AGENTOS_NO_I8MM").is_none())
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    false
 }
 
 fn has_dotprod() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
         static D: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *D.get_or_init(|| std::arch::is_aarch64_feature_detected!("dotprod"))
+        // AGENTOS_NO_DOTPROD=1 turns the kernel off, to measure what it gains on a device
+        *D.get_or_init(|| std::arch::is_aarch64_feature_detected!("dotprod") && std::env::var_os("AGENTOS_NO_DOTPROD").is_none())
     }
     #[cfg(not(target_arch = "aarch64"))]
     false
 }
 
-/// The K-quant rows through the NEON kernels. Returns false if this CPU or type has none.
+/// The K-quant rows through the NEON kernels (SDOT). Each superblock is unpacked once and used
+/// for every input. Returns false if this CPU or type has none.
 fn row_dot_q8_neon(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out: &mut [f32]) -> bool {
     #[cfg(target_arch = "aarch64")]
     {
@@ -556,50 +536,28 @@ fn row_dot_q8_neon(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out: &mut [
         for o in out.iter_mut().take(xs.len()) {
             *o = 0.0;
         }
+        let mut w = [0i8; 256];
+        let (mut sc, mut mn) = ([0f32; 16], [0f32; 8]);
         for sb in 0..cols / 256 {
             let blk = &row[sb * bytes..(sb + 1) * bytes];
-            if dtype == DType::Q6K {
-                let d = f16(blk, 208);
-                let mut sc = [0f32; 16];
-                for (i, v) in sc.iter_mut().enumerate() {
-                    *v = d * (blk[192 + i] as i8) as f32;
-                }
-                for (k, x) in xs.iter().enumerate() {
-                    let mut sums = [0i32; 16];
-                    unsafe { neon::q6k_sums(blk.as_ptr(), x.q.as_ptr().add(sb * 256), &mut sums) };
-                    let mut acc = 0f32;
-                    for b in 0..8 {
-                        acc += x.d[sb * 8 + b]
-                            * (sc[2 * b] * sums[2 * b] as f32
-                                + sc[2 * b + 1] * sums[2 * b + 1] as f32);
-                    }
-                    out[k] += acc;
-                }
-                continue;
-            }
-            let d = f16(blk, 0);
-            let dmin = f16(blk, 2);
-            let mut sc = [0f32; 8];
-            let mut mn = [0f32; 8];
-            for j in 0..8 {
-                let (s, m) = scale_min_k4(j, &blk[4..16]);
-                sc[j] = d * s as f32;
-                mn[j] = dmin * m as f32;
-            }
+            unpack_k(dtype, blk, &mut w);
+            k_scales(dtype, blk, &mut sc, &mut mn);
             for (k, x) in xs.iter().enumerate() {
-                let mut sums = [0i32; 8];
                 let y = unsafe { x.q.as_ptr().add(sb * 256) };
-                unsafe {
-                    if dtype == DType::Q4K {
-                        neon::q4k_sums(blk.as_ptr().add(16), y, &mut sums);
-                    } else {
-                        neon::q5k_sums(blk.as_ptr().add(16), blk.as_ptr().add(48), y, &mut sums);
-                    }
-                }
                 let mut acc = 0f32;
-                for j in 0..8 {
-                    let b = sb * 8 + j;
-                    acc += x.d[b] * (sc[j] * sums[j] as f32 - mn[j] * x.sum[b] as f32);
+                if dtype == DType::Q6K {
+                    let mut s = [0i32; 16];
+                    unsafe { neon::sums16(w.as_ptr(), y, &mut s) };
+                    for b in 0..8 {
+                        acc += x.d[sb * 8 + b] * (sc[2 * b] * s[2 * b] as f32 + sc[2 * b + 1] * s[2 * b + 1] as f32);
+                    }
+                } else {
+                    let mut s = [0i32; 8];
+                    unsafe { neon::sums32(w.as_ptr(), y, &mut s) };
+                    for j in 0..8 {
+                        let b = sb * 8 + j;
+                        acc += x.d[b] * (sc[j] * s[j] as f32 - mn[j] * x.sum[b] as f32);
+                    }
                 }
                 out[k] += acc;
             }
@@ -609,6 +567,88 @@ fn row_dot_q8_neon(dtype: DType, row: &[u8], cols: usize, xs: &[Q8], out: &mut [
     #[cfg(not(target_arch = "aarch64"))]
     {
         let _ = (dtype, row, cols, xs, out);
+        false
+    }
+}
+
+/// Can two rows at a time go through the SMMLA kernel (ARMv8.6 i8mm, K-quants)?
+pub fn has_pair_kernel(dtype: DType) -> bool {
+    has_i8mm() && matches!(dtype, DType::Q4K | DType::Q5K | DType::Q6K)
+}
+
+/// The inputs interleaved in pairs for the SMMLA kernel: for inputs 2p and 2p+1, per 8 values,
+/// 8 of the first then 8 of the second (an odd last input is paired with zeros). Done once per
+/// matrix product, used by every row.
+pub fn pair_inputs(xs: &[Q8], cols: usize) -> Vec<Vec<i8>> {
+    xs.chunks(2)
+        .map(|p| {
+            let mut v = vec![0i8; cols * 2];
+            for g in 0..cols / 8 {
+                v[g * 16..g * 16 + 8].copy_from_slice(&p[0].q[g * 8..g * 8 + 8]);
+                if let Some(x1) = p.get(1) {
+                    v[g * 16 + 8..g * 16 + 16].copy_from_slice(&x1.q[g * 8..g * 8 + 8]);
+                }
+            }
+            v
+        })
+        .collect()
+}
+
+/// Two weight rows against every input with SMMLA: each superblock of the two rows is unpacked
+/// and interleaved once, then multiplied with each interleaved pair of inputs, 32 products per
+/// instruction (SDOT does 16). Returns false if this CPU or type has no such kernel.
+#[allow(clippy::too_many_arguments)]
+pub fn rows2_dot_q8(dtype: DType, r0: &[u8], r1: &[u8], cols: usize, xs: &[Q8], pairs: &[Vec<i8>], out0: &mut [f32], out1: &mut [f32]) -> bool {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if !has_pair_kernel(dtype) {
+            return false;
+        }
+        let bytes = dtype.block().unwrap().1;
+        out0.iter_mut().chain(out1.iter_mut()).for_each(|o| *o = 0.0);
+        let (mut w0, mut w1) = ([0i8; 256], [0i8; 256]);
+        let mut wi = [0i8; 512];
+        let (mut sc0, mut mn0, mut sc1, mut mn1) = ([0f32; 16], [0f32; 8], [0f32; 16], [0f32; 8]);
+        let q6 = dtype == DType::Q6K;
+        for sb in 0..cols / 256 {
+            let (b0, b1) = (&r0[sb * bytes..(sb + 1) * bytes], &r1[sb * bytes..(sb + 1) * bytes]);
+            unpack_k(dtype, b0, &mut w0);
+            unpack_k(dtype, b1, &mut w1);
+            k_scales(dtype, b0, &mut sc0, &mut mn0);
+            k_scales(dtype, b1, &mut sc1, &mut mn1);
+            for g in 0..32 {
+                wi[g * 16..g * 16 + 8].copy_from_slice(&w0[g * 8..g * 8 + 8]);
+                wi[g * 16 + 8..g * 16 + 16].copy_from_slice(&w1[g * 8..g * 8 + 8]);
+            }
+            for (p, pq) in pairs.iter().enumerate() {
+                let y = unsafe { pq.as_ptr().add(sb * 512) };
+                let mut s = [[0i32; 4]; 16];
+                let groups = if q6 { 16 } else { 8 };
+                unsafe { neon::mm2x2(wi.as_ptr(), y, 256 / groups, &mut s[..groups]) };
+                // lanes: 0 = row0·x0, 1 = row0·x1, 2 = row1·x0, 3 = row1·x1
+                for (half, k) in [2 * p, 2 * p + 1].into_iter().enumerate() {
+                    let Some(x) = xs.get(k) else { continue };
+                    for (r, (sc, mn, out)) in [(&sc0, &mn0, &mut *out0), (&sc1, &mn1, &mut *out1)].into_iter().enumerate() {
+                        let lane = 2 * r + half;
+                        let mut acc = 0f32;
+                        for b in 0..8 {
+                            let ab = sb * 8 + b;
+                            acc += if q6 {
+                                x.d[ab] * (sc[2 * b] * s[2 * b][lane] as f32 + sc[2 * b + 1] * s[2 * b + 1][lane] as f32)
+                            } else {
+                                x.d[ab] * (sc[b] * s[b][lane] as f32 - mn[b] * x.sum[ab] as f32)
+                            };
+                        }
+                        out[k] += acc;
+                    }
+                }
+            }
+        }
+        true
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        let _ = (dtype, r0, r1, cols, xs, pairs, out0, out1);
         false
     }
 }
@@ -665,6 +705,69 @@ mod tests {
     }
     /// Random bytes are valid blocks for every format (scales just come out arbitrary), so the
     /// integer kernels can be checked against decode-then-dot on random data.
+    #[test]
+    fn kernel_paths() {
+        // which kernels this CPU runs (shown with --nocapture; the cross-CPU runs check it)
+        eprintln!("kernels: dotprod {} i8mm {}", has_dotprod(), has_i8mm());
+    }
+
+    /// Several rows against several inputs (odd counts too): the SDOT and SMMLA kernels give
+    /// what the portable one does, whichever this CPU has.
+    #[test]
+    fn batched_kernels_agree_with_portable() {
+        let mut seed = 777u64;
+        let mut rnd = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let cols = 512;
+        for dtype in [DType::Q4K, DType::Q5K, DType::Q6K] {
+            let (per, bytes) = dtype.block().unwrap();
+            let rows: Vec<Vec<u8>> = (0..3)
+                .map(|_| {
+                    let mut r: Vec<u8> = (0..cols / per * bytes).map(|_| rnd() as u8).collect();
+                    for b in 0..cols / per {
+                        let at = if dtype == DType::Q6K { b * bytes + 208 } else { b * bytes };
+                        r[at..at + 2].copy_from_slice(&f32_to_f16(0.01 + (rnd() % 100) as f32 * 1e-4).to_le_bytes());
+                        if dtype != DType::Q6K {
+                            r[at + 2..at + 4].copy_from_slice(&f32_to_f16(0.005).to_le_bytes());
+                        }
+                    }
+                    r
+                })
+                .collect();
+            for n in 1..=5 {
+                let xs: Vec<Q8> = (0..n)
+                    .map(|_| quantize_q8(&(0..cols).map(|_| (rnd() % 2000) as f32 / 1000.0 - 1.0).collect::<Vec<_>>()))
+                    .collect();
+                let want: Vec<Vec<f32>> = rows
+                    .iter()
+                    .map(|r| {
+                        let mut o = vec![0f32; n];
+                        row_dot_q8_portable(dtype, r, cols, &xs, &mut o);
+                        o
+                    })
+                    .collect();
+                let close = |a: f32, b: f32| (a - b).abs() <= b.abs() * 1e-5 + 1e-4;
+                for (r, w) in rows.iter().zip(&want) {
+                    let mut o = vec![0f32; n];
+                    row_dot_q8(dtype, r, cols, &xs, &mut o);
+                    assert!(o.iter().zip(w).all(|(a, b)| close(*a, *b)), "{dtype:?} n={n}: {o:?} vs {w:?}");
+                }
+                let pairs = pair_inputs(&xs, cols);
+                let (mut o0, mut o1) = (vec![0f32; n], vec![0f32; n]);
+                if rows2_dot_q8(dtype, &rows[1], &rows[2], cols, &xs, &pairs, &mut o0, &mut o1) {
+                    assert!(o0.iter().zip(&want[1]).all(|(a, b)| close(*a, *b)), "{dtype:?} n={n} pair row0: {o0:?} vs {:?}", want[1]);
+                    assert!(o1.iter().zip(&want[2]).all(|(a, b)| close(*a, *b)), "{dtype:?} n={n} pair row1: {o1:?} vs {:?}", want[2]);
+                } else {
+                    assert!(!has_pair_kernel(dtype));
+                }
+            }
+        }
+    }
+
     #[test]
     fn integer_kernels_agree_with_decoding() {
         let mut seed = 12345u64;

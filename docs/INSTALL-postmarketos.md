@@ -106,6 +106,14 @@ Two scripts, installed with the package in `/usr/share/agentd/`, take a phone fr
    ```
    It writes `phase5-report.md` (and the preflight output beside it): paste it back to Claude.
    `phone-scenarios.sh --sim NUMBER` runs the same steps on the simulated phone (`crates/phonesim`).
+3. **Speed**: how fast the engine reads a prompt and answers with each of its ARM kernels (i8mm,
+   SDOT, portable), so what each gains is measured on this phone. A few minutes; stop agentd first
+   on a phone short of RAM.
+   ```bash
+   sudo rc-service agentd stop
+   sh /usr/share/agentd/phone-bench.sh /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+   sudo rc-service agentd start
+   ```
 
 ## Using it
 
