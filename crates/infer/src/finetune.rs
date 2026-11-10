@@ -4,7 +4,7 @@
 //! The job checkpoints after every step and picks up from the checkpoint when run again, so
 //! agentd can stop it whenever the phone is unplugged, warm or needed, and continue the next night.
 use crate::engine::{Engine, Msg, Request};
-use crate::train::{example, Adapter, AdamW, Grads, Trainer};
+use crate::train::{example, Adapter, AdamW, Trainer};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -210,20 +210,12 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
         }
         let mut tr = Trainer::new(&e.model);
         tr.budget = job.memory;
-        let mut acc: Option<Grads> = None;
-        let mut total = 0.0;
         let b = job.batch.max(1).min(examples.len());
-        for k in 0..b {
-            let (tokens, mask) = &examples[(step * b + k) % examples.len()];
-            let (l, g) = tr.loss(&ad, tokens, mask, true);
-            total += l;
-            match acc.as_mut() {
-                Some(a) => a.add(&g.unwrap()),
-                None => acc = g,
-            }
-        }
-        opt.step(&mut ad, &acc.unwrap());
-        last_loss = total / b as f32;
+        // the batch in one pass: the system prompt the examples share is computed once
+        let batch: Vec<(Vec<u32>, Vec<bool>)> = (0..b).map(|k| examples[(step * b + k) % examples.len()].clone()).collect();
+        let (losses, g) = tr.loss_batch(&ad, &batch, true);
+        opt.step(&mut ad, &g.unwrap());
+        last_loss = losses.iter().sum::<f32>() / b as f32;
         step += 1;
         log(&format!("step {step}/{} loss {last_loss:.4}", job.steps));
         // every step: a step takes minutes on a phone, the adapter a few hundred KB to write

@@ -45,6 +45,46 @@ fn main() {
                 println!("  of which quantized matmul {:.2}s", p[0].swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
             }
         }
+        "batchbench" => {
+            // one training step's batch on the phone's real prompt: one by one, then packed
+            // (the system prompt shared once). args: model system.txt requests.tsv [batch]
+            let sys = std::fs::read_to_string(&a[3]).unwrap();
+            let reqs: Vec<(String, String)> = std::fs::read_to_string(&a[4])
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#') && l.contains('\t'))
+                .map(|l| {
+                    let (u, c) = l.split_once('\t').unwrap();
+                    (u.to_string(), c.to_string())
+                })
+                .collect();
+            let b: usize = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(4);
+            let items: Vec<(Vec<u32>, Vec<bool>)> = reqs
+                .iter()
+                .take(b)
+                .map(|(u, c)| {
+                    let prompt = format!("<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n");
+                    example(&tok, &prompt, c)
+                })
+                .collect();
+            let ad = Adapter::new(&m, 8, 16.0, 1).unwrap();
+            let mut tr = Trainer::new(&m);
+            tr.budget = usize::MAX;
+            let lay = Layout::pack(&items);
+            let total: usize = items.iter().map(|i| i.0.len()).sum();
+            println!("batch of {b}: {total} tokens one by one, {} packed ({} shared)", lay.tokens.len(), lay.shared);
+            let t0 = Instant::now();
+            let mut alone = vec![];
+            for (t, train) in &items {
+                alone.push(tr.loss(&ad, t, train, true).0);
+            }
+            let t1 = Instant::now();
+            let (packed, g) = tr.loss_batch(&ad, &items, true);
+            assert!(g.is_some());
+            let t2 = Instant::now();
+            println!("forward+backward one by one: {:?}   packed: {:?}   ({:.2}x)", t1 - t0, t2 - t1, (t1 - t0).as_secs_f64() / (t2 - t1).as_secs_f64());
+            println!("losses one by one {alone:.4?}\n       packed     {packed:.4?}");
+        }
         x => panic!("unknown {x}"),
     }
 }

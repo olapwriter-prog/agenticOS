@@ -81,3 +81,15 @@ No phone is reachable from the development machine yet, so this step prepared an
 - `scripts/phone-scenarios.sh` (busybox sh): the guided run with a second phone; 46 checks. `--sim` runs it on the simulator: 46 passed, 1 skipped (preflight).
 - **Found and fixed** while checking these: `agentd-session.sh` took up to 5 s to stop and did not wait for its session bus to exit, so a session started while the old one was stopping lost its bus socket (overlapping restarts: 0/5 sessions reachable before, 5/5 after; stop now ~0.1 s). The scenario scripts' "done" checks also matched "not done", which had hidden that failure; they now require the reply to start with "done".
 - Next: run the two scripts on a phone and read the report.
+
+## Phase 6: speed (started 2026-11-10)
+**Training shares the system prompt across a batch.** A step's examples are packed into one pass: the prefix they share (agentd's system prompt) once, then each example's own tokens, which see the prefix and their own earlier tokens at the positions they would have alone; on Qwen3.5 each example's DeltaNet state and convolution window continue from the prefix's. The gradients into the shared part add up, so the result is exact, not an approximation: the tests check that packed losses equal each example alone and packed gradients equal their sum on tiny Qwen2, Qwen3 and Qwen3.5 models (prefix and an example crossing a DeltaNet chunk, with and without recomputed layers), and four deliberate breakages (an example seeing another, packed positions, a DeltaNet state not continued, its gradient not summed) each fail them.
+
+Measured on Qwen2.5-0.5B with agentd's real prompt (x86-64 VM, 4 cores), one training step's forward and backward:
+
+| batch | tokens one by one | tokens packed | one by one | packed | speed-up |
+|---|---|---|---|---|---|
+| 2 | 1,498 | 776 (722 shared) | 276 s | 120 s | 2.3x |
+| 4 | 2,985 | 819 (722 shared) | 451 s | 127 s | 3.6x |
+
+Losses identical to four decimals. A batch of 4 now costs about what one example did; the training job (`agentos-llm train`, agentd's overnight runs) uses it.

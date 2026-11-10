@@ -354,6 +354,98 @@ fn silu_back(x: f32) -> f32 {
     s * (1.0 + x * (1.0 - s))
 }
 
+/// How a batch is laid out in one pass: a prefix every example shares (the system prompt), once,
+/// then each example's own tokens. A token sees the prefix and the earlier tokens of its own
+/// example, at the positions it would have alone, so the result is exactly that of running each
+/// example by itself; the shared part is computed once instead of once per example.
+pub struct Layout {
+    pub tokens: Vec<u32>,
+    /// length of the shared prefix (0 when nothing is shared)
+    pub shared: usize,
+    /// each example's own tokens, as packed index ranges
+    pub spans: Vec<(usize, usize)>,
+    /// each token's position in its own sequence (for RoPE)
+    pub pos: Vec<usize>,
+    /// the trained positions: what comes next there, how much it counts, for which example
+    pub targets: Vec<Goal>,
+}
+
+/// One trained position: at `pos`, predict `token`, weighted so each example's loss is its mean.
+pub struct Goal {
+    pub pos: usize,
+    pub token: u32,
+    pub weight: f32,
+    pub example: usize,
+}
+
+impl Layout {
+    /// One example, nothing shared.
+    pub fn one(tokens: &[u32], train: &[bool]) -> Layout {
+        Layout::pack(&[(tokens.to_vec(), train.to_vec())])
+    }
+
+    /// Pack examples: the longest prefix they all share, up to (not including) the token before
+    /// the first trained one, goes first and once.
+    pub fn pack(items: &[(Vec<u32>, Vec<bool>)]) -> Layout {
+        let mut shared = 0;
+        if items.len() > 1 {
+            let first = &items[0].0;
+            shared = first.len();
+            for (t, train) in items {
+                let common = first.iter().zip(t).take_while(|(a, b)| a == b).count();
+                let first_trained = train.iter().position(|&x| x).unwrap_or(t.len());
+                // the prefix's last token must not be a trained prediction (each example's next
+                // token there may differ), and every example keeps a token of its own
+                shared = shared.min(common).min(first_trained.saturating_sub(1)).min(t.len().saturating_sub(1));
+            }
+        }
+        let mut tokens = items.first().map(|i| i.0[..shared].to_vec()).unwrap_or_default();
+        let mut pos: Vec<usize> = (0..shared).collect();
+        let mut spans = Vec::with_capacity(items.len());
+        let mut targets = Vec::new();
+        for (e, (t, train)) in items.iter().enumerate() {
+            let start = tokens.len();
+            tokens.extend_from_slice(&t[shared..]);
+            pos.extend(shared..t.len());
+            spans.push((start, tokens.len()));
+            let trained: Vec<usize> = (0..t.len().saturating_sub(1)).filter(|&i| train[i + 1]).collect();
+            let weight = 1.0 / trained.len().max(1) as f32;
+            for i in trained {
+                // i >= shared: the prefix ends before the token that predicts the first answer
+                targets.push(Goal { pos: start + i - shared, token: t[i + 1], weight, example: e });
+            }
+        }
+        Layout { tokens, shared, spans, pos, targets }
+    }
+
+    /// The span a token belongs to (`None` for the shared prefix).
+    fn span_of(&self, t: usize) -> Option<(usize, usize)> {
+        if t < self.shared {
+            return None;
+        }
+        self.spans.iter().copied().find(|&(a, b)| t >= a && t < b)
+    }
+
+    /// The tokens `t` attends to: the shared prefix, then its own example up to itself.
+    pub fn visible(&self, t: usize) -> impl Iterator<Item = usize> {
+        let (prefix, own) = match self.span_of(t) {
+            None => (0, 0),
+            Some((a, _)) => (self.shared, a),
+        };
+        (0..prefix).chain(own..=t)
+    }
+
+    /// The packed index of the token `back` steps before `t` in t's own sequence.
+    pub fn before(&self, t: usize, back: usize) -> Option<usize> {
+        let p = self.pos[t].checked_sub(back)?;
+        match self.span_of(t) {
+            None => Some(p),
+            Some(_) if p < self.shared => Some(p),
+            Some((a, _)) => Some(a + p - self.shared),
+        }
+    }
+}
+
 pub struct Trainer<'m> {
     pub model: &'m Model,
     /// Exact f32 matmuls (for gradient checks) instead of the 8-bit fast path.
@@ -409,7 +501,7 @@ impl<'m> Trainer<'m> {
 
     /// One layer's forward pass on `x` (T x d, replaced by the layer's output), keeping what
     /// the backward pass needs.
-    fn layer_fwd(&self, ad: &Adapter, li: usize, x: &mut [f32]) -> LayerSave {
+    fn layer_fwd(&self, ad: &Adapter, li: usize, x: &mut [f32], lay: &Layout) -> LayerSave {
         let m = self.model;
         let c = &m.cfg;
         let l = &m.layers[li];
@@ -421,10 +513,10 @@ impl<'m> Trainer<'m> {
             rms_norm(row, &l.norms.0, c.eps);
         }
         let (out, mix) = if c.is_recurrent(li) {
-            let (o, s) = self.delta_fwd(li, &h, t_len);
+            let (o, s) = self.delta_fwd(li, &h, lay);
             (o, Mix::Delta(s))
         } else {
-            let (o, s) = self.attn_fwd(ad, li, &h, t_len);
+            let (o, s) = self.attn_fwd(ad, li, &h, lay);
             (o, Mix::Attn(s))
         };
         x.iter_mut().zip(&out).for_each(|(a, b)| *a += b);
@@ -441,8 +533,9 @@ impl<'m> Trainer<'m> {
         LayerSave { x0, h, mix, x1, g, u }
     }
 
-    /// Causal (gated) attention with the adapters, from position 0.
-    fn attn_fwd(&self, ad: &Adapter, li: usize, h: &[f32], t_len: usize) -> (Vec<f32>, AttnSave) {
+    /// Causal (gated) attention with the adapters; each token sees what the layout lets it.
+    fn attn_fwd(&self, ad: &Adapter, li: usize, h: &[f32], lay: &Layout) -> (Vec<f32>, AttnSave) {
+        let t_len = lay.tokens.len();
         let m = self.model;
         let c = &m.cfg;
         let l = &m.layers[li];
@@ -489,14 +582,14 @@ impl<'m> Trainer<'m> {
                 if let Some(w) = &l.q_norm {
                     rms_norm(hv, w, c.eps);
                 }
-                rope(hv, t, c.n_rot, c.rope_base);
+                rope(hv, lay.pos[t], c.n_rot, c.rope_base);
             }
             for hh in 0..nkv {
                 let hv = &mut k[t * kvd + hh * hd..t * kvd + (hh + 1) * hd];
                 if let Some(w) = &l.k_norm {
                     rms_norm(hv, w, c.eps);
                 }
-                rope(hv, t, c.n_rot, c.rope_base);
+                rope(hv, lay.pos[t], c.n_rot, c.rope_base);
             }
         }
         // causal attention, one head per thread, one row of weights at a time
@@ -509,17 +602,17 @@ impl<'m> Trainer<'m> {
                 for t in 0..t_len {
                     let qv = &q[(t * nh + hh) * hd..(t * nh + hh + 1) * hd];
                     let mut mx = f32::NEG_INFINITY;
-                    for j in 0..=t {
+                    for j in lay.visible(t) {
                         row[j] = crate::quant::dot(qv, &k[j * kvd + kvh * hd..j * kvd + (kvh + 1) * hd]) * scale;
                         mx = mx.max(row[j]);
                     }
                     let mut sum = 0.0;
-                    for v in row.iter_mut().take(t + 1) {
-                        *v = (*v - mx).exp();
-                        sum += *v;
+                    for j in lay.visible(t) {
+                        row[j] = (row[j] - mx).exp();
+                        sum += row[j];
                     }
                     let ov = &mut oh[t * hd..(t + 1) * hd];
-                    for j in 0..=t {
+                    for j in lay.visible(t) {
                         let w = row[j] / sum;
                         let vr = &v[j * kvd + kvh * hd..j * kvd + (kvh + 1) * hd];
                         ov.iter_mut().zip(vr).for_each(|(a, b)| *a += w * b);
@@ -545,8 +638,10 @@ impl<'m> Trainer<'m> {
         (y, AttnSave { ax, q_pre, k_pre, q, k, v, att, gate, o })
     }
 
-    /// Gated DeltaNet from a zero state, as `Model::delta_net` computes it.
-    fn delta_fwd(&self, li: usize, h: &[f32], t_len: usize) -> (Vec<f32>, DeltaSave) {
+    /// Gated DeltaNet from a zero state, as `Model::delta_net` computes it. The shared prefix runs
+    /// once; every example continues from the state (and convolution window) it ends with.
+    fn delta_fwd(&self, li: usize, h: &[f32], lay: &Layout) -> (Vec<f32>, DeltaSave) {
+        let t_len = lay.tokens.len();
         let m = self.model;
         let c = &m.cfg;
         let l = &m.layers[li];
@@ -559,18 +654,15 @@ impl<'m> Trainer<'m> {
         let z = self.mm(l.gate.as_ref().unwrap(), h, t_len);
         let beta = self.mm(l.ssm_beta.as_ref().unwrap(), h, t_len);
         let alpha = self.mm(l.ssm_alpha.as_ref().unwrap(), h, t_len);
-        // short causal convolution (zeros before the first token), then SiLU
+        // short causal convolution over each token's own sequence (zeros before its first
+        // token), then SiLU
         let mut pre = vec![0f32; t_len * ch];
         for t in 0..t_len {
-            for cc in 0..ch {
-                let w = &l.conv1d[cc * kern..(cc + 1) * kern];
-                let mut s = 0.0;
-                for (kk, wk) in w.iter().enumerate() {
-                    if t + kk >= kern - 1 {
-                        s += qkv[(t + kk + 1 - kern) * ch + cc] * wk;
-                    }
+            for kk in 0..kern {
+                let Some(src) = lay.before(t, kern - 1 - kk) else { continue };
+                for cc in 0..ch {
+                    pre[t * ch + cc] += qkv[src * ch + cc] * l.conv1d[cc * kern + kk];
                 }
-                pre[t * ch + cc] = s;
             }
         }
         let mut mixed: Vec<f32> = pre.iter().map(|v| silu(*v)).collect();
@@ -587,9 +679,16 @@ impl<'m> Trainer<'m> {
             .map(|vh| {
                 let mut s = vec![0f32; sd * sd];
                 let mut o = vec![0f32; t_len * sd];
-                for t in 0..t_len {
+                for t in 0..lay.shared {
                     let st = self.step(&mixed, &bs, &decays, t, vh);
                     delta_step(&mut s, &st, qs, Some(&mut o[t * sd..(t + 1) * sd]));
+                }
+                for &(a, b) in &lay.spans {
+                    let mut s = s.clone(); // each example starts where the prefix ended
+                    for t in a..b {
+                        let st = self.step(&mixed, &bs, &decays, t, vh);
+                        delta_step(&mut s, &st, qs, Some(&mut o[t * sd..(t + 1) * sd]));
+                    }
                 }
                 o
             })
@@ -643,26 +742,39 @@ impl<'m> Trainer<'m> {
     /// Mean cross-entropy of `tokens[t+1]` at every position t with `train[t+1]` true, and,
     /// if asked, the gradients for the adapter.
     pub fn loss(&self, ad: &Adapter, tokens: &[u32], train: &[bool], want_grads: bool) -> (f32, Option<Grads>) {
+        let lay = Layout::one(tokens, train);
+        let (losses, g) = self.loss_layout(ad, &lay, want_grads);
+        (losses[0], g)
+    }
+
+    /// Several examples in one pass: each example's loss as `loss` would give it, and the sum of
+    /// their gradients. The prompt they share (the system prompt) is computed once.
+    pub fn loss_batch(&self, ad: &Adapter, items: &[(Vec<u32>, Vec<bool>)], want_grads: bool) -> (Vec<f32>, Option<Grads>) {
+        self.loss_layout(ad, &Layout::pack(items), want_grads)
+    }
+
+    fn loss_layout(&self, ad: &Adapter, lay: &Layout, want_grads: bool) -> (Vec<f32>, Option<Grads>) {
         let m = self.model;
         let c = &m.cfg;
-        let (t_len, d) = (tokens.len(), c.n_embd);
+        let (t_len, d) = (lay.tokens.len(), c.n_embd);
         let recompute = want_grads && self.checkpoints(t_len);
-        let mut x = m.embed(tokens);
+        let mut x = m.embed(&lay.tokens);
         let mut saves: Vec<Option<LayerSave>> = Vec::with_capacity(c.n_layer);
         let mut inputs: Vec<Vec<f32>> = Vec::new();
         for li in 0..c.n_layer {
             if recompute {
                 inputs.push(x.clone());
             }
-            let s = self.layer_fwd(ad, li, &mut x);
+            let s = self.layer_fwd(ad, li, &mut x, lay);
             if want_grads && !recompute {
                 saves.push(Some(s));
             }
         }
         // loss on the answer positions
-        let pos: Vec<usize> = (0..t_len - 1).filter(|&t| train[t + 1]).collect();
+        let n_ex = lay.spans.len();
+        let pos: Vec<usize> = lay.targets.iter().map(|t| t.pos).collect();
         if pos.is_empty() {
-            return (0.0, want_grads.then(|| Grads::zeros(ad)));
+            return (vec![0.0; n_ex], want_grads.then(|| Grads::zeros(ad)));
         }
         let mut hf = Vec::with_capacity(pos.len() * d);
         for &t in &pos {
@@ -672,25 +784,24 @@ impl<'m> Trainer<'m> {
         }
         let logits = self.mm(&m.output, &hf, pos.len());
         let nv = c.n_vocab;
-        let mut loss = 0.0f32;
+        let mut losses = vec![0.0f32; n_ex];
         let mut dlogits = vec![0f32; logits.len()];
-        for (i, &t) in pos.iter().enumerate() {
+        for (i, tg) in lay.targets.iter().enumerate() {
             let row = &logits[i * nv..(i + 1) * nv];
             let mx = row.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let sum: f32 = row.iter().map(|v| (v - mx).exp()).sum();
-            let target = tokens[t + 1] as usize;
-            loss += -(row[target] - mx - sum.ln());
+            let target = tg.token as usize;
+            losses[tg.example] += -(row[target] - mx - sum.ln()) * tg.weight;
             if want_grads {
                 let dr = &mut dlogits[i * nv..(i + 1) * nv];
                 for (j, v) in row.iter().enumerate() {
-                    dr[j] = (v - mx).exp() / sum / pos.len() as f32;
+                    dr[j] = (v - mx).exp() / sum * tg.weight;
                 }
-                dr[target] -= 1.0 / pos.len() as f32;
+                dr[target] -= tg.weight;
             }
         }
-        loss /= pos.len() as f32;
         if !want_grads {
-            return (loss, None);
+            return (losses, None);
         }
 
         // ---- backward ----
@@ -704,7 +815,7 @@ impl<'m> Trainer<'m> {
             let l = &m.layers[li];
             let s = if recompute {
                 let mut xx = std::mem::take(&mut inputs[li]);
-                self.layer_fwd(ad, li, &mut xx)
+                self.layer_fwd(ad, li, &mut xx, lay)
             } else {
                 saves[li].take().unwrap()
             };
@@ -727,8 +838,8 @@ impl<'m> Trainer<'m> {
             }
             // mixer: x1 = x0 + mix(h)
             let dh = match &s.mix {
-                Mix::Attn(a) => self.attn_back(ad, li, &s.h, a, &dx1, &mut grads),
-                Mix::Delta(dn) => self.delta_back(li, dn, &dx1),
+                Mix::Attn(a) => self.attn_back(ad, li, &s.h, a, &dx1, lay, &mut grads),
+                Mix::Delta(dn) => self.delta_back(li, dn, &dx1, lay),
             };
             let mut dx0 = dx1;
             for t in 0..t_len {
@@ -736,12 +847,13 @@ impl<'m> Trainer<'m> {
             }
             dx = dx0;
         }
-        (loss, Some(grads))
+        (losses, Some(grads))
     }
 
     /// Backward through attention: dy is the gradient of the layer's attention output. Adds the
     /// adapter gradients, returns the gradient of the normed input h.
-    fn attn_back(&self, ad: &Adapter, li: usize, h: &[f32], s: &AttnSave, dy: &[f32], grads: &mut Grads) -> Vec<f32> {
+    #[allow(clippy::too_many_arguments)]
+    fn attn_back(&self, ad: &Adapter, li: usize, h: &[f32], s: &AttnSave, dy: &[f32], lay: &Layout, grads: &mut Grads) -> Vec<f32> {
         let m = self.model;
         let c = &m.cfg;
         let l = &m.layers[li];
@@ -782,25 +894,25 @@ impl<'m> Trainer<'m> {
                 for t in 0..t_len {
                     let qv = &s.q[(t * nh + hh) * hd..(t * nh + hh + 1) * hd];
                     let mut mx = f32::NEG_INFINITY;
-                    for j in 0..=t {
+                    for j in lay.visible(t) {
                         pr[j] = crate::quant::dot(qv, &s.k[j * kvd + kvh * hd..j * kvd + (kvh + 1) * hd]) * scale;
                         mx = mx.max(pr[j]);
                     }
                     let mut sum = 0.0;
-                    for v in pr.iter_mut().take(t + 1) {
-                        *v = (*v - mx).exp();
-                        sum += *v;
+                    for j in lay.visible(t) {
+                        pr[j] = (pr[j] - mx).exp();
+                        sum += pr[j];
                     }
-                    pr.iter_mut().take(t + 1).for_each(|v| *v /= sum);
+                    lay.visible(t).for_each(|j| pr[j] /= sum);
                     let dov = &d_o[(t * nh + hh) * hd..(t * nh + hh + 1) * hd];
-                    for j in 0..=t {
+                    for j in lay.visible(t) {
                         let vr = &s.v[j * kvd + kvh * hd..j * kvd + (kvh + 1) * hd];
                         dp[j] = crate::quant::dot(dov, vr);
                         let w = pr[j];
                         dvh[j * hd..(j + 1) * hd].iter_mut().zip(dov).for_each(|(a, b)| *a += w * b);
                     }
-                    let sum: f32 = (0..=t).map(|j| pr[j] * dp[j]).sum();
-                    for j in 0..=t {
+                    let sum: f32 = lay.visible(t).map(|j| pr[j] * dp[j]).sum();
+                    for j in lay.visible(t) {
                         let ds = pr[j] * (dp[j] - sum) * scale;
                         if ds == 0.0 {
                             continue;
@@ -825,10 +937,10 @@ impl<'m> Trainer<'m> {
         // RoPE, then the per-head q/k norms (Qwen3, Qwen3.5)
         for t in 0..t_len {
             for hh in 0..nh {
-                rope_back(&mut dq[(t * nh + hh) * hd..(t * nh + hh + 1) * hd], t, c.n_rot, c.rope_base);
+                rope_back(&mut dq[(t * nh + hh) * hd..(t * nh + hh + 1) * hd], lay.pos[t], c.n_rot, c.rope_base);
             }
             for hh in 0..nkv {
-                rope_back(&mut dk[t * kvd + hh * hd..t * kvd + (hh + 1) * hd], t, c.n_rot, c.rope_base);
+                rope_back(&mut dk[t * kvd + hh * hd..t * kvd + (hh + 1) * hd], lay.pos[t], c.n_rot, c.rope_base);
             }
         }
         for (dbuf, pre, w) in [(&mut dq, &s.q_pre, &l.q_norm), (&mut dk, &s.k_pre, &l.k_norm)] {
@@ -869,7 +981,7 @@ impl<'m> Trainer<'m> {
 
     /// Backward through a Gated DeltaNet layer (frozen, no adapters): the gradient of its input
     /// h from the gradient dy of its output.
-    fn delta_back(&self, li: usize, s: &DeltaSave, dy: &[f32]) -> Vec<f32> {
+    fn delta_back(&self, li: usize, s: &DeltaSave, dy: &[f32], lay: &Layout) -> Vec<f32> {
         let m = self.model;
         let c = &m.cfg;
         let l = &m.layers[li];
@@ -908,66 +1020,85 @@ impl<'m> Trainer<'m> {
                 let mut dv = vec![0f32; t_len * sd];
                 let mut db = vec![0f32; t_len];
                 let mut ddecay = vec![0f32; t_len];
-                let mut marks = Vec::with_capacity(t_len.div_ceil(CHUNK));
-                let mut st = vec![0f32; sd * sd];
-                for t in 0..t_len {
-                    if t % CHUNK == 0 {
-                        marks.push(st.clone());
-                    }
-                    delta_step(&mut st, &self.step(mixed, &bs, &decays, t, vh), qs, None);
-                }
-                let mut ds = vec![0f32; sd * sd]; // gradient of the state after step t
                 let mut states: Vec<Vec<f32>> = Vec::with_capacity(CHUNK);
                 let mut sp = vec![0f32; sd * sd];
                 let mut cur = vec![0f32; sd * sd];
-                for (ci, mark) in marks.iter().enumerate().rev() {
-                    let t0 = ci * CHUNK;
-                    let t1 = (t0 + CHUNK).min(t_len);
-                    states.clear();
-                    let mut st = mark.clone();
-                    for t in t0..t1 {
-                        states.push(st.clone()); // the state before step t
+                // Backward over the steps a..b, which start from state `s0`; `ds` comes in as the
+                // gradient of the state after step b-1 and leaves as the gradient of `s0`.
+                let mut back = |a: usize, b: usize, s0: &[f32], ds: &mut Vec<f32>| {
+                    let mut marks = Vec::with_capacity((b - a).div_ceil(CHUNK));
+                    let mut st = s0.to_vec();
+                    for t in a..b {
+                        if (t - a) % CHUNK == 0 {
+                            marks.push(st.clone());
+                        }
                         delta_step(&mut st, &self.step(mixed, &bs, &decays, t, vh), qs, None);
                     }
-                    for t in (t0..t1).rev() {
-                        let stp = self.step(mixed, &bs, &decays, t, vh);
-                        let prev = &states[t - t0];
-                        sp.iter_mut().zip(prev).for_each(|(a, b)| *a = b * stp.decay);
-                        cur.copy_from_slice(prev);
-                        delta_step(&mut cur, &stp, qs, None);
-                        // o_j = S_j · q · qs
-                        let doo = &d_o[t * val_dim + vh * sd..t * val_dim + (vh + 1) * sd];
-                        let dqt = &mut dq[t * sd..(t + 1) * sd];
-                        for j in 0..sd {
-                            let row = &cur[j * sd..(j + 1) * sd];
-                            let g = doo[j] * qs;
-                            dqt.iter_mut().zip(row).for_each(|(a, b)| *a += g * b);
-                            ds[j * sd..(j + 1) * sd].iter_mut().zip(stp.q).for_each(|(a, b)| *a += g * b);
+                    for (ci, mark) in marks.iter().enumerate().rev() {
+                        let t0 = a + ci * CHUNK;
+                        let t1 = (t0 + CHUNK).min(b);
+                        states.clear();
+                        let mut st = mark.clone();
+                        for t in t0..t1 {
+                            states.push(st.clone()); // the state before step t
+                            delta_step(&mut st, &self.step(mixed, &bs, &decays, t, vh), qs, None);
                         }
-                        // S_j = S'_j + k·δ_j, δ_j = b·(v_j − S'_j·k), S' = decay·S_prev
-                        let dkt = &mut dk[t * sd..(t + 1) * sd];
-                        let dvt = &mut dv[t * sd..(t + 1) * sd];
-                        let mut dbt = 0.0;
-                        let mut ddec = 0.0;
-                        for j in 0..sd {
-                            let spj = &sp[j * sd..(j + 1) * sd];
-                            let dsj = &mut ds[j * sd..(j + 1) * sd];
-                            let sk = crate::quant::dot(spj, stp.k);
-                            let delta = (stp.v[j] - sk) * stp.b;
-                            let dd = crate::quant::dot(dsj, stp.k);
-                            dvt[j] = dd * stp.b;
-                            dbt += dd * (stp.v[j] - sk);
-                            let dsk = -dd * stp.b;
-                            for i in 0..sd {
-                                dkt[i] += delta * dsj[i] + dsk * spj[i];
-                                dsj[i] += dsk * stp.k[i]; // now dS'_j
+                        for t in (t0..t1).rev() {
+                            let stp = self.step(mixed, &bs, &decays, t, vh);
+                            let prev = &states[t - t0];
+                            sp.iter_mut().zip(prev).for_each(|(a, b)| *a = b * stp.decay);
+                            cur.copy_from_slice(prev);
+                            delta_step(&mut cur, &stp, qs, None);
+                            // o_j = S_j · q · qs
+                            let doo = &d_o[t * val_dim + vh * sd..t * val_dim + (vh + 1) * sd];
+                            let dqt = &mut dq[t * sd..(t + 1) * sd];
+                            for j in 0..sd {
+                                let row = &cur[j * sd..(j + 1) * sd];
+                                let g = doo[j] * qs;
+                                dqt.iter_mut().zip(row).for_each(|(a, b)| *a += g * b);
+                                ds[j * sd..(j + 1) * sd].iter_mut().zip(stp.q).for_each(|(a, b)| *a += g * b);
                             }
-                            ddec += crate::quant::dot(dsj, &prev[j * sd..(j + 1) * sd]);
-                            dsj.iter_mut().for_each(|v| *v *= stp.decay); // now dS_prev_j
+                            // S_j = S'_j + k·δ_j, δ_j = b·(v_j − S'_j·k), S' = decay·S_prev
+                            let dkt = &mut dk[t * sd..(t + 1) * sd];
+                            let dvt = &mut dv[t * sd..(t + 1) * sd];
+                            let mut dbt = 0.0;
+                            let mut ddec = 0.0;
+                            for j in 0..sd {
+                                let spj = &sp[j * sd..(j + 1) * sd];
+                                let dsj = &mut ds[j * sd..(j + 1) * sd];
+                                let sk = crate::quant::dot(spj, stp.k);
+                                let delta = (stp.v[j] - sk) * stp.b;
+                                let dd = crate::quant::dot(dsj, stp.k);
+                                dvt[j] = dd * stp.b;
+                                dbt += dd * (stp.v[j] - sk);
+                                let dsk = -dd * stp.b;
+                                for i in 0..sd {
+                                    dkt[i] += delta * dsj[i] + dsk * spj[i];
+                                    dsj[i] += dsk * stp.k[i]; // now dS'_j
+                                }
+                                ddec += crate::quant::dot(dsj, &prev[j * sd..(j + 1) * sd]);
+                                dsj.iter_mut().for_each(|v| *v *= stp.decay); // now dS_prev_j
+                            }
+                            db[t] = dbt;
+                            ddecay[t] = ddec;
                         }
-                        db[t] = dbt;
-                        ddecay[t] = ddec;
                     }
+                };
+                // the state where the shared prefix ends: every example starts from it
+                let mut s_p = vec![0f32; sd * sd];
+                for t in 0..lay.shared {
+                    delta_step(&mut s_p, &self.step(mixed, &bs, &decays, t, vh), qs, None);
+                }
+                // each example back to that state; their gradients of it add up
+                let mut ds_p = vec![0f32; sd * sd];
+                for &(a, b) in &lay.spans {
+                    let mut ds = vec![0f32; sd * sd];
+                    back(a, b, &s_p, &mut ds);
+                    ds_p.iter_mut().zip(&ds).for_each(|(x, y)| *x += y);
+                }
+                // then the prefix, once, from a zero state
+                if lay.shared > 0 {
+                    back(0, lay.shared, &vec![0f32; sd * sd], &mut ds_p);
                 }
                 (dq, dk, dv, db, ddecay)
             })
@@ -1009,14 +1140,12 @@ impl<'m> Trainer<'m> {
                 dp[i] = du[i] * silu_back(pre[i]);
             }
         }
-        // the causal convolution: pre[t] = Σ_kk qkv[t − (kern−1) + kk] · w[kk]
+        // the causal convolution: pre[t] = Σ_kk qkv[the token kern−1−kk before t] · w[kk]
+        // (a prefix token feeds every example's first tokens: those gradients add up)
         let mut dqkv = vec![0f32; t_len * ch];
         for t in 0..t_len {
             for kk in 0..kern {
-                if t + kk < kern - 1 {
-                    continue;
-                }
-                let src = t + kk + 1 - kern;
+                let Some(src) = lay.before(t, kern - 1 - kk) else { continue };
                 for cc in 0..ch {
                     dqkv[src * ch + cc] += dpre[t * ch + cc] * l.conv1d[cc * kern + kk];
                 }
@@ -1304,6 +1433,78 @@ mod tests {
         forward_matches_engine("qwen35");
         // longer than a DeltaNet chunk, so the chunked recomputation is crossed
         gradients("qwen35", CHUNK + 13);
+    }
+
+    /// Examples packed with a shared prefix give each example's own loss, and the sum of their
+    /// gradients, exactly as running them one by one.
+    fn packed_equals_one_by_one(arch: &str) {
+        let m = tiny(arch, 4);
+        let ad = live_adapter(&m);
+        let mut tr = Trainer::new(&m);
+        tr.exact = true;
+        let prefix: Vec<u32> = (0..40u32).map(|i| (i * 5 + 1) % 24).collect();
+        let mk = |own: &[u32], answer: usize| {
+            let mut t = prefix.clone();
+            t.extend_from_slice(own);
+            let mut train = vec![false; t.len()];
+            let n = t.len();
+            train[n - answer..].iter_mut().for_each(|x| *x = true);
+            (t, train)
+        };
+        let own1: Vec<u32> = (0..10u32).map(|i| (i * 7 + 2) % 24).collect();
+        let own2: Vec<u32> = (0..15u32).map(|i| (i * 11 + 3) % 24).collect();
+        let own3: Vec<u32> = (0..37u32).map(|i| (i * 13 + 5) % 24).collect(); // crosses a chunk
+        let items = vec![mk(&own1, 4), mk(&own2, 6), mk(&own3, 9)];
+        let lay = Layout::pack(&items);
+        assert_eq!(lay.shared, 40, "{arch}: the whole common prefix is shared");
+        assert_eq!(lay.tokens.len(), 40 + 10 + 15 + 37);
+        for budget in [usize::MAX, 0] {
+            tr.budget = budget; // with and without recomputing layers
+            let (losses, g) = tr.loss_batch(&ad, &items, true);
+            let g = g.unwrap();
+            let mut sum: Option<Grads> = None;
+            for (i, (t, train)) in items.iter().enumerate() {
+                let (l, gi) = tr.loss(&ad, t, train, true);
+                assert!((l - losses[i]).abs() <= 1e-4 * (1.0 + l.abs()), "{arch}: example {i}: alone {l}, packed {}", losses[i]);
+                match sum.as_mut() {
+                    Some(s) => s.add(&gi.unwrap()),
+                    None => sum = gi,
+                }
+            }
+            let sum = sum.unwrap();
+            let mut worst = 0f32;
+            for (k, (ga, gb)) in &g.pairs {
+                let (sa, sb) = &sum.pairs[k];
+                for (x, y) in ga.iter().chain(gb).zip(sa.iter().chain(sb)) {
+                    let e = (x - y).abs() / (1e-3 + x.abs().max(y.abs()));
+                    worst = worst.max(e);
+                }
+            }
+            assert!(worst < 1e-3, "{arch}: packed gradients differ from the sum by {worst}");
+        }
+    }
+
+    #[test]
+    fn packing_with_a_shared_prefix_is_exact() {
+        for arch in ["qwen2", "qwen3", "qwen35"] {
+            packed_equals_one_by_one(arch);
+        }
+    }
+
+    #[test]
+    fn packing_shares_only_what_is_safe() {
+        // the prefix stops before the token that predicts the first answer, and one example
+        // alone shares nothing
+        let a = (vec![1, 2, 3, 4, 5, 6], vec![false, false, false, false, true, true]);
+        let b = (vec![1, 2, 3, 4, 9, 9, 9], vec![false, false, false, false, false, true, true]);
+        let lay = Layout::pack(&[a.clone(), b]);
+        assert_eq!(lay.shared, 3);
+        assert_eq!(lay.pos, vec![0, 1, 2, 3, 4, 5, 3, 4, 5, 6]);
+        assert_eq!(lay.spans, vec![(3, 6), (6, 10)]);
+        assert_eq!(lay.visible(7).collect::<Vec<_>>(), vec![0, 1, 2, 6, 7]);
+        assert_eq!(lay.before(6, 1), Some(2), "an example's first token follows the prefix");
+        assert_eq!(lay.before(6, 4), None);
+        assert_eq!(Layout::one(&a.0, &a.1).shared, 0);
     }
 
     #[test]
