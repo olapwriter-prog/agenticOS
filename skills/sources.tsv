@@ -1,0 +1,9 @@
+# The skill catalogs the phone's skill library is built from (scripts/fetch-skills.sh).
+# name	repository	commit	repository license (SPDX, or - when each skill carries its own)	evidence
+vercel	https://github.com/vercel-labs/agent-skills	1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62	MIT	README.md, section License: MIT
+anthropic	https://github.com/anthropics/skills	2c5958ecac7cee2b583967a2c4981d0f4a75c579	-	each skill's LICENSE.txt (Apache-2.0)
+openai	https://github.com/openai/skills	49f948faa9258a0c61caceaf225e179651397431	-	each skill's LICENSE.txt
+google	https://github.com/google/skills	11275189d0e1528c35ef5b38f99717a2349db22b	Apache-2.0	repository LICENSE (Apache-2.0)
+gemini	https://github.com/google-gemini/gemini-skills	7cfc690ba9c8efe36a5316e6d4000e2b6aa25dbf	Apache-2.0	repository LICENSE (Apache-2.0)
+microsoft	https://github.com/microsoft/skills	9287b443662d2433c85621c7325ee72a0ce499b5	MIT	repository LICENSE (MIT)
+microsoft-docs	https://github.com/MicrosoftDocs/Agent-Skills	9b16b5c7c7716949c83fc4bbdc448e0ada7f93a3	CC-BY-4.0	repository LICENSE (CC-BY-4.0); attribution: Microsoft

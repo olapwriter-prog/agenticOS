@@ -42,7 +42,10 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        other => agentos_partner::describe(other),
+        other => match agentos_skillpack::tools::describe(other) {
+            "" => agentos_partner::describe(other),
+            d => d,
+        },
     }
 }
 
@@ -209,6 +212,13 @@ pub fn default_intents() -> IntentTable {
     t.add("what should i do this weekend", "suggest");
     t.add("book {event} for {qty}", "book");
     t.add("book {event}", "book");
+    // skill guides (with a skill library)
+    t.add("skills about {topic}", "skills");
+    t.add("skills for {topic}", "skills");
+    t.add("find a skill for {topic}", "skills");
+    t.add("skill {name}: {question}", "skill");
+    t.add("read skill {name}", "skill");
+    t.add("skill sources", "skill_sources");
     // functions the agent wrote
     t.add("list functions", "list_functions");
     t.add("my functions", "list_functions");

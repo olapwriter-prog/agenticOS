@@ -19,7 +19,7 @@ mod books;
 mod channels;
 mod life;
 mod shop;
-pub mod ui;
+pub use agentos_screen as ui;
 mod wallet;
 
 use agentos_action::{Action, Tier, Tool};

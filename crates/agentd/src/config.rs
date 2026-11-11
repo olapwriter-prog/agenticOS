@@ -98,6 +98,11 @@ pub struct Config {
     /// The business partner and personal assistant (`[partner]` table): channels, invoices
     /// and GST, payments, shopping, news and bookings. Absent: not offered.
     pub partner: Option<agentos_partner::Config>,
+    /// The skill library built by scripts/fetch-skills.sh (index.json and skills/). Defaults to
+    /// skills/ in data_dir; without one, the skill tools are not offered.
+    pub skills_dir: Option<PathBuf>,
+    /// Tokens a skill excerpt may take: about a sixth of a 4B model's context.
+    pub skill_budget: usize,
 }
 
 impl Default for Config {
@@ -149,6 +154,8 @@ impl Default for Config {
             train_chunk_secs: 1800,
             train_nightly: true,
             partner: None,
+            skills_dir: None,
+            skill_budget: 700,
         }
     }
 }

@@ -3,3 +3,6 @@
 /agentd.toml
 /examples/*/target
 /ui/target
+
+# built by scripts/fetch-skills.sh
+/skillpack/

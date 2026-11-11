@@ -48,6 +48,8 @@ pub struct Core {
     last_phone_poll_ms: u64,
     /// The last screen a tool answered with (a UI document), for the display.
     screen: Option<Value>,
+    /// The skill library, for the model's prompts when it writes code.
+    skill_lib: Option<agentos_skillpack::tools::SkillTools>,
     /// ModemManager's signals are being watched, so polling can be slow.
     signals_up: bool,
     /// A signal came in: look again shortly, as a text can arrive in parts.
@@ -185,6 +187,14 @@ impl Core {
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
+        let skills_dir = cfg.skills_dir.clone().unwrap_or_else(|| dir.join("skills"));
+        let skill_lib = if skills_dir.join("index.json").exists() {
+            connectors.push(Box::new(agentos_skillpack::tools::SkillTools::open(&skills_dir, cfg.skill_budget)?));
+            // a second handle for the model's own prompts (the connector is the executor's)
+            Some(agentos_skillpack::tools::SkillTools::open(&skills_dir, cfg.skill_budget)?)
+        } else {
+            None
+        };
         if let Some(pc) = &cfg.partner {
             let p = agentos_partner::Partner::open(pc.clone(), dir.join("partner.json"))?;
             connectors.push(Box::new(p));
@@ -305,6 +315,7 @@ impl Core {
             phone,
             last_phone_poll_ms: 0,
             screen: None,
+            skill_lib,
             signals_up: false,
             poll_again_at: None,
             prio,
@@ -685,7 +696,7 @@ impl Core {
             return format!("not done: {text}");
         }
         // a screen: kept for the display; the conversation gets its text form
-        if let Some((ui, said)) = agentos_partner::Ui::from_reply(&text) {
+        if let Some((ui, said)) = agentos_screen::Ui::from_reply(&text) {
             self.screen = Some(json!({"tool": a.tool, "ui": ui}));
             return format!("done: {said}");
         }
@@ -751,6 +762,11 @@ impl Core {
         let t = line.trim();
         if let Some(request) = t.strip_prefix("chat ").and_then(crate::coder::request_of) {
             let (system, schema) = (self.coder_prompt.clone(), crate::coder::schema());
+            // a skill guide that fits the request well, cut to the budget, goes with it
+            let request = match self.skill_lib.as_ref().and_then(|l| l.context_for(&request, self.cfg.skill_budget / 2, 12.0)) {
+                Some(guide) => format!("{request}\n\nA guide that may help (follow it only where it fits Rust for this sandbox):\n{guide}"),
+                None => request,
+            };
             if let Err(e) = self.start_job(system, &request, schema, None, reply.clone()) {
                 let _ = reply.send(e);
             }
