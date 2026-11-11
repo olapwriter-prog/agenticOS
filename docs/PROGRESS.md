@@ -106,3 +106,24 @@ Losses identical to four decimals. A batch of 4 now costs about what one example
 - `scripts/phonesim-partner.sh`: 40 of 40 through agentd, every send, payment, filing, purchase and booking waiting for the volume-down key; the 145 phone scenarios and agentd's tests still pass.
 - Found while testing: a price request with the quantity after the item ("widgets? We may need 40") was taken as an order of 1; a two-item order priced only the first; a phrase without an optional argument ("news") was refused. All fixed.
 - Nightly training (`train_nightly`, on by default): every night on the charger, the model trains on what was confirmed that day, once a day, however few.
+
+## Skills, documents and apps (2026-11-11)
+- **Skills** (`crates/skillpack`, `scripts/fetch-skills.sh`): 7 catalogs at pinned commits; 663
+  guides kept (Vercel 9, Anthropic 18, OpenAI 35, Google 187, Gemini 4, Microsoft 209, Microsoft
+  Learn 201). Skipped: Anthropic's doc-coauthoring and template (no license stated), OpenAI's
+  figma (Figma's terms, no redistributable license), duplicates. The pack is 32 MB; a search takes
+  about 60 ms. Excerpts stay within budget: 692 tokens taken from the 10,911-token Cloud Run guide,
+  and they carry the answer (`gcloud run deploy ... --source`). 6 unit tests.
+- **Documents** (`crates/docs`): docx, xlsx (shared strings, formula values), pptx (slide order),
+  PDF (lopdf 0.47, CID fonts with ToUnicode); zip entries capped at 64 MiB, paths outside the
+  archive refused. 6 tests on fixtures made by LibreOffice.
+- **Apps** (`crates/apps`): 15 apps over 13 keyless public APIs. Every app and its errors tested
+  against `agentos-phonesim world` (2 tests); `scripts/phonesim-skills-apps.sh` 29 of 29 through
+  agentd; agentd's 37 + 21 tests and `phonesim-partner.sh` (40 of 40) still pass.
+- **Not checked against the live services**: this build machine has no route to them (every app
+  fails at DNS). The simulator copies each API's documented paths and response shapes, but only
+  `agentos-apps-check` on a connected phone shows the real services answer as expected. Until then
+  the apps are unverified against live services.
+- Found while testing: a pptx slide id was read from `id` instead of `r:id`; LibreOffice PDFs gave
+  no text with lopdf 0.34; skill frontmatter with an unquoted `: ` broke strict YAML; the phonesim
+  scripts' startup wait never waited. All fixed.
