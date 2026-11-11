@@ -145,10 +145,33 @@ impl Sandbox for SimSandbox {
 
 pub type Shared = Rc<RefCell<Box<dyn Sandbox>>>;
 
-/// The sandbox's tools for the executor. `apks` is the folder installs must come from.
+/// The reason the sandbox may not be opened right now, set by the daemon's governor (None when
+/// opening is allowed).
+pub type Blocked = Rc<RefCell<Option<String>>>;
+
+/// The sandbox's tools for the executor. `apks` is the folder installs must come from; `blocked`
+/// is the governor's current word on opening apps.
 pub struct AndroidTools {
     pub sandbox: Shared,
     pub apks: PathBuf,
+    pub blocked: Blocked,
+}
+
+/// Runs the programs on this machine.
+pub struct System;
+
+impl Runner for System {
+    fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+        let out = std::process::Command::new(prog)
+            .args(args)
+            .output()
+            .map_err(|e| format!("{prog}: {e}"))?;
+        if out.status.success() {
+            Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        }
+    }
 }
 
 fn arg<'a>(a: &'a Action, name: &str) -> Result<&'a str, String> {
@@ -229,6 +252,9 @@ impl Connector for AndroidTools {
                     .join("\n"))
             }
             "android_open" => {
+                if let Some(reason) = self.blocked.borrow().clone() {
+                    return Err(format!("not now: {reason}"));
+                }
                 let want = arg(a, "app")?.to_lowercase();
                 let apps = sb.apps()?;
                 let hits: Vec<&App> = apps

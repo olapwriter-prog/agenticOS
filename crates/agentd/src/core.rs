@@ -36,6 +36,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The Android phrases, added after the others so the specific ones still win. Only when the
+/// sandbox is configured: otherwise "open ..." would name a tool that does not exist.
+fn intents_with_android(
+    mut t: agentos_intents::IntentTable,
+    on: bool,
+) -> agentos_intents::IntentTable {
+    if on {
+        t.add("open {app}", "android_open");
+        t.add("android apps", "android_apps");
+        t.add("close android apps", "android_close_all");
+    }
+    t
+}
+
 type GoogleSlot = Rc<RefCell<Option<agentos_services::oauth::Tokens>>>;
 
 /// The tokens as the vault keeps them: JSON with access, refresh and expires_at_ms.
@@ -75,6 +89,15 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// The Android sandbox, if configured, and the governor's word on opening apps.
+    android: Option<agentos_android::Shared>,
+    android_blocked: agentos_android::Blocked,
+    android_policy: agentos_android::governor::Policy,
+    android_last_check_ms: u64,
+    /// The last time the governor closed the sandbox: (reason, at ms).
+    android_last_stop: Option<(String, u64)>,
+    /// The app list, read at most every 30 seconds: (read at ms, apps).
+    android_apps: (u64, Vec<agentos_android::App>),
     /// New Google tokens from a refresh, waiting to be written to the vault by the next tick.
     google_slot: GoogleSlot,
     /// Sign-ins started with `oauth begin` and not yet finished, by provider.
@@ -254,6 +277,41 @@ impl Core {
         // functions are Rust, compiled to WebAssembly by rustc and run in the sandbox
         let compiler = Compiler::new(cfg.rustc.clone(), dir.join("run/compile"));
         let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
+        // the Android sandbox, if configured: its tools come before the functions, as the others
+        let android_blocked: agentos_android::Blocked = Rc::new(RefCell::new(None));
+        let android: Option<agentos_android::Shared> = match cfg.android.as_str() {
+            "none" => None,
+            "sim" => Some(Rc::new(RefCell::new(
+                Box::new(agentos_android::SimSandbox {
+                    installed: vec!["org.example.notes".into()],
+                    ..Default::default()
+                }) as Box<dyn agentos_android::Sandbox>,
+            ))),
+            "waydroid" => Some(Rc::new(RefCell::new(Box::new(agentos_android::Waydroid {
+                runner: Box::new(agentos_android::System),
+                user: cfg.android_user.clone(),
+                env: cfg.android_env.clone(),
+            })
+                as Box<dyn agentos_android::Sandbox>))),
+            other => {
+                return Err(
+                    format!("android = {other:?}: use \"none\", \"sim\" or \"waydroid\"").into(),
+                )
+            }
+        };
+        let android_on = android.is_some();
+        let android_policy = agentos_android::governor::Policy {
+            min_free_mib: cfg.android_min_free_mib,
+            max_psi: cfg.android_max_psi,
+            stop_in_deep: cfg.android_stop_in_deep,
+        };
+        if let Some(sb) = &android {
+            connectors.push(Box::new(agentos_android::AndroidTools {
+                sandbox: sb.clone(),
+                apks: dir.join("apks"),
+                blocked: android_blocked.clone(),
+            }));
+        }
         connectors.push(Box::new(FunctionTools(functions.clone())));
         // a Telegram bot, only when its token is in the vault
         if let Some(token) = secrets
@@ -396,7 +454,7 @@ impl Core {
             }
         };
         let local = Local {
-            intents: default_intents(),
+            intents: intents_with_android(default_intents(), android_on),
             host,
             tools: registry_tools.clone(),
         };
@@ -420,6 +478,12 @@ impl Core {
             kernel,
             mcp_status,
             google_slot,
+            android,
+            android_blocked,
+            android_policy,
+            android_last_check_ms: now,
+            android_last_stop: None,
+            android_apps: (0, Vec::new()),
             oauth_pending: std::collections::HashMap::new(),
             gateway,
             engine,
@@ -437,7 +501,7 @@ impl Core {
             functions,
             learner: Learner::open(dir.join("experience.jsonl"))?,
             classifier: crate::qa::classifier(&[]),
-            intents: default_intents(),
+            intents: intents_with_android(default_intents(), android_on),
             grammar: grammar_copy,
             system: system_copy,
             coder_jobs: Vec::new(),
@@ -1174,6 +1238,8 @@ impl Core {
             "prio": self.prio.report().lines().next().unwrap_or_default(),
             "functions": lines(self.functions.borrow().list()),
             "learning": self.learner.stats(),
+            "android": self.android_state(),
+            "memory": self.memory_state(),
         })
     }
 
@@ -1185,6 +1251,38 @@ impl Core {
             "medium" => Tier::Medium,
             _ => Tier::High,
         }
+    }
+
+    /// The sandbox for the screen. The app list is read at most every 30 seconds.
+    fn android_state(&mut self) -> Value {
+        let Some(sb) = self.android.clone() else {
+            return json!({"mode": "none", "running": false, "apps": [], "last_stop": null});
+        };
+        let now = self.clock.now_ms();
+        let running = sb.borrow_mut().running();
+        if running && now.saturating_sub(self.android_apps.0) >= 30_000 {
+            let apps = sb.borrow_mut().apps().unwrap_or_default();
+            self.android_apps = (now, apps);
+        }
+        let apps: Vec<Value> = if running {
+            self.android_apps
+                .1
+                .iter()
+                .map(|a| json!({"name": a.name, "package": a.package}))
+                .collect()
+        } else {
+            vec![]
+        };
+        let last = self
+            .android_last_stop
+            .as_ref()
+            .map(|(r, at)| json!({"reason": r, "at_ms": at}));
+        json!({"mode": self.cfg.android, "running": running, "apps": apps, "last_stop": last})
+    }
+
+    fn memory_state(&self) -> Value {
+        let p = agentos_android::governor::Pressure::read(&self.cfg.proc_root);
+        json!({"available_mib": p.available_mib, "psi": p.psi})
     }
 
     /// do <tool> <json object>: call a tool exactly as an MCP client would, with the same tiers
@@ -1675,7 +1773,51 @@ impl Core {
     }
 
     /// Called about once a second by the run loop.
+    /// The heavy job the governor must not compete with, if any.
+    fn heavy_job(&self) -> Option<&'static str> {
+        if !self.coder_jobs.is_empty() {
+            Some("writing a function")
+        } else if self.trainer.running.is_some() {
+            Some("training")
+        } else if self.wanted_roles().contains(&Role::Large) {
+            Some("loading the large model")
+        } else {
+            None
+        }
+    }
+
+    /// Every android_check_secs: decide whether the sandbox must close, close it if so, and say
+    /// whether apps may be opened now.
+    fn android_check(&mut self, now: u64) {
+        let Some(sb) = self.android.clone() else {
+            return;
+        };
+        let pressure = agentos_android::governor::Pressure::read(&self.cfg.proc_root);
+        let deep = self.kernel.stage == Stage::Deep;
+        let reason = agentos_android::governor::decide(
+            &pressure,
+            deep,
+            self.heavy_job(),
+            &self.android_policy,
+        );
+        *self.android_blocked.borrow_mut() = reason.as_ref().map(|r| r.to_string());
+        let running = sb.borrow_mut().running();
+        if let (true, Some(r)) = (running, reason) {
+            let _ = sb.borrow_mut().stop_all();
+            let _ = self.kernel.record(&format!("android sandbox closed: {r}"));
+            self.android_last_stop = Some((r.to_string(), now));
+        }
+    }
+
     pub fn tick(&mut self) {
+        let now_ms = self.clock.now_ms();
+        if self.android.is_some()
+            && now_ms.saturating_sub(self.android_last_check_ms)
+                >= self.cfg.android_check_secs * 1000
+        {
+            self.android_last_check_ms = now_ms;
+            self.android_check(now_ms);
+        }
         let fresh = self.google_slot.borrow_mut().take();
         if let Some(t) = fresh {
             if self

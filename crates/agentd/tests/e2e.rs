@@ -1119,3 +1119,75 @@ fn oauth_begin_gives_a_pkce_url_and_a_wrong_state_is_refused() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_governor_closes_the_android_sandbox_and_refuses_to_open_one() {
+    let d = dir("android");
+    let proc_root = d.join("proc");
+    std::fs::create_dir_all(proc_root.join("pressure")).unwrap();
+    let write_mem = |mib: u64| {
+        std::fs::write(
+            proc_root.join("meminfo"),
+            format!("MemAvailable: {} kB\n", mib * 1024),
+        )
+        .unwrap();
+    };
+    write_mem(2048);
+    std::fs::write(
+        proc_root.join("pressure/memory"),
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    )
+    .unwrap();
+    let c = Config {
+        android: "sim".into(),
+        proc_root: proc_root.clone(),
+        android_check_secs: 1,
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    assert!(ctl_send(
+        &r.ctl_path,
+        r#"do android_open {"app":"org.example.notes"}"#
+    )
+    .unwrap()
+    .contains("opened"));
+    let state: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(state["android"]["running"], json!(true));
+
+    // on the charger at 80%: the large model is wanted, so the governor closes the sandbox
+    ctl_send(&r.ctl_path, "power 80 charger").unwrap();
+    let mut closed = false;
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+        if st["android"]["running"] == json!(false) {
+            closed = true;
+            break;
+        }
+    }
+    let dbg_state = ctl_send(&r.ctl_path, "state").unwrap();
+    let dbg_ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    let dbg_power = ctl_send(&r.ctl_path, "status").unwrap();
+    assert!(
+        closed,
+        "the sandbox was not closed; status {dbg_power}; android {}; ledger {dbg_ledger}",
+        &dbg_state[dbg_state.find("\"android\"").unwrap_or(0)..]
+    );
+    let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    assert!(ledger.contains("android sandbox closed:"), "{ledger}");
+
+    // free memory drops: opening an app is refused until there is room again
+    write_mem(500);
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let refused = ctl_send(
+        &r.ctl_path,
+        r#"do android_open {"app":"org.example.notes"}"#,
+    )
+    .unwrap();
+    assert!(refused.contains("not now"), "{refused}");
+    let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(st["memory"]["available_mib"], json!(500));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

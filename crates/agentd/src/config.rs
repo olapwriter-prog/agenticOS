@@ -117,6 +117,22 @@ pub struct Config {
     pub mcp_servers: Vec<McpServer>,
     /// Sign-in providers for `oauth begin` and `oauth finish` ([[oauth_providers]]).
     pub oauth_providers: Vec<OauthProvider>,
+    /// The Android sandbox: "none", "sim" (in memory) or "waydroid".
+    pub android: String,
+    /// The user who owns the Wayland session; Waydroid runs as this user.
+    pub android_user: String,
+    /// The environment for Waydroid's commands.
+    pub android_env: String,
+    /// Close the sandbox when less than this much memory is free (MiB).
+    pub android_min_free_mib: u64,
+    /// Close the sandbox when memory pressure (some avg10, percent) is above this.
+    pub android_max_psi: f32,
+    /// Close the sandbox in the deep power stage.
+    pub android_stop_in_deep: bool,
+    /// How often the governor looks, in seconds.
+    pub android_check_secs: u64,
+    /// The proc filesystem, for meminfo and the pressure files.
+    pub proc_root: PathBuf,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -218,6 +234,14 @@ impl Default for Config {
             apps_enabled: true,
             mcp_servers: Vec::new(),
             oauth_providers: Vec::new(),
+            android: "none".into(),
+            android_user: "user".into(),
+            android_env: "XDG_RUNTIME_DIR=/run/user/10000 WAYLAND_DISPLAY=wayland-1".into(),
+            android_min_free_mib: 1024,
+            android_max_psi: 10.0,
+            android_stop_in_deep: true,
+            android_check_secs: 5,
+            proc_root: PathBuf::from("/proc"),
         }
     }
 }

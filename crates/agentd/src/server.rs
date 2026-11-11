@@ -179,18 +179,25 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
             }
         });
         // the core loop
+        // tick once a second by the clock, not only when the channel is idle: steady traffic
+        // must not starve the governor, the phone poll or the learning
+        let mut last_tick = std::time::Instant::now();
         loop {
             if STOP.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            match rx.recv_timeout(Duration::from_secs(1)) {
+            match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(Cmd::Mcp(b, r)) => {
                     let _ = r.send(core.mcp(&b));
                 }
                 Ok(Cmd::Ctl(l, r)) => core.ctl_reply(&l, r),
                 Ok(Cmd::Stop) => break,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => core.tick(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(_) => break,
+            }
+            if last_tick.elapsed() >= Duration::from_secs(1) {
+                core.tick();
+                last_tick = std::time::Instant::now();
             }
             core.poll_jobs();
         }
