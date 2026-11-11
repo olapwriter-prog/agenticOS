@@ -143,6 +143,13 @@ pub fn action_json(a: &Action) -> String {
 pub fn default_intents() -> IntentTable {
     let mut t = IntentTable::new();
     t.add("remind me to {text} at {when}", "set_reminder");
+    // the camera and photos
+    t.add("take a photo", "camera_take");
+    t.add("take a picture", "camera_take");
+    t.add("edit photo {photo} {edit}", "photo_edit");
+    t.add("show photo {photo}", "photo_show");
+    t.add("my photos", "photo_list");
+    t.add("photos", "photo_list");
     t.add("add {title} to my calendar on {day}", "add_event");
     t.add("what's on {day}", "read_calendar");
     t.add("what is on {day}", "read_calendar");

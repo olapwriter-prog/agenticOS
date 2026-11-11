@@ -1,5 +1,6 @@
 pub mod android;
 pub mod approval;
+pub mod chat;
 pub mod home;
 pub mod phone;
 pub mod setup;

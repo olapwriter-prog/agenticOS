@@ -119,6 +119,8 @@ pub struct Core {
     last_phone_poll_ms: u64,
     /// The last screen a tool answered with (a UI document), for the display.
     screen: Option<Value>,
+    /// The last answer screens, newest last (at most 8): the dashboard's "recent answers".
+    screens: std::collections::VecDeque<Value>,
     /// The skill library, for the model's prompts when it writes code.
     skill_lib: Option<agentos_skillpack::tools::SkillTools>,
     /// ModemManager's signals are being watched, so polling can be slow.
@@ -368,6 +370,21 @@ impl Core {
             functions: Some(functions.clone()),
             sandbox: android.clone(),
         }));
+        // the camera and the photos
+        let camera: Option<Box<dyn agentos_vision::Camera>> = match cfg.camera.as_str() {
+            "none" => None,
+            "command" => Some(Box::new(agentos_vision::CommandCamera {
+                command: cfg.camera_command.clone(),
+            })),
+            _ => Some(Box::new(agentos_vision::SimCamera::default())),
+        };
+        if let Some(camera) = camera {
+            connectors.push(Box::new(agentos_vision::Photos {
+                dir: dir.join("photos"),
+                camera,
+                vision_url: cfg.vision_url.clone(),
+            }));
+        }
         let android_on = android.is_some();
         let setup_path = dir.join("setup.json");
         let android_policy = agentos_android::governor::Policy {
@@ -574,6 +591,7 @@ impl Core {
             phone,
             last_phone_poll_ms: 0,
             screen: None,
+            screens: std::collections::VecDeque::new(),
             skill_lib,
             signals_up: false,
             poll_again_at: None,
@@ -1214,7 +1232,12 @@ impl Core {
         }
         // a screen: kept for the display; the conversation gets its text form
         if let Some((ui, said)) = agentos_screen::Ui::from_reply(&text) {
-            self.screen = Some(json!({"tool": a.tool, "ui": ui}));
+            let shown = json!({"tool": a.tool, "ui": ui, "at": now});
+            self.screen = Some(shown.clone());
+            self.screens.push_back(shown);
+            while self.screens.len() > 8 {
+                self.screens.pop_front();
+            }
             return format!("done: {said}");
         }
         if a.tool == "run_function" {
@@ -1584,6 +1607,8 @@ impl Core {
             "learning": self.learner.stats(),
             "setup": self.setup_state(),
             "device": self.device_state(),
+            "dashboard": self.dashboard(),
+            "screens": self.screens.iter().rev().cloned().collect::<Vec<_>>(),
             "owner": self.setup.answers.get("owner").cloned(),
             "store": {"installed": agentos_catalog::store::installed(&self.cfg.data_dir)},
             "android": self.android_state(),
@@ -1630,6 +1655,90 @@ impl Core {
             .as_ref()
             .map(|(r, at)| json!({"reason": r, "at_ms": at}));
         json!({"mode": self.cfg.android, "running": running, "apps": apps, "last_stop": last})
+    }
+
+    /// The dashboard, generated from what the phone knows now, as a screen document like any
+    /// tool's answer: battery, messages, calls, what waits, memory, and the last photo.
+    fn dashboard(&mut self) -> Value {
+        use agentos_screen::{Card, Ui};
+        let mut ui = Ui::new("Today").kind("dashboard");
+        let battery = self.power.level_percent();
+        let charging = self.power.on_charger();
+        ui = ui.card(
+            Card::new("Battery")
+                .metric(
+                    format!("{battery}%"),
+                    if charging { "charging" } else { "on battery" },
+                    "",
+                )
+                .progress(battery as f32 / 100.0)
+                .tone(if battery <= 20 && !charging {
+                    "warn"
+                } else {
+                    "ok"
+                }),
+        );
+        let waiting = self.gateway.pending().len();
+        if waiting > 0 {
+            ui = ui.card(
+                Card::new("Waiting for you")
+                    .metric(waiting.to_string(), "to approve", "")
+                    .tone("warn"),
+            );
+        }
+        let msgs: Vec<&Value> = self.messages_log.iter().rev().take(2).collect();
+        let mut m = Card::new("Messages").metric(self.messages_log.len().to_string(), "today", "");
+        for x in &msgs {
+            m = m.line(format!(
+                "{}: {}",
+                x["who"].as_str().unwrap_or("?"),
+                x["text"].as_str().unwrap_or("")
+            ));
+        }
+        ui = ui.card(m.button("Read", "read my messages"));
+        let missed: Vec<&Value> = self
+            .calls_log
+            .iter()
+            .filter(|c| c["state"] == "missed")
+            .collect();
+        let mut c = Card::new("Calls").metric(missed.len().to_string(), "missed", "");
+        if let Some(last) = self.calls_log.back() {
+            let who = last["who"].as_str().unwrap_or("?").to_string();
+            c = c
+                .line(format!(
+                    "last: {who} ({})",
+                    last["state"].as_str().unwrap_or("")
+                ))
+                .button("Call back", format!("call {who}"));
+        }
+        ui = ui.card(c);
+        let p = agentos_android::governor::Pressure::read(&self.cfg.proc_root);
+        if p.available_mib > 0 {
+            ui = ui.card(
+                Card::new("Memory")
+                    .metric(
+                        format!("{:.1} GB", p.available_mib as f32 / 1024.0),
+                        "free",
+                        "",
+                    )
+                    .progress((p.available_mib as f32 / 8192.0).min(1.0)),
+            );
+        }
+        // the last photo taken or edited, if any
+        let photo = self.screens.iter().rev().find_map(|s| {
+            let ui = &s["ui"];
+            (ui["kind"] == "photo")
+                .then(|| ui["cards"][0]["image"].as_str().map(str::to_string))
+                .flatten()
+        });
+        if let Some(img) = photo {
+            ui = ui.card(
+                Card::new("Last photo")
+                    .image(img)
+                    .button("Photos", "photos"),
+            );
+        }
+        serde_json::to_value(&ui).unwrap_or(Value::Null)
     }
 
     /// What the status bar shows: time, battery, signal, network and Wi-Fi, read at most every

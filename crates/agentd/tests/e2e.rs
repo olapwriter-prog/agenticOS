@@ -1695,3 +1695,45 @@ fn the_app_list_is_there_in_the_first_seconds_after_boot() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn take_and_edit_a_photo_by_chat_and_the_dashboard_shows_it() {
+    let (d, r, _tok) = boot("photos");
+    let taken = ctl_send(&r.ctl_path, "chat take a photo").unwrap();
+    assert!(taken.contains("Photo taken"), "{taken}");
+    assert!(d.join("photos/IMG_0001.jpg").exists());
+    let edited = ctl_send(&r.ctl_path, "chat edit photo IMG_0001 enhance").unwrap();
+    assert!(edited.contains("Enhance applied"), "{edited}");
+    assert!(d.join("photos/IMG_0001-enhance.jpg").exists());
+    assert!(
+        d.join("photos/IMG_0001.jpg").exists(),
+        "the original is kept"
+    );
+    let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    // the answers, newest first, as screens the UI draws
+    assert_eq!(st["screens"][0]["ui"]["kind"], json!("photo"));
+    assert!(
+        st["screens"][0]["ui"]["cards"][1]["actions"]
+            .as_array()
+            .is_some_and(|a| !a.is_empty()),
+        "suggested edits as buttons"
+    );
+    // the dashboard is generated too, and shows the last photo
+    let dash = &st["dashboard"];
+    assert_eq!(dash["kind"], json!("dashboard"));
+    assert!(dash["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["title"] == "Battery" && c["metric"].is_object()));
+    assert!(dash["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["title"] == "Last photo"
+            && c["image"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("IMG_0001-enhance.jpg"))));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

@@ -7,12 +7,13 @@
 //!   agentos-ui --snap ui.png --scene demo    render headless, with sample data
 //!   agentos-ui --snap ui.png --scene live    render headless, from a running agentd
 //!     (live takes AGENTOS_TAB, AGENTOS_SEG and AGENTOS_SHEET to show a given screen)
+mod genui;
 mod icons;
 mod screens;
 mod theme;
 
 use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, el};
-use screens::{android, approval, home, phone, setup, store, system};
+use screens::{android, approval, chat, home, phone, setup, store, system};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -91,12 +92,19 @@ pub struct State {
     pub expanded: Option<String>,
     /// Restart was tapped once; a second tap restarts
     pub confirm_restart: bool,
+    /// the assistant's conversation is open, full screen
+    pub chat_open: bool,
+    /// for each question, the newest answer screen's time when it was asked, so each answer is
+    /// matched with the screen made for it
+    pub asked_after: Vec<u64>,
     /// (what you said, what the agent answered)
     pub log: Vec<(String, String)>,
     /// (what was asked, what came back) for the store and sandbox commands, newest last
     pub replies: Vec<(String, String)>,
     /// every command sent, newest last, with secrets masked (tests read this)
     pub sent: Vec<String>,
+    /// photos the generated screens show, decoded once each
+    pub images: std::collections::HashMap<String, rune::Pixels>,
     link: Option<Sender<String>>,
     inbox: Option<Receiver<Event>>,
 }
@@ -121,9 +129,12 @@ impl State {
             sheet: None,
             expanded: None,
             confirm_restart: false,
+            chat_open: false,
+            asked_after: vec![],
             log: vec![],
             replies: vec![],
             sent: vec![],
+            images: std::collections::HashMap::new(),
             link: None,
             inbox: None,
         }
@@ -147,8 +158,26 @@ impl State {
         if said.is_empty() {
             return;
         }
+        let newest = self.snap["screens"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|x| x["at"].as_u64())
+            .unwrap_or(0);
         self.log.push((said.to_string(), String::new()));
+        self.asked_after.push(newest);
+        self.chat_open = true;
         self.send(format!("chat {said}"));
+    }
+
+    /// Decode the photos the dashboard and the answers show.
+    pub fn load_images(&mut self) {
+        let mut docs = vec![self.snap["dashboard"].clone()];
+        for sc in self.snap["screens"].as_array().into_iter().flatten() {
+            docs.push(sc["ui"].clone());
+        }
+        for d in docs {
+            genui::load_images(&d, &mut self.images);
+        }
     }
 
     /// Send what is in the setup box as the answer to the current step.
@@ -205,6 +234,7 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
             Event::State(Ok(v)) => {
                 s.snap = v;
                 s.error = None;
+                s.load_images();
             }
             Event::State(Err(e)) => s.error = Some(e),
             Event::Reply { asked, answer } => {
@@ -240,6 +270,14 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         return setup::view(s, st);
     }
     let waiting = st["pending"].as_array().map_or(0, |p| p.len());
+    // the assistant, full screen; the approval sheet can still come up over it
+    if s.chat_open {
+        let mut page = col().w_full().h_full().child(chat::view(s, st));
+        if let Some(id) = s.sheet {
+            page = page.child(approval::sheet(s, id));
+        }
+        return page;
+    }
     let body = match s.tab {
         Tab::Home => home::view(s, st),
         Tab::Phone => phone::view(s, st),
@@ -340,8 +378,68 @@ fn demo() -> Value {
             ],
             "last_stop": {"reason": "only 500 MiB free", "at_ms": 5000}
         },
-        "memory": {"available_mib": 1800, "psi": 1.2}
+        "memory": {"available_mib": 1800, "psi": 1.2},
+        "dashboard": {"title": "Today", "kind": "dashboard", "cards": [
+            {"title": "Battery", "metric": {"value": "76%", "label": "on battery"}, "progress": 0.76, "tone": "ok"},
+            {"title": "Waiting for you", "metric": {"value": "2", "label": "to approve"}, "tone": "warn"},
+            {"title": "Messages", "metric": {"value": "2", "label": "today"}, "lines": ["Mum: landed safely?"], "actions": [{"label": "Read", "say": "read my messages"}]},
+            {"title": "Calls", "metric": {"value": "1", "label": "missed"}, "lines": ["last: Asha (missed)"], "actions": [{"label": "Call back", "say": "call Asha"}]},
+            {"title": "Last photo", "image": demo_photo(), "actions": [{"label": "Photos", "say": "photos"}]},
+            {"title": "Memory", "metric": {"value": "1.8 GB", "label": "free"}, "progress": 0.22}
+        ]},
+        "screens": [
+            {"tool": "weather", "at": 1, "ui": {"title": "Weather in Bengaluru", "subtitle": "India", "kind": "weather", "cards": [
+                {"title": "partly cloudy", "metric": {"value": "24°", "label": "feels like 26°"}, "badge": "24°C", "tone": "info", "lines": ["humidity 62% · wind 9 km/h"]},
+                {"title": "Highs", "chart": {"kind": "line", "labels": ["Today", "13", "14", "15"], "values": [27.0, 29.0, 28.0, 25.0], "unit": "°"}},
+                {"title": "Chance of rain", "chart": {"kind": "bar", "labels": ["Today", "13", "14", "15"], "values": [70.0, 40.0, 20.0, 85.0], "unit": "%"}, "tone": "info"}
+            ], "actions": [{"label": "Air quality", "say": "air quality in Bengaluru"}]}}
+        ]
     })
+}
+
+/// A picture for the demo scenes: drawn once into the temp folder.
+fn demo_photo() -> String {
+    let path = std::env::temp_dir().join("agentos-demo-photo.jpg");
+    if !path.exists() {
+        let img = image::RgbImage::from_fn(640, 480, |x, y| {
+            let (fx, fy) = (x as f32 / 640.0, y as f32 / 480.0);
+            let hill = 0.62 + 0.08 * (fx * 7.0).sin();
+            let sun = ((fx - 0.72).powi(2) + (fy - 0.25).powi(2)).sqrt() < 0.07;
+            let (r, g, b) = if sun {
+                (0.98, 0.85, 0.5)
+            } else if fy > hill {
+                (0.2, 0.45 - (fy - hill) * 0.3, 0.22)
+            } else {
+                (0.35 + fy * 0.3, 0.55 + fy * 0.15, 0.9 - fy * 0.2)
+            };
+            image::Rgb([(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8])
+        });
+        let _ = img.save(&path);
+    }
+    path.display().to_string()
+}
+
+/// The assistant open, with two answers: the weather (a chart) and a photo (with its edits).
+fn chat_demo(s: &mut State) {
+    s.snap = demo();
+    let weather = s.snap["screens"][0].clone();
+    s.snap["screens"] = json!([demo_photo_screen(), weather]);
+    s.log = vec![
+        ("weather".into(), "done: Weather in Bengaluru".into()),
+        ("take a photo".into(), "done: Photo taken".into()),
+    ];
+    s.asked_after = vec![0, 1];
+    s.chat_open = true;
+    s.load_images();
+}
+
+/// A photo answer, as the camera tool gives it.
+fn demo_photo_screen() -> Value {
+    json!({"tool": "camera_take", "at": 2, "ui": {"title": "Photo taken", "kind": "photo", "cards": [
+        {"title": "IMG_0001", "image": demo_photo(), "metric": {"value": "31%", "label": "brightness"}, "lines": ["Dark photo with muted colours, 960×720"]},
+        {"title": "Suggested edits", "subtitle": "Tap one: the original is kept", "lines": ["Brighten: it is dark (31% brightness)", "Enhance: it looks flat: low contrast", "Vivid: the colours are dull"],
+         "actions": [{"label": "Brighten", "say": "edit photo IMG_0001 brighten"}, {"label": "Enhance", "say": "edit photo IMG_0001 enhance"}, {"label": "Vivid", "say": "edit photo IMG_0001 vivid"}, {"label": "Black & white", "say": "edit photo IMG_0001 bw"}]}
+    ], "actions": [{"label": "All photos", "say": "photos"}, {"label": "Take another", "say": "take a photo"}]}})
 }
 
 fn setup_demo(
@@ -363,11 +461,16 @@ fn main() {
         scenes: &[
             ("demo", |s| {
                 s.snap = demo();
-                s.log.push((
-                    "how many texts did Mum send me".into(),
-                    "Mum sent 4 texts this week.".into(),
-                ));
+                s.log
+                    .push(("weather".into(), "done: Weather in Bengaluru".into()));
+                s.load_images();
             }),
+            ("photo", |s| {
+                s.snap = demo();
+                s.snap["pending"] = json!([]);
+                s.load_images();
+            }),
+            ("chat", |s| chat_demo(s)),
             ("setup", |s| {
                 s.snap = setup_demo(
                     "wifi",
@@ -440,6 +543,21 @@ fn main() {
                 s.pin = "43".into();
             }),
             ("live", |s| {
+                // AGENTOS_ASK="weather;take a photo": ask the running agentd each question, keep
+                // its real answers, and open the assistant on them
+                if let Ok(asks) = std::env::var("AGENTOS_ASK") {
+                    for q in asks.split(';').map(str::trim).filter(|q| !q.is_empty()) {
+                        let newest = ctl("state")
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                            .and_then(|v| v["screens"].get(0).and_then(|x| x["at"].as_u64()))
+                            .unwrap_or(0);
+                        let answer = ctl(&format!("chat {q}")).unwrap_or_else(|e| e);
+                        s.log.push((q.to_string(), answer));
+                        s.asked_after.push(newest);
+                    }
+                    s.chat_open = true;
+                }
                 match ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
                 {
                     Ok(v) => s.snap = v,
@@ -461,6 +579,7 @@ fn main() {
                 s.sheet = std::env::var("AGENTOS_SHEET")
                     .ok()
                     .and_then(|v| v.parse().ok());
+                s.load_images();
             }),
         ],
         setup: Some(setup),
@@ -811,5 +930,78 @@ mod tests {
         d["pending"] = json!([]);
         s.snap = d;
         let _ = rt_of(s);
+    }
+
+    #[test]
+    fn asking_opens_the_assistant_and_back_closes_it() {
+        let mut rt = rt();
+        tap(&mut rt, "quick-camera");
+        assert_eq!(rt.state.sent.last().unwrap(), "chat take a photo");
+        assert!(rt.state.chat_open);
+        assert!(rt.find("chat-thread").is_some());
+        assert!(rt.find("tabs").is_none(), "the assistant is full screen");
+        tap(&mut rt, "chat-back");
+        assert!(!rt.state.chat_open);
+        assert!(
+            rt.find("open-chat").is_some(),
+            "Home shows the last exchange"
+        );
+    }
+
+    #[test]
+    fn an_answer_is_drawn_as_its_generated_screen_and_its_buttons_ask() {
+        let mut s = State::new();
+        chat_demo(&mut s);
+        let mut rt = rt_of(s);
+        assert!(rt.find("answer-1-card-0").is_some());
+        assert!(rt.find("answer-1-card-0-metric").is_some());
+        tap(&mut rt, "answer-1-card-1-do-0");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "chat edit photo IMG_0001 brighten"
+        );
+    }
+
+    #[test]
+    fn each_answer_gets_the_screen_made_for_it() {
+        let mut s = State::new();
+        chat_demo(&mut s);
+        let st = s.snap.clone();
+        assert_eq!(
+            chat::screen_for(&st, &s, 0).unwrap()["kind"],
+            json!("weather")
+        );
+        assert_eq!(
+            chat::screen_for(&st, &s, 1).unwrap()["kind"],
+            json!("photo")
+        );
+        // a question asked after the newest screen, with no new screen yet, gets none
+        s.asked_after.push(2);
+        s.log
+            .push(("remind me".into(), "done: reminder set".into()));
+        assert!(chat::screen_for(&st, &s, 2).is_none());
+    }
+
+    #[test]
+    fn home_shows_the_generated_dashboard() {
+        let rt = rt();
+        assert!(rt.find("dashboard").is_some());
+        assert!(rt.find("widget-0").is_some());
+        assert!(rt.find("widget-0-metric").is_some());
+        assert!(rt.find("widget-0-progress").is_some());
+    }
+
+    #[test]
+    fn a_chart_draws_one_bar_per_value() {
+        let mut s = State::new();
+        chat_demo(&mut s);
+        s.log.truncate(1);
+        s.asked_after.truncate(1);
+        let rt = rt_of(s);
+        // the chance-of-rain chart, the last card of the weather answer
+        for i in 0..4 {
+            let k = format!("answer-0-card-2-bar-{i}");
+            assert!(rt.find(&k).is_some(), "{k}");
+        }
     }
 }

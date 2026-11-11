@@ -141,6 +141,13 @@ pub struct Config {
     pub catalog_url: Option<String>,
     /// The owner's public key for those catalogues, as 64 hex digits.
     pub catalog_pubkey: Option<String>,
+    /// The camera: "none", "sim" (a drawn scene) or "command" (camera_command takes the picture).
+    pub camera: String,
+    /// The command that writes one picture to {path}, for camera = "command".
+    pub camera_command: String,
+    /// An OpenAI-style chat endpoint that takes images, to say what is in a photo. None: the
+    /// photo is described from its pixels only.
+    pub vision_url: Option<String>,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -254,6 +261,9 @@ impl Default for Config {
             catalog: PathBuf::from("/usr/share/agentd/catalog.toml"),
             catalog_url: None,
             catalog_pubkey: None,
+            camera: "sim".into(),
+            camera_command: "gst-launch-1.0 -q libcamerasrc num-buffers=1 ! videoconvert ! jpegenc ! filesink location={path}".into(),
+            vision_url: None,
         }
     }
 }

@@ -142,9 +142,10 @@ impl Apps {
         ))?;
         let c = &v["current"];
         let num = |x: &Value| x.as_f64().map(|f| format!("{f:.0}")).unwrap_or("?".into());
-        let mut ui = Ui::new(format!("Weather in {name}")).subtitle(country);
+        let mut ui = Ui::new(format!("Weather in {name}")).subtitle(country).kind("weather");
         ui = ui.card(
             Card::new(wmo(c["weather_code"].as_i64().unwrap_or(-1)))
+                .metric(format!("{}°", num(&c["temperature_2m"])), format!("feels like {}°", num(&c["apparent_temperature"])), "")
                 .badge(format!("{}°C", num(&c["temperature_2m"])))
                 .line(format!("feels like {}°C · humidity {}% · wind {} km/h", num(&c["apparent_temperature"]), num(&c["relative_humidity_2m"]), num(&c["wind_speed_10m"])))
                 .line(format!("rain now {} mm", c["precipitation"].as_f64().map(|f| format!("{f:.1}")).unwrap_or("?".into())))
@@ -167,6 +168,20 @@ impl Apps {
             }
             ui = ui.card(card);
         }
+        // the coming days as a chart: highs, and the chance of rain
+        let highs: Vec<f64> = (0..days.len()).filter_map(|i| d["temperature_2m_max"].get(i).and_then(Value::as_f64)).collect();
+        let rain: Vec<f64> = (0..days.len()).filter_map(|i| d["precipitation_probability_max"].get(i).and_then(Value::as_f64)).collect();
+        let labels: Vec<String> = days
+            .iter()
+            .enumerate()
+            .map(|(i, day)| if i == 0 { "Today".to_string() } else { day.as_str().and_then(|s| s.get(8..10)).unwrap_or("?").to_string() })
+            .collect();
+        if highs.len() == labels.len() && !highs.is_empty() {
+            ui = ui.card(Card::new("Highs").chart("line", labels.clone(), highs, "°"));
+        }
+        if rain.len() == labels.len() && !rain.is_empty() {
+            ui = ui.card(Card::new("Chance of rain").chart("bar", labels, rain, "%"));
+        }
         Ok(ui.action("Air quality", format!("air quality in {name}")))
     }
 
@@ -184,7 +199,7 @@ impl Apps {
             _ => ("hazardous", "warn"),
         };
         let f = |k: &str| c[k].as_f64().map(|x| format!("{x:.0}")).unwrap_or("?".into());
-        Ok(Ui::new(format!("Air in {name}")).card(Card::new(label).badge(format!("AQI {aqi:.0}")).line(format!("PM2.5 {} · PM10 {} µg/m³", f("pm2_5"), f("pm10"))).line(format!("ozone {} · NO₂ {} µg/m³", f("ozone"), f("nitrogen_dioxide"))).tone(tone)))
+        Ok(Ui::new(format!("Air in {name}")).kind("air").card(Card::new(label).metric(format!("{aqi:.0}"), "US AQI", "").progress((aqi / 300.0) as f32).badge(format!("AQI {aqi:.0}")).line(format!("PM2.5 {} · PM10 {} µg/m³", f("pm2_5"), f("pm10"))).line(format!("ozone {} · NO₂ {} µg/m³", f("ozone"), f("nitrogen_dioxide"))).tone(tone)))
     }
 
     fn time_in(&self, place: &str) -> Result<Ui, String> {
@@ -437,14 +452,15 @@ impl Apps {
         let c = v.get(&id).ok_or(format!("no price for {coin} (CoinGecko ids: bitcoin, ethereum, solana...)"))?;
         let price = c[&vs].as_f64().ok_or("no price")?;
         let ch = c[&format!("{vs}_24h_change")].as_f64();
-        let mut card = Card::new(format!("{price:.2} {}", vs.to_uppercase()));
+        let delta = ch.map(|ch| format!("{}{ch:.2}%", if ch >= 0.0 { "+" } else { "" })).unwrap_or_default();
+        let mut card = Card::new(format!("{price:.2} {}", vs.to_uppercase())).metric(format!("{price:.2}"), vs.to_uppercase(), delta);
         if let Some(u) = c["usd"].as_f64() {
             card = card.line(format!("{u:.2} USD"));
         }
         if let Some(ch) = ch {
             card = card.line(format!("{}{ch:.2}% in 24 hours", if ch >= 0.0 { "+" } else { "" })).tone(if ch >= 0.0 { "ok" } else { "warn" });
         }
-        Ok(Ui::new(format!("{id}")).subtitle("CoinGecko · prices move; not advice").card(card))
+        Ok(Ui::new(id.to_string()).kind("money").subtitle("CoinGecko · prices move; not advice").card(card))
     }
 }
 

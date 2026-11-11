@@ -196,3 +196,13 @@ line_icon!(
     "trash",
     r#"<path d="M4.5 7h15M9.5 7V4.5h5V7M6.5 7l1 13h9l1-13"/>"#
 );
+line_icon!(
+    CAMERA,
+    "camera",
+    r#"<path d="M4 8.5a2 2 0 0 1 2-2h2l1.5-2h5l1.5 2h2a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/>"#
+);
+line_icon!(
+    WAND,
+    "wand",
+    r#"<path d="M4 20 15 9M14 4v3M18.5 5.5l-2 2M20 10h-3"/><path d="M13.5 10.5l-3-3"/>"#
+);

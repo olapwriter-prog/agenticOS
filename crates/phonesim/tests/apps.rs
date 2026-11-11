@@ -14,7 +14,9 @@ impl Drop for World {
     }
 }
 fn world() -> World {
-    let port = 19_900 + (std::process::id() % 90) as u16;
+    // each test its own port: tests in one file run at the same time
+    static NEXT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+    let port = 19_000 + (std::process::id() % 400) as u16 * 2 + NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let child = Command::new(env!("CARGO_BIN_EXE_agentos-phonesim")).args(["world", &port.to_string()]).spawn().unwrap();
     let url = format!("http://127.0.0.1:{port}");
     for _ in 0..100 {
@@ -100,4 +102,26 @@ fn every_app_against_the_simulated_apis() {
 fn query_values_are_encoded() {
     assert_eq!(agentos_apps::enc("cafés & bars"), "caf%C3%A9s%20%26%20bars");
     assert_eq!(agentos_apps::wmo(95), "thunderstorm");
+}
+
+#[test]
+fn answers_carry_widgets_the_screen_draws() {
+    let w = world();
+    let mut a = Apps { cfg: Config::all_at(&w.1) };
+    let ui = |a: &mut Apps, tool: &str, args: &[(&str, &str)]| {
+        let act = Action { tool: tool.into(), args: args.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect() };
+        Ui::from_reply(&a.call(&act).unwrap()).unwrap().0
+    };
+    let weather = ui(&mut a, "weather", &[("place", "")]);
+    assert_eq!(weather.kind, "weather");
+    let m = weather.cards[0].metric.as_ref().expect("the temperature as a big number");
+    assert_eq!(m.value, "24°");
+    let highs = weather.cards.iter().find_map(|c| c.chart.as_ref().filter(|ch| ch.kind == "line")).expect("a chart of the highs");
+    assert_eq!(highs.labels.len(), highs.values.len());
+    assert_eq!(highs.labels[0], "Today");
+    let air = ui(&mut a, "air_quality", &[("place", "Bengaluru")]);
+    assert_eq!(air.cards[0].metric.as_ref().unwrap().value, "87");
+    assert!((air.cards[0].progress.unwrap() - 87.0 / 300.0).abs() < 0.001);
+    let coin = ui(&mut a, "crypto", &[("coin", "BTC")]);
+    assert_eq!(coin.cards[0].metric.as_ref().unwrap().delta, "-1.23%");
 }
