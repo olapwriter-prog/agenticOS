@@ -44,7 +44,14 @@ pub fn cards(st: &serde_json::Value, t: Theme, accent: Color) -> El {
                     )
                     .child(
                         button(format!("approve-{id}"), "Approve", accent, t.text)
-                            .on_press(move |s: &mut State| s.send(format!("press {id}"))),
+                            .on_press(move |s: &mut State| {
+                                // with a PIN set, the sheet asks for it first
+                                if s.snap["pin_set"].as_bool() == Some(true) {
+                                    s.sheet = Some(id);
+                                } else {
+                                    s.send(format!("press {id}"));
+                                }
+                            }),
                     ),
             );
         }
