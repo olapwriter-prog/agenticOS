@@ -57,6 +57,8 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// Sign-ins started with `oauth begin` and not yet finished, by provider.
+    oauth_pending: std::collections::HashMap<String, agentos_services::oauth::Pending>,
     /// Remote MCP servers as they were at boot: (name, state, tools).
     mcp_status: Vec<(String, String, usize)>,
     /// Episodes and rewards: what the human approved, declined and corrected.
@@ -374,6 +376,7 @@ impl Core {
             sim_power,
             kernel,
             mcp_status,
+            oauth_pending: std::collections::HashMap::new(),
             gateway,
             engine,
             model,
@@ -1167,6 +1170,71 @@ impl Core {
         text
     }
 
+    /// oauth begin <provider> | oauth finish <provider> <pasted address or code>
+    fn oauth_cmd(&mut self, rest: &str) -> String {
+        let (sub, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let (name, pasted) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
+        let Some(p) = self
+            .cfg
+            .oauth_providers
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
+        else {
+            return format!("no sign-in provider {name:?} in the config");
+        };
+        let provider = agentos_services::oauth::Provider {
+            name: p.name.clone(),
+            client_id: p.client_id.clone(),
+            client_secret: p.client_secret.clone(),
+            auth_url: p.auth_url.clone(),
+            token_url: p.token_url.clone(),
+            scopes: p.scopes.clone(),
+            redirect: p.redirect.clone(),
+        };
+        match sub {
+            "begin" => {
+                let mut random = [0u8; 48];
+                if let Err(e) = getrandom::getrandom(&mut random) {
+                    return format!("cannot make a sign-in: {e}");
+                }
+                let (url, pending) = agentos_services::oauth::begin(&provider, &random);
+                self.oauth_pending.insert(p.name.clone(), pending);
+                format!(
+                    "open this in a browser and approve:\n{url}\nthen paste the address it lands on: oauth finish {} <address>",
+                    p.name
+                )
+            }
+            "finish" => {
+                let Some(pending) = self.oauth_pending.get(&p.name) else {
+                    return format!(
+                        "no sign-in is waiting for {}; run oauth begin {} first",
+                        p.name, p.name
+                    );
+                };
+                let mut http = agentos_services::Ureq::default();
+                let now = self.clock.now_ms();
+                match agentos_services::oauth::finish(&provider, pending, pasted, &mut http, now) {
+                    Ok(t) => {
+                        let stored = json!({"access": t.access, "refresh": t.refresh, "expires_at_ms": t.expires_at_ms});
+                        if let Err(e) = self
+                            .vault
+                            .put(&format!("conn.{}", p.name), stored.to_string().as_bytes())
+                        {
+                            return format!("cannot store the sign-in: {e:?}");
+                        }
+                        self.oauth_pending.remove(&p.name);
+                        let _ = self.kernel.record(&format!("signed in to {}", p.name));
+                        format!("signed in to {}", p.name)
+                    }
+                    Err(e) => e,
+                }
+            }
+            _ => "usage: oauth begin <provider> | oauth finish <provider> <pasted address or code>"
+                .into(),
+        }
+    }
+
     /// secret set <name> <value> | secret list | secret rm <name>. Names must start with conn.;
     /// values are never printed or written to the ledger.
     fn secret_cmd(&mut self, rest: &str) -> String {
@@ -1225,6 +1293,7 @@ impl Core {
         match cmd {
             "status" => self.status_line(),
             "do" => self.do_cmd(rest),
+            "oauth" => self.oauth_cmd(rest),
             "connectors" => {
                 if self.mcp_status.is_empty() {
                     "no remote servers configured".into()
@@ -1416,7 +1485,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors oauth".into(),
             other => format!("unknown command: {other}"),
         }
     }

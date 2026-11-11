@@ -8,3 +8,4 @@ agentos-action = { path = "../action" }
 agentos-executor = { path = "../executor" }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"

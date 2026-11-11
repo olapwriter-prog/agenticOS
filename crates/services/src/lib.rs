@@ -1,5 +1,6 @@
 //! Connectors for services that have a plain HTTP API and need no app: each one talks to the
 //! service over `Http`, so the tests run with a fake and never touch the network.
+pub mod oauth;
 pub mod telegram;
 
 /// The network, as the connectors need it. `Ureq` is the real one.

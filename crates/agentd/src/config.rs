@@ -115,6 +115,28 @@ pub struct Config {
     /// Remote MCP servers ([[mcp_servers]]): each one's tools are offered as connectors, behind
     /// the same tiers and approval key. A server that cannot be reached is skipped at boot.
     pub mcp_servers: Vec<McpServer>,
+    /// Sign-in providers for `oauth begin` and `oauth finish` ([[oauth_providers]]).
+    pub oauth_providers: Vec<OauthProvider>,
+}
+
+/// An OAuth provider the owner registered (for example a Google client of type Desktop app).
+/// Its client secret, if any, stays in this file; tokens go to the vault.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OauthProvider {
+    pub name: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    pub auth_url: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default = "default_redirect")]
+    pub redirect: String,
+}
+
+fn default_redirect() -> String {
+    "http://127.0.0.1:8765/oauth/callback".into()
 }
 
 /// One remote MCP server. `secret` names a vault entry (conn.<name>) holding its bearer token.
@@ -195,6 +217,7 @@ impl Default for Config {
             apps: agentos_apps::Config::default(),
             apps_enabled: true,
             mcp_servers: Vec::new(),
+            oauth_providers: Vec::new(),
         }
     }
 }

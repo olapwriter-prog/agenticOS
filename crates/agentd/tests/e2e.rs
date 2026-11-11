@@ -1082,3 +1082,40 @@ fn do_calls_a_tool_with_the_same_approval_steps() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn oauth_begin_gives_a_pkce_url_and_a_wrong_state_is_refused() {
+    use agentd::config::OauthProvider;
+    let d = dir("oauth");
+    let c = Config {
+        oauth_providers: vec![OauthProvider {
+            name: "google".into(),
+            client_id: "client-123".into(),
+            client_secret: None,
+            auth_url: "https://accounts.example/auth".into(),
+            token_url: "https://accounts.example/token".into(),
+            scopes: vec!["calendar.events".into()],
+            redirect: "http://127.0.0.1:8765/oauth/callback".into(),
+        }],
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let begun = ctl_send(&r.ctl_path, "oauth begin google").unwrap();
+    assert!(
+        begun.contains("https://accounts.example/auth?response_type=code&client_id=client-123"),
+        "{begun}"
+    );
+    assert!(begun.contains("code_challenge_method=S256"));
+    let refused = ctl_send(
+        &r.ctl_path,
+        "oauth finish google http://127.0.0.1:8765/oauth/callback?code=x&state=wrong",
+    )
+    .unwrap();
+    assert!(refused.contains("state does not match"), "{refused}");
+    assert!(ctl_send(&r.ctl_path, "oauth finish nobody x")
+        .unwrap()
+        .contains("no sign-in provider"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
