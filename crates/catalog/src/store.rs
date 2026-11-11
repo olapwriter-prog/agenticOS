@@ -10,6 +10,34 @@ pub struct StoreTools {
     pub catalog: Catalog,
     /// the data directory: installed.json, agents/, skills/, mcp_servers.toml
     pub dir: PathBuf,
+    /// the function store: a function item is written and checked here, then installed
+    pub functions: Option<agentos_functions::Shared>,
+    /// the Android sandbox, when there is one
+    pub sandbox: Option<agentos_android::Shared>,
+}
+
+/// The examples of a function item: TOML `[[example]]` tables with `expect` and `args`.
+pub fn parse_examples(text: &str) -> Result<Vec<agentos_functions::Example>, String> {
+    #[derive(serde::Deserialize)]
+    struct Raw {
+        #[serde(default)]
+        expect: String,
+        #[serde(default)]
+        args: std::collections::BTreeMap<String, String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        example: Vec<Raw>,
+    }
+    let f: File = toml::from_str(text).map_err(|e| format!("the examples do not parse: {e}"))?;
+    Ok(f.example
+        .into_iter()
+        .map(|r| agentos_functions::Example {
+            args: r.args,
+            expect: r.expect,
+        })
+        .collect())
 }
 
 fn arg<'a>(a: &'a Action, name: &str) -> Result<&'a str, String> {
@@ -106,16 +134,40 @@ impl StoreTools {
                 format!("installed {}; restart agentd to load its tools", item.name)
             }
             Kind::Android => {
-                return Err(format!(
-                    "{} needs the sandbox install path, which is not wired yet",
+                if item.apk_url.is_some() {
+                    return Err(format!(
+                        "{}: installing from an APK needs the download path, which is not wired yet",
+                        item.name
+                    ));
+                }
+                let package = item
+                    .package
+                    .clone()
+                    .ok_or_else(|| format!("{} has no package name", item.name))?;
+                let sb = self
+                    .sandbox
+                    .clone()
+                    .ok_or("there is no Android sandbox on this phone")?;
+                sb.borrow_mut().play_page(&package)?;
+                format!(
+                    "opened the store page for {}; sign in and install it there",
                     item.name
-                ))
+                )
             }
             Kind::Function => {
-                return Err(format!(
-                    "{} installs through the function store, which is not wired here yet",
-                    item.name
-                ))
+                let functions = self
+                    .functions
+                    .clone()
+                    .ok_or("the function store is not available")?;
+                let code = item.body.clone().ok_or("this function has no source")?;
+                let examples = parse_examples(item.examples.as_deref().unwrap_or(""))?;
+                // a failing example refuses the write: nothing is installed
+                let mut f = functions.borrow_mut();
+                // a function's name is an identifier: the item id with underscores
+                let name = item.id.replace('-', "_");
+                let version = f.write(&name, &item.summary, &item.args, &code, examples)?;
+                f.install(&name, version)?;
+                format!("installed {} as version {version}", item.name)
             }
             Kind::Planned => return Err(format!("{} is not installable yet", item.name)),
         };
@@ -226,6 +278,8 @@ mod tests {
                 items: crate::parse(catalog_text).unwrap(),
             },
             dir: dir.to_path_buf(),
+            functions: None,
+            sandbox: None,
         }
     }
 
@@ -323,5 +377,138 @@ endpoint = "https://maps.example/mcp"
             .unwrap_err()
             .contains("not installable yet"));
         assert!(installed(&dir).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod install_paths {
+    use super::*;
+    use agentos_functions::{Compiler, FunctionStore};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    const SPLIT: &str = "fn run(args: &Args) -> Result<String, String> {\n    let each = args.num(\"total\")? / args.num(\"people\")?;\n    Ok(format!(\"{:.2}\", each))\n}";
+
+    fn function_item(examples: &str) -> Item {
+        Item {
+            id: "split-bill".into(),
+            name: "Split bill".into(),
+            kind: Kind::Function,
+            publisher: String::new(),
+            category: "Tools".into(),
+            summary: "Split a bill between people".into(),
+            mode: "Built in".into(),
+            endpoint: None,
+            package: None,
+            apk_url: None,
+            apk_sha256: None,
+            instructions: None,
+            tools: vec![],
+            body: Some(SPLIT.into()),
+            args: vec!["total".into(), "people".into()],
+            examples: Some(examples.into()),
+        }
+    }
+
+    fn tools_with(
+        dir: &Path,
+        item: Item,
+        functions: Option<agentos_functions::Shared>,
+        sandbox: Option<agentos_android::Shared>,
+    ) -> StoreTools {
+        StoreTools {
+            catalog: Catalog { items: vec![item] },
+            dir: dir.to_path_buf(),
+            functions,
+            sandbox,
+        }
+    }
+
+    fn act(tool: &str, args: &[(&str, &str)]) -> Action {
+        Action {
+            tool: tool.into(),
+            args: args
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn store() -> agentos_functions::Shared {
+        let work = std::env::temp_dir().join(format!("store-fn-{}", std::process::id()));
+        Rc::new(RefCell::new(FunctionStore::in_memory(
+            &["send_sms"],
+            Compiler::new("rustc".into(), work),
+        )))
+    }
+
+    const GOOD: &str = "[[example]]\nargs = { total = \"900\", people = \"3\" }\nexpect = \"300.00\"\n\n[[example]]\nargs = { total = \"100\", people = \"4\" }\nexpect = \"25.00\"\n\n[[example]]\nargs = { total = \"10\", people = \"3\" }\nexpect = \"3.33\"\n";
+    const WRONG: &str = "[[example]]\nargs = { total = \"900\", people = \"3\" }\nexpect = \"999\"\n\n[[example]]\nargs = { total = \"100\", people = \"4\" }\nexpect = \"25.00\"\n\n[[example]]\nargs = { total = \"10\", people = \"3\" }\nexpect = \"3.33\"\n";
+
+    #[test]
+    fn a_function_with_passing_examples_is_installed() {
+        let dir = std::env::temp_dir().join(format!("store-fn-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let f = store();
+        let mut t = tools_with(&dir, function_item(GOOD), Some(f.clone()), None);
+        let said = t
+            .call(&act("store_install", &[("id", "split-bill")]))
+            .unwrap();
+        assert!(said.contains("version 1"), "{said}");
+        assert_eq!(
+            f.borrow().funcs.get("split_bill").and_then(|x| x.installed),
+            Some(1)
+        );
+        assert!(installed(&dir).contains(&"split-bill".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_function_with_a_failing_example_is_refused_and_nothing_is_installed() {
+        let dir = std::env::temp_dir().join(format!("store-fn-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let f = store();
+        let mut t = tools_with(&dir, function_item(WRONG), Some(f.clone()), None);
+        assert!(t
+            .call(&act("store_install", &[("id", "split-bill")]))
+            .is_err());
+        assert!(f.borrow().funcs.get("split_bill").is_none());
+        assert!(installed(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_android_item_without_an_apk_opens_its_store_page_in_the_sandbox() {
+        let dir = std::env::temp_dir().join(format!("store-and-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let sb: agentos_android::Shared = Rc::new(RefCell::new(Box::new(
+            agentos_android::SimSandbox::default(),
+        )));
+        let item = Item {
+            id: "whatsapp".into(),
+            name: "WhatsApp".into(),
+            kind: Kind::Android,
+            publisher: String::new(),
+            category: "Messaging".into(),
+            summary: "Messages".into(),
+            mode: "Sandbox".into(),
+            endpoint: None,
+            package: Some("com.whatsapp".into()),
+            apk_url: None,
+            apk_sha256: None,
+            instructions: None,
+            tools: vec![],
+            body: None,
+            args: vec![],
+            examples: None,
+        };
+        let mut t = tools_with(&dir, item, None, Some(sb.clone()));
+        assert!(t
+            .call(&act("store_install", &[("id", "whatsapp")]))
+            .unwrap()
+            .contains("store page"));
+        let apps = sb.borrow_mut().apps().unwrap();
+        assert!(apps.iter().any(|a| a.package == "com.whatsapp"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

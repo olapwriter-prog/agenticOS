@@ -10,4 +10,6 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
 agentos-update = { path = "../update" }
+agentos-functions = { path = "../functions" }
+agentos-android = { path = "../android" }
 ed25519-dalek = "2"

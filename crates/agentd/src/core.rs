@@ -360,6 +360,8 @@ impl Core {
         connectors.push(Box::new(agentos_catalog::store::StoreTools {
             catalog: store_catalog,
             dir: dir.clone(),
+            functions: Some(functions.clone()),
+            sandbox: android.clone(),
         }));
         let android_on = android.is_some();
         let setup_path = dir.join("setup.json");

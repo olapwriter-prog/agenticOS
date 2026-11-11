@@ -33,6 +33,10 @@ pub trait Sandbox {
     fn install(&mut self, apk_path: &str) -> Result<(), String>;
     /// closes every Android app and ends the session
     fn stop_all(&mut self) -> Result<(), String>;
+    /// opens the app's store page, where the owner signs in and installs it by touch
+    fn play_page(&mut self, _package: &str) -> Result<(), String> {
+        Err("this sandbox cannot open the store page".into())
+    }
 }
 
 /// Waydroid through its command line.
@@ -103,6 +107,12 @@ impl Sandbox for Waydroid {
         self.waydroid(&format!("app install {apk_path}"))
             .map(|_| ())
     }
+    fn play_page(&mut self, package: &str) -> Result<(), String> {
+        self.waydroid(&format!(
+            "app intent android.intent.action.VIEW market://details?id={package}"
+        ))
+        .map(|_| ())
+    }
     fn stop_all(&mut self) -> Result<(), String> {
         self.waydroid("session stop")?;
         if self.sway {
@@ -159,6 +169,10 @@ impl Sandbox for SimSandbox {
     fn stop_all(&mut self) -> Result<(), String> {
         self.open.clear();
         self.stops += 1;
+        Ok(())
+    }
+    fn play_page(&mut self, package: &str) -> Result<(), String> {
+        self.installed.push(package.to_string());
         Ok(())
     }
 }
