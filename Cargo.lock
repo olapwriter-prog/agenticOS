@@ -129,6 +129,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-catalog"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "agentos-commercial"
 version = "0.1.0"
 dependencies = [
