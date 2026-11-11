@@ -1,153 +1,332 @@
-//! Home: what waits for the human, what the agent did lately, and chat.
+//! Home: the agent first. A greeting, the question box, what needs you, quick actions, the
+//! conversation, and what happened today.
 use crate::State;
-use crate::widgets::{BAD, GOOD, button, card, line, quiet, str_of};
-use rune::tok::{Theme, type_};
-use rune::{Color, El, Tx, col, el, row, text_input};
+use crate::icons;
+use crate::theme::*;
+use rune::{El, Tx, col, el, icon, row, text_input};
+use serde_json::{Value, json};
 
-/// The Home cards, scrollable; the chat box is placed by the caller, below them.
-pub fn cards(st: &serde_json::Value, t: Theme, accent: Color) -> El {
-    let mut cards = col().key("cards").w_full().gap(12.0);
-
-    // what is waiting for the human: the approval key, on screen
-    let pending = st["pending"].as_array().cloned().unwrap_or_default();
-    if !pending.is_empty() {
-        let mut list = col().gap(10.0);
-        for p in &pending {
-            let id = p["id"].as_u64().unwrap_or(0);
-            let args: Vec<String> = p["args"]
-                .as_object()
-                .map(|m| {
-                    m.iter()
-                        .map(|(k, v)| format!("{k}: {}", str_of(v)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            list = list.child(
-                row()
-                    .key(format!("pending-{id}"))
-                    .w_full()
-                    .center_y()
-                    .gap(8.0)
-                    // the details give way to the buttons, never the other way round
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .shrink()
-                            .min_w(0.0)
-                            .gap(2.0)
-                            .child(line(str_of(&p["tool"]).replace('_', " "), t).truncate())
-                            .child(quiet(args.join("  ·  "), t).truncate()),
-                    )
-                    .child(
-                        button(format!("decline-{id}"), "Decline", t.control_off, t.text)
-                            .on_press(move |s: &mut State| s.send(format!("decline {id}"))),
-                    )
-                    .child(
-                        button(format!("approve-{id}"), "Approve", accent, t.text).on_press(
-                            move |s: &mut State| {
-                                // with a PIN set, the sheet asks for it first
-                                if s.snap["pin_set"].as_bool() == Some(true) {
-                                    s.sheet = Some(id);
-                                } else {
-                                    s.send(format!("press {id}"));
-                                }
-                            },
-                        ),
-                    ),
-            );
-        }
-        cards = cards.child(card("waiting", "Waiting for you", list, t));
+fn greeting(time: &str) -> &'static str {
+    let hour: u32 = time
+        .split(':')
+        .next()
+        .and_then(|h| h.parse().ok())
+        .unwrap_or(12);
+    match hour {
+        5..=11 => "Good morning",
+        12..=16 => "Good afternoon",
+        17..=21 => "Good evening",
+        _ => "Hello",
     }
-
-    // what the agent did lately, and how it went
-    let recent = st["recent"].as_array().cloned().unwrap_or_default();
-    let mut acts = col().gap(6.0);
-    if recent.is_empty() {
-        acts = acts.child(quiet("Nothing yet. Ask something below.", t));
-    }
-    for (i, e) in recent.iter().enumerate() {
-        let r = e["reward"].as_f64().unwrap_or(0.0);
-        let dot = el().size(8.0, 8.0).radius(4.0).fill(if r > 0.0 {
-            GOOD
-        } else if r < 0.0 {
-            BAD
-        } else {
-            t.control_off
-        });
-        let tool = str_of(&e["tool"]);
-        acts = acts.child(
-            row()
-                .key(format!("recent-{i}"))
-                .w_full()
-                .center_y()
-                .gap(8.0)
-                .child(dot)
-                .child(line(str_of(&e["prompt"]), t).grow(1.0).shrink().truncate())
-                .child(quiet(
-                    if tool.is_empty() {
-                        "no action".into()
-                    } else {
-                        tool.replace('_', " ")
-                    },
-                    t,
-                )),
-        );
-    }
-    cards = cards.child(card("recent", "Recent", acts, t));
-    cards
 }
 
-/// Chat: the last three exchanges and the input box.
-pub fn chat(s: &State, t: Theme, accent: Color) -> El {
-    let mut log = col().key("chat-log").w_full().gap(6.0);
-    for (i, (q, a)) in s.log.iter().rev().take(3).rev().enumerate() {
-        log = log
+pub fn view(s: &State, st: &Value) -> El {
+    let pending = st["pending"].as_array().cloned().unwrap_or_default();
+    let owner = st["owner"].as_str().unwrap_or("").to_string();
+    let time = st["device"]["time"].as_str().unwrap_or("12:00").to_string();
+    let stage = str_of(&st["stage"]);
+    let mut page = col().key("cards").w_full().gap(22.0);
+
+    // the greeting, and how the agent is
+    let hello = if owner.is_empty() {
+        greeting(&time).to_string()
+    } else {
+        format!("{}, {owner}", greeting(&time))
+    };
+    let mood = if !pending.is_empty() {
+        format!(
+            "{} {} you",
+            pending.len(),
+            if pending.len() == 1 {
+                "thing needs"
+            } else {
+                "things need"
+            }
+        )
+    } else {
+        "All quiet. Ask me anything.".to_string()
+    };
+    let stage_chip = row()
+        .key("stage")
+        .h(26.0)
+        .px(10.0)
+        .gap(6.0)
+        .center_y()
+        .radius(13.0)
+        .fill(SURFACE2)
+        .child(
+            el().size(7.0, 7.0)
+                .radius(3.5)
+                .fill(if stage == "Active" { GOOD } else { DIM }),
+        )
+        .child(t(
+            if stage.is_empty() {
+                "…".to_string()
+            } else {
+                stage
+            },
+            CAPTION,
+            MUTED,
+        ));
+    page = page.child(
+        col()
+            .w_full()
+            .gap(6.0)
+            .pt(8.0)
             .child(
                 row()
-                    .key(format!("you-{i}"))
                     .w_full()
-                    .child(el().grow(1.0))
-                    .child(
-                        row()
-                            .px(12.0)
-                            .h(30.0)
-                            .center()
-                            .radius(15.0)
-                            .fill(accent)
-                            .child(line(q.clone(), t)),
-                    ),
+                    .center_y()
+                    .child(t(hello, TITLE, TEXT).grow(1.0).truncate())
+                    .child(stage_chip),
             )
-            .child(
-                quiet(
-                    if a.is_empty() {
-                        "…".into()
-                    } else {
-                        a.clone()
-                    },
-                    t,
-                )
-                .key(format!("agent-{i}"))
-                .w_full()
-                .wrap(),
-            );
+            .child(t(mood, BODY, MUTED).key("title-home")),
+    );
+
+    // the question box
+    page = page.child(ask(s));
+
+    // what needs the human
+    if !pending.is_empty() {
+        let mut list = col()
+            .key("waiting")
+            .w_full()
+            .gap(12.0)
+            .child(section("Needs you"));
+        for p in &pending {
+            list = list.child(approval_card(p));
+        }
+        page = page.child(list);
     }
-    let input = text_input(&s.chat, type_::BODY)
-        .key("chat")
-        .single_line()
-        .placeholder("Ask the agent…", t.text_secondary)
+
+    // quick actions
+    let mut quick = row().key("quick").w_full().gap(10.0);
+    for (k, ic, label, say, c) in [
+        ("quick-torch", &icons::BOLT, "Torch", "torch on", WARN),
+        ("quick-signal", &icons::SIGNAL, "Signal", "signal", GOOD),
+        ("quick-wifi", &icons::WIFI, "Wi-Fi", "scan wifi", ACCENT2),
+        (
+            "quick-messages",
+            &icons::MESSAGE,
+            "Inbox",
+            "read my messages",
+            ACCENT,
+        ),
+    ] {
+        quick = quick.child(quick_tile(k, ic, label, c).on_press(move |s: &mut State| s.ask(say)));
+    }
+    page = page.child(quick);
+
+    // the conversation
+    if !s.log.is_empty() {
+        let mut conv = col().key("chat-log").w_full().gap(10.0);
+        for (i, (q, a)) in s.log.iter().rev().take(3).rev().enumerate() {
+            conv = conv
+                .child(
+                    row()
+                        .key(format!("you-{i}"))
+                        .w_full()
+                        .child(el().grow(1.0))
+                        .child(
+                            row()
+                                .px(16.0)
+                                .py(10.0)
+                                .radius(20.0)
+                                .linear_gradient(
+                                    90.0,
+                                    [(0.0, ACCENT), (1.0, ACCENT.mix(ACCENT2, 0.3))],
+                                )
+                                .child(t(q.clone(), BODY, rune::Color::WHITE).wrap()),
+                        ),
+                )
+                .child(
+                    row()
+                        .key(format!("agent-{i}"))
+                        .w_full()
+                        .gap(10.0)
+                        .child(tile(&icons::SPARK, ACCENT, 30.0))
+                        .child(
+                            col()
+                                .grow(1.0)
+                                .shrink()
+                                .min_w(0.0)
+                                .px(14.0)
+                                .py(10.0)
+                                .radius(18.0)
+                                .fill(SURFACE)
+                                .border(1.0, HAIRLINE)
+                                .child(
+                                    t(
+                                        if a.is_empty() {
+                                            "Thinking…".to_string()
+                                        } else {
+                                            a.clone()
+                                        },
+                                        BODY,
+                                        if a.is_empty() { DIM } else { TEXT },
+                                    )
+                                    .w_full()
+                                    .wrap(),
+                                ),
+                        ),
+                );
+        }
+        page = page.child(conv);
+    }
+
+    // today
+    let recent = st["recent"].as_array().cloned().unwrap_or_default();
+    let mut today = col()
+        .key("recent")
         .w_full()
-        .h(40.0)
-        .px(14.0)
-        .radius(20.0)
-        .fill(t.card)
-        .on_edit(|s: &mut State| &mut s.chat)
-        .on_submit(|s: &mut State, _tx: &mut Tx| {
-            let said = s.chat.text.trim().to_string();
-            if !said.is_empty() {
-                s.log.push((said.clone(), String::new()));
-                s.send(format!("chat {said}"));
-            }
-            s.chat.clear();
-        });
-    col().w_full().gap(8.0).child(log).child(input)
+        .gap(10.0)
+        .child(section("Today"));
+    let mut box_ = card("recent-card").gap(0.0).py(6.0);
+    if recent.is_empty() {
+        box_ = box_
+            .py(16.0)
+            .child(t("Nothing yet. What you ask shows here.", BODY, MUTED));
+    }
+    for (i, e) in recent.iter().enumerate() {
+        let tool = str_of(&e["tool"]);
+        let (ic, c, title, _) = describe(&tool, &json!({}));
+        let ok = e["reward"].as_f64().unwrap_or(0.0);
+        let status = if ok > 0.0 {
+            GOOD
+        } else if ok < 0.0 {
+            BAD
+        } else {
+            DIM
+        };
+        if i > 0 {
+            box_ = box_.child(divider());
+        }
+        box_ = box_.child(list_row(
+            &format!("recent-{i}"),
+            tile(ic, c, 36.0),
+            &title,
+            &str_of(&e["prompt"]),
+            Some(el().size(8.0, 8.0).radius(4.0).fill(status)),
+        ));
+    }
+    today = today.child(box_);
+    page.child(today)
+}
+
+/// The question box: type, then send. It is the main way to use the phone.
+fn ask(s: &State) -> El {
+    row()
+        .key("ask")
+        .w_full()
+        .h(58.0)
+        .pl(16.0)
+        .pr(6.0)
+        .gap(10.0)
+        .center_y()
+        .radius(29.0)
+        .fill(SURFACE)
+        .border(1.0, ACCENT.alpha(0.35))
+        .child(icon(&icons::SPARK, 20.0).color(ACCENT))
+        .child(
+            text_input(&s.chat, BODY)
+                .key("chat")
+                .single_line()
+                .placeholder("Ask anything…", DIM)
+                .grow(1.0)
+                .h(22.0)
+                .on_edit(|s: &mut State| &mut s.chat)
+                .on_submit(|s: &mut State, _tx: &mut Tx| {
+                    let said = s.chat.text.trim().to_string();
+                    s.chat.clear();
+                    s.ask(&said);
+                }),
+        )
+        .child(
+            round(
+                "ask-send",
+                &icons::SEND,
+                46.0,
+                ACCENT,
+                rune::Color::WHITE,
+                "Send",
+            )
+            .on_press(|s: &mut State| {
+                let said = s.chat.text.trim().to_string();
+                s.chat.clear();
+                s.ask(&said);
+            }),
+        )
+}
+
+/// One action that waits: what it is, in words, and Decline or Approve.
+fn approval_card(p: &Value) -> El {
+    let id = p["id"].as_u64().unwrap_or(0);
+    let tool = str_of(&p["tool"]);
+    let (ic, c, title, sub) = describe(&tool, &p["args"]);
+    col()
+        .key(format!("pending-{id}"))
+        .w_full()
+        .padding(16.0)
+        .gap(14.0)
+        .radius(22.0)
+        .fill(SURFACE)
+        .border(1.0, c.alpha(0.35))
+        .child(
+            row()
+                .w_full()
+                .gap(14.0)
+                .center_y()
+                .child(tile(ic, c, 44.0))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .gap(2.0)
+                        .child(t(title, HEADLINE, TEXT).truncate())
+                        .child(
+                            t(
+                                if sub.is_empty() {
+                                    "Waits for your approval".into()
+                                } else {
+                                    sub
+                                },
+                                CAPTION,
+                                MUTED,
+                            )
+                            .truncate(),
+                        ),
+                )
+                .child(icon(&icons::LOCK, 16.0).color(DIM)),
+        )
+        .child(
+            row()
+                .w_full()
+                .gap(10.0)
+                .child(
+                    pill(&format!("decline-{id}"), "Decline", SURFACE2, TEXT)
+                        .grow(1.0)
+                        .h(44.0)
+                        .on_press(move |s: &mut State| s.send(format!("decline {id}"))),
+                )
+                .child(
+                    pill(
+                        &format!("approve-{id}"),
+                        "Approve",
+                        ACCENT,
+                        rune::Color::WHITE,
+                    )
+                    .grow(1.0)
+                    .h(44.0)
+                    .on_press(move |s: &mut State| {
+                        // with a PIN set, the sheet asks for it first
+                        if s.snap["pin_set"].as_bool() == Some(true) {
+                            s.sheet = Some(id);
+                            s.pin.clear();
+                        } else {
+                            s.send(format!("press {id}"));
+                        }
+                    }),
+                ),
+        )
 }

@@ -136,6 +136,8 @@ pub struct Core {
     messages_log: std::collections::VecDeque<Value>,
     /// The phone's status text, kept for 5 seconds: reading it runs the modem tools.
     phone_status_cache: Option<(u64, String)>,
+    /// The same reading, as data, for the screen's status bar.
+    net_cache: Option<(u64, Option<agentos_phone::backend::NetStatus>)>,
     /// Wrong approval PINs in a row, and until when presses are refused.
     pin_failures: u32,
     pin_locked_until_ms: u64,
@@ -554,6 +556,7 @@ impl Core {
             calls_log: std::collections::VecDeque::new(),
             messages_log: std::collections::VecDeque::new(),
             phone_status_cache: None,
+            net_cache: None,
             pin_failures: 0,
             pin_locked_until_ms: 0,
             android,
@@ -1580,6 +1583,8 @@ impl Core {
             "functions": lines(self.functions.borrow().list()),
             "learning": self.learner.stats(),
             "setup": self.setup_state(),
+            "device": self.device_state(),
+            "owner": self.setup.answers.get("owner").cloned(),
             "store": {"installed": agentos_catalog::store::installed(&self.cfg.data_dir)},
             "android": self.android_state(),
             "memory": self.memory_state(),
@@ -1625,6 +1630,39 @@ impl Core {
             .as_ref()
             .map(|(r, at)| json!({"reason": r, "at_ms": at}));
         json!({"mode": self.cfg.android, "running": running, "apps": apps, "last_stop": last})
+    }
+
+    /// What the status bar shows: time, battery, signal, network and Wi-Fi, read at most every
+    /// 5 seconds (the modem is asked through its tools).
+    fn device_state(&mut self) -> Value {
+        let now = self.clock.now_ms();
+        let fresh = self
+            .net_cache
+            .as_ref()
+            .is_some_and(|(at, _)| now.saturating_sub(*at) < 5_000);
+        if !fresh {
+            let net = self.phone.borrow_mut().backend.status().ok();
+            self.net_cache = Some((now, net));
+        }
+        let net = self.net_cache.as_ref().and_then(|(_, n)| n.clone());
+        // the wall clock in the configured time zone (the daemon's own clock may be simulated)
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+            + self.cfg.utc_offset_minutes as i64 * 60;
+        let minute = secs.div_euclid(60).rem_euclid(24 * 60);
+        json!({
+            "time": format!("{}:{:02}", minute / 60, minute % 60),
+            "battery": self.power.level_percent(),
+            "charging": self.power.on_charger(),
+            "signal": net.as_ref().map(|n| n.signal),
+            "tech": net.as_ref().map(|n| n.tech.to_uppercase()),
+            "operator": net.as_ref().map(|n| n.operator.clone()),
+            "wifi": net.as_ref().and_then(|n| n.wifi.clone()),
+            "mobile_data": net.as_ref().map(|n| n.mobile_data),
+            "airplane": net.as_ref().map(|n| n.airplane),
+        })
     }
 
     /// The setup screen while setup is not done, null afterwards.

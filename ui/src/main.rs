@@ -1,22 +1,22 @@
 //! agentos-ui: the phone's screen, built with Rune. The OS itself is headless: agentd is the
-//! phone, and this app is only one of its clients, talking to it over the same control socket as
-//! `agentd ctl`. It shows what the agent is doing and lets you answer it: approve or decline a
-//! call or text, see recent actions, the model and the chip, your functions, and chat.
+//! phone, and this app is one of its clients, talking to it over the same control socket as
+//! `agentd ctl`. The design is a phone's: a status bar, an agent-first Home, a floating tab bar,
+//! sheets from the bottom, and one accent colour on a dark ground, drawn with flat fills.
 //!
-//!   agentos-ui                         open the window (socket: $AGENTD_SOCK or /run/agentd.sock)
+//!   agentos-ui                               open the window (socket: $AGENTD_SOCK or /run/agentd.sock)
 //!   agentos-ui --snap ui.png --scene demo    render headless, with sample data
 //!   agentos-ui --snap ui.png --scene live    render headless, from a running agentd
+//!     (live takes AGENTOS_TAB, AGENTOS_SEG and AGENTOS_SHEET to show a given screen)
+mod icons;
 mod screens;
-mod widgets;
+mod theme;
 
-use rune::tok::{self, type_};
-use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, row, text};
+use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, el};
 use screens::{android, approval, home, phone, setup, store, system};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
-use widgets::{button, str_of};
 
 /// Where agentd listens.
 fn socket() -> String {
@@ -50,6 +50,17 @@ enum Event {
 }
 
 /// The Phone tab's segments.
+/// The bottom tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Home,
+    Phone,
+    Store,
+    Android,
+    System,
+}
+
+/// The Phone tab's segments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seg {
     Recents,
@@ -61,7 +72,9 @@ pub enum Seg {
 pub struct State {
     pub tab: Tab,
     pub seg: Seg,
-    /// text fields
+    pub snap: Value,
+    pub error: Option<String>,
+    pub chat: TextEdit,
     pub setup_input: TextEdit,
     pub keypad: TextEdit,
     pub new_name: TextEdit,
@@ -69,18 +82,20 @@ pub struct State {
     pub store_q: TextEdit,
     pub token: TextEdit,
     pub paste: TextEdit,
-    /// the PIN being typed on the approval sheet (never logged or sent unmasked)
+    /// digits typed on a PIN pad; never logged or sent unmasked
     pub pin: String,
+    pub setup_pin: String,
     /// the pending action whose sheet is open
     pub sheet: Option<u64>,
-    /// (what was asked, what came back) for the store and sandbox commands, newest last
-    pub replies: Vec<(String, String)>,
-    snap: Value,
-    error: Option<String>,
-    pub chat: TextEdit,
+    /// the Settings row that is open
+    pub expanded: Option<String>,
+    /// Restart was tapped once; a second tap restarts
+    pub confirm_restart: bool,
     /// (what you said, what the agent answered)
     pub log: Vec<(String, String)>,
-    /// every command sent, newest last (tests read this)
+    /// (what was asked, what came back) for the store and sandbox commands, newest last
+    pub replies: Vec<(String, String)>,
+    /// every command sent, newest last, with secrets masked (tests read this)
     pub sent: Vec<String>,
     link: Option<Sender<String>>,
     inbox: Option<Receiver<Event>>,
@@ -91,6 +106,9 @@ impl State {
         State {
             tab: Tab::Home,
             seg: Seg::Recents,
+            snap: Value::Null,
+            error: None,
+            chat: TextEdit::new(""),
             setup_input: TextEdit::new(""),
             keypad: TextEdit::new(""),
             new_name: TextEdit::new(""),
@@ -99,28 +117,47 @@ impl State {
             token: TextEdit::new(""),
             paste: TextEdit::new(""),
             pin: String::new(),
+            setup_pin: String::new(),
             sheet: None,
-            replies: vec![],
-            snap: Value::Null,
-            error: None,
-            chat: TextEdit::new(""),
+            expanded: None,
+            confirm_restart: false,
             log: vec![],
+            replies: vec![],
             sent: vec![],
             link: None,
             inbox: None,
         }
     }
-    /// Send a control command; the answer arrives later through `poll`.
+
     pub fn send(&mut self, line: String) {
         self.send_shown(line.clone(), line);
     }
 
-    /// Send `line`, but record `shown` (with secrets masked) in what the UI keeps.
+    /// Send `line`, but keep `shown` (with secrets masked) in what the UI records.
     pub fn send_shown(&mut self, line: String, shown: String) {
         if let Some(l) = &self.link {
             let _ = l.send(line);
         }
         self.sent.push(shown);
+    }
+
+    /// Ask the agent in words: the question goes in the conversation and to agentd.
+    pub fn ask(&mut self, said: &str) {
+        let said = said.trim();
+        if said.is_empty() {
+            return;
+        }
+        self.log.push((said.to_string(), String::new()));
+        self.send(format!("chat {said}"));
+    }
+
+    /// Send what is in the setup box as the answer to the current step.
+    pub fn setup_submit(&mut self) {
+        let said = self.setup_input.text.trim().to_string();
+        self.setup_input.clear();
+        if !said.is_empty() {
+            self.send(format!("setup answer {said}"));
+        }
     }
 }
 
@@ -196,144 +233,66 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
     true
 }
 
-// ---- look -----------------------------------------------------------------------------------
-
-const H1: rune::tok::TextStyle = rune::tok::TextStyle::new(22.0, 700.0);
-
-/// The bottom tabs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tab {
-    Home,
-    Phone,
-    Store,
-    Android,
-    System,
-}
-
 fn view(s: &State, _: &mut Cx<State>) -> El {
-    let t = tok::theme(true);
-    let accent = tok::accent(0, true);
     let st = &s.snap;
-
-    let stage = str_of(&st["stage"]);
-    let header = row()
-        .key("header")
-        .w_full()
-        .center_y()
-        .gap(10.0)
-        .child(text("Agentic OS").font(H1).color(t.text).grow(1.0))
-        .child(
-            row()
-                .key("stage")
-                .h(24.0)
-                .px(10.0)
-                .center()
-                .radius(12.0)
-                .fill(if stage == "Active" {
-                    accent
-                } else {
-                    t.control_off
-                })
+    // while setup is not done it takes the whole screen
+    if !st["setup"].is_null() {
+        return setup::view(s, st);
+    }
+    let waiting = st["pending"].as_array().map_or(0, |p| p.len());
+    let body = match s.tab {
+        Tab::Home => home::view(s, st),
+        Tab::Phone => phone::view(s, st),
+        Tab::Store => store::view(s, st),
+        Tab::Android => android::view(s, st),
+        Tab::System => system::view(s, st),
+    };
+    let mut content = col().w_full().gap(14.0).px(20.0).pb(110.0);
+    if let Some(e) = &s.error {
+        content = content.child(
+            col()
+                .key("status")
+                .w_full()
+                .padding(12.0)
+                .radius(14.0)
+                .fill(theme::BAD.alpha(0.12))
                 .child(
-                    text(if stage.is_empty() {
-                        "…".to_string()
-                    } else {
-                        stage.clone()
-                    })
-                    .font(type_::LABEL)
-                    .color(t.text),
+                    theme::t(e.clone(), theme::CAPTION, theme::BAD)
+                        .w_full()
+                        .wrap(),
                 ),
         );
-    let status = widgets::quiet(
-        match &s.error {
-            Some(e) => e.clone(),
-            None => format!("{}  ·  {}", str_of(&st["status"]), str_of(&st["phone"])),
-        },
-        t,
-    )
-    .key("status")
-    .w_full()
-    .wrap();
-
-    let (key, title) = match s.tab {
-        Tab::Home => ("home", "Home"),
-        Tab::Phone => ("phone", "Phone"),
-        Tab::Store => ("store", "Store"),
-        Tab::Android => ("android", "Android"),
-        Tab::System => ("system", "System"),
-    };
-    let title_el = text(title)
-        .key(format!("title-{key}"))
-        .font(H1)
-        .color(t.text);
-
-    let body = match s.tab {
-        Tab::Home => home::cards(st, t, accent),
-        Tab::System => system::view(s, st, t, accent),
-        Tab::Phone => phone::view(s, st, t, accent),
-        Tab::Store => store::view(s, st, t, accent),
-        Tab::Android => android::view(s, st, t, accent),
-    };
-
-    // the tab bar: five tabs, the one shown in the accent colour
-    let mut bar = row().key("tabs").w_full().gap(6.0);
-    for (tab, label, k) in [
-        (Tab::Home, "Home", "tab-home"),
-        (Tab::Phone, "Phone", "tab-phone"),
-        (Tab::Store, "Store", "tab-store"),
-        (Tab::Android, "Android", "tab-android"),
-        (Tab::System, "System", "tab-system"),
-    ] {
-        let active = s.tab == tab;
-        bar = bar.child(
-            button(
-                k.to_string(),
-                label,
-                if active { accent } else { t.control_off },
-                t.text,
-            )
-            .grow(1.0)
-            .on_press(move |s: &mut State| s.tab = tab),
-        );
     }
-
-    // while setup is not done it is shown over everything
-    if !st["setup"].is_null() {
-        return setup::view(s, st, t, accent);
-    }
+    content = content.child(body);
     let mut page = col()
         .w_full()
         .h_full()
-        .padding(16.0)
-        .gap(12.0)
-        .fill(t.bg)
-        .child(header)
-        .child(status)
-        .child(title_el)
+        .fill(theme::BG)
+        .child(theme::status_bar(st))
         .child(
-            body.scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .grow(1.0)
-            .min_h(0.0),
-        );
-    if s.tab == Tab::Home {
-        page = page.child(screens::home::chat(s, t, accent));
-    }
-    page = page.child(bar);
-    // the approval sheet, over the page, for the action that was tapped
+            content
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .grow(1.0)
+                .min_h(0.0),
+        )
+        .child(theme::tab_bar(s.tab, waiting).pin(Some(14.0), None, Some(14.0), Some(18.0)));
     if let Some(id) = s.sheet {
-        return approval::sheet(s, id, t, accent);
+        page = page.child(approval::sheet(s, id));
     }
+    let _ = el;
     page
 }
 
-/// What a phone mid-afternoon looks like, for headless renders and tests.
+/// A phone mid-afternoon, for headless renders and tests.
 fn demo() -> Value {
     json!({
         "stage": "Active",
         "status": "Active, background work paused, battery 76%",
-        "phone": "Jio lte signal 64%, mobile data on, wifi HomeNet",
+        "phone": "Jio LTE signal 64%, mobile data on, wifi HomeNet",
+        "device": {"time": "14:32", "battery": 76, "charging": false, "signal": 64, "tech": "LTE", "operator": "Jio", "wifi": "HomeNet", "mobile_data": true, "airplane": false},
+        "owner": "Asha",
         "pending": [
             {"id": 3, "tool": "send_sms", "args": {"to": "Mum", "text": "Running 10 min late"}},
             {"id": 4, "tool": "call", "args": {"to": "Arjun"}}
@@ -345,10 +304,10 @@ fn demo() -> Value {
             {"prompt": "what's my signal like", "tool": "phone_status", "source": "model", "reward": 0.3},
             {"prompt": "make it louder", "tool": "set_volume", "source": "model", "reward": -1.0}
         ],
-        "models": ["qwen3.5-4b (small, port 8080): running pid 812, ready", "qwen3.5-9b (large, port 8081): stopped"],
-        "prio": "mode Idle, model cores [4,5,6,7] of [0,1,2,3,4,5,6,7] (fast [4,5,6,7], reserved [0]), 4 threads, temp 41.0C",
-        "functions": ["split_bill(total, people) v2: share of a bill", "add_gst(price, gst_percent) v1: price with GST"],
-        "learning": "42 episodes, 17 usable for learning, 2 corrections",
+        "models": ["qwen3.5-4b (small): running, ready", "qwen3.5-9b (large): stopped"],
+        "prio": "Idle · 4 model cores · 41°C",
+        "functions": ["split_bill v2", "add_gst v1"],
+        "learning": "42 episodes, 17 usable, 2 corrections",
         "setup": null,
         "pin_set": true,
         "calls": [
@@ -361,24 +320,42 @@ fn demo() -> Value {
         ],
         "contacts": [
             {"name": "Mum", "number": "+91 98765 43210"},
-            {"name": "Ravi", "number": "+91 98123 45678"}
+            {"name": "Ravi", "number": "+91 98123 45678"},
+            {"name": "Me", "number": "+91 90000 11111"}
         ],
         "connectors": [
             {"name": "telegram", "state": "connected", "tools": 2},
             {"name": "google", "state": "unavailable", "tools": 0}
         ],
-        "store": {"installed": ["trip-recipe"]},
+        "store": {"installed": ["trip-planner"]},
         "android": {
             "mode": "sim",
             "running": true,
             "apps": [
                 {"name": "Notes", "package": "org.example.notes"},
-                {"name": "WhatsApp", "package": "com.whatsapp"}
+                {"name": "WhatsApp", "package": "com.whatsapp"},
+                {"name": "Maps", "package": "com.google.android.apps.maps"},
+                {"name": "Uber", "package": "com.ubercab"},
+                {"name": "Flipkart", "package": "com.flipkart.android"}
             ],
             "last_stop": {"reason": "only 500 MiB free", "at_ms": 5000}
         },
         "memory": {"available_mib": 1800, "psi": 1.2}
     })
+}
+
+fn setup_demo(
+    id: &str,
+    index: u64,
+    title: &str,
+    body: &str,
+    options: Value,
+    input: Value,
+    can_skip: bool,
+) -> Value {
+    let mut d = demo();
+    d["setup"] = json!({"id": id, "index": index, "total": 13, "title": title, "body": body, "options": options, "input": input, "can_skip": can_skip, "error": null});
+    d
 }
 
 fn main() {
@@ -388,28 +365,64 @@ fn main() {
                 s.snap = demo();
                 s.log.push((
                     "how many texts did Mum send me".into(),
-                    "answer (attempt 1): Mum sent 4 texts".into(),
+                    "Mum sent 4 texts this week.".into(),
                 ));
             }),
             ("setup", |s| {
-                let mut d = demo();
-                d["setup"] = json!({
-                    "id": "wifi", "index": 2, "total": 13, "title": "Connect to Wi-Fi",
-                    "body": "Home\nOffice", "options": ["skip"], "input": "text",
-                    "can_skip": true, "error": null
-                });
-                s.snap = d;
+                s.snap = setup_demo(
+                    "wifi",
+                    2,
+                    "Connect to Wi-Fi",
+                    "",
+                    json!(["skip"]),
+                    json!("text"),
+                    true,
+                )
+            }),
+            ("setup-welcome", |s| {
+                s.snap = setup_demo(
+                    "welcome",
+                    1,
+                    "Welcome",
+                    "This phone is set for India, time zone UTC+5:30. English only for now.",
+                    json!(["yes"]),
+                    Value::Null,
+                    true,
+                )
+            }),
+            ("setup-pin", |s| {
+                s.snap = setup_demo(
+                    "pin",
+                    7,
+                    "Screen lock",
+                    "Set the approval PIN (4 to 8 digits). Every payment and message asks for it.",
+                    json!([]),
+                    json!("password"),
+                    false,
+                );
+                s.setup_pin = "43".into();
             }),
             ("phone", |s| {
                 s.snap = demo();
                 s.tab = Tab::Phone;
+            }),
+            ("contacts", |s| {
+                s.snap = demo();
+                s.tab = Tab::Phone;
+                s.seg = Seg::Contacts;
+            }),
+            ("keypad", |s| {
+                s.snap = demo();
+                s.tab = Tab::Phone;
+                s.seg = Seg::Keypad;
+                s.keypad = TextEdit::new("98765 4");
             }),
             ("store", |s| {
                 s.snap = demo();
                 s.tab = Tab::Store;
                 s.replies.push((
                     "do store_search {\"text\":\"agent\"}".into(),
-                    "trip-planner: Trip planner — Plans a trip\ndaily-digest: Daily digest — A morning summary".into(),
+                    "trip-planner: Trip planner — Plans a trip: weather, directions, events and reminders\ndaily-digest: Daily digest — A morning summary: the weather, events and texts\nbill-splitter: Bill splitter — Splits a bill between people, in any currency".into(),
                 ));
             }),
             ("android", |s| {
@@ -419,10 +432,12 @@ fn main() {
             ("system", |s| {
                 s.snap = demo();
                 s.tab = Tab::System;
+                s.expanded = Some("telegram".into());
             }),
             ("sheet", |s| {
                 s.snap = demo();
                 s.sheet = Some(3);
+                s.pin = "43".into();
             }),
             ("live", |s| {
                 match ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
@@ -430,8 +445,6 @@ fn main() {
                     Ok(v) => s.snap = v,
                     Err(e) => s.error = Some(e),
                 }
-                // for snapshots of a state: AGENTOS_TAB=home|phone|store|android|system,
-                // AGENTOS_SEG=recents|messages|contacts|keypad, AGENTOS_SHEET=<pending id>
                 s.tab = match std::env::var("AGENTOS_TAB").as_deref() {
                     Ok("phone") => Tab::Phone,
                     Ok("store") => Tab::Store,
@@ -452,7 +465,7 @@ fn main() {
         ],
         setup: Some(setup),
         poll: Some(poll),
-        min_size: Some((360.0, 600.0)),
+        min_size: Some((360.0, 640.0)),
         ..AppSpec::new("Agentic OS", (390.0, 844.0), State::new, view)
     });
 }
@@ -462,9 +475,7 @@ mod tests {
     use super::*;
     use rune::{Env, Runtime};
 
-    fn rt() -> Runtime<State> {
-        let mut s = State::new();
-        s.snap = demo();
+    fn rt_of(s: State) -> Runtime<State> {
         let mut rt = Runtime::new(
             s,
             view,
@@ -477,6 +488,11 @@ mod tests {
         rt.frame(0.0);
         rt
     }
+    fn rt() -> Runtime<State> {
+        let mut s = State::new();
+        s.snap = demo();
+        rt_of(s)
+    }
     fn tap(rt: &mut Runtime<State>, key: &str) {
         let (x, y) = rt.find(key).unwrap_or_else(|| panic!("no element {key}"));
         rt.pointer_down(x, y);
@@ -487,35 +503,39 @@ mod tests {
     }
 
     #[test]
-    fn approving_on_screen_presses_the_key_for_that_item() {
+    fn approving_without_a_pin_presses_the_key_for_that_item() {
         let mut rt = rt();
-        // no PIN set: Approve presses the key straight away
         rt.state.snap["pin_set"] = json!(false);
         rt.frame(0.0);
         tap(&mut rt, "approve-3");
         tap(&mut rt, "decline-4");
         assert_eq!(rt.state.sent, vec!["press 3", "decline 4"]);
     }
+
     #[test]
-    fn everything_the_daemon_reports_is_on_screen() {
+    fn home_shows_the_status_bar_what_waits_and_today() {
         let mut rt = rt();
         for key in [
             "header",
             "stage",
+            "ask",
+            "chat",
             "waiting",
             "pending-3",
             "pending-4",
+            "quick",
             "recent",
             "recent-4",
-            "chat",
+            "tabs",
         ] {
             assert!(rt.find(key).is_some(), "{key} missing");
         }
         tap(&mut rt, "tab-system");
-        for key in ["model", "functions"] {
+        for key in ["model", "functions", "safety", "services"] {
             assert!(rt.find(key).is_some(), "{key} missing");
         }
     }
+
     #[test]
     fn each_tab_shows_its_title() {
         let mut rt = rt();
@@ -530,27 +550,21 @@ mod tests {
             assert!(rt.find(title).is_some(), "{title} missing after {tab}");
         }
     }
+
     #[test]
-    fn nothing_waiting_means_no_waiting_card() {
+    fn nothing_waiting_means_no_waiting_section() {
         let mut s = State::new();
         let mut d = demo();
         d["pending"] = json!([]);
         s.snap = d;
-        let mut rt = Runtime::new(
-            s,
-            view,
-            (390.0, 844.0),
-            Env {
-                system_dark: true,
-                scale: 2.0,
-            },
-        );
-        rt.frame(0.0);
+        let rt = rt_of(s);
         assert!(rt.find("waiting").is_none());
     }
+
     #[test]
     fn a_chat_answer_lands_next_to_its_question() {
         let mut s = State::new();
+        s.snap = demo();
         s.log.push(("call mum".into(), String::new()));
         let (tx, rx) = channel();
         s.inbox = Some(rx);
@@ -559,44 +573,33 @@ mod tests {
             answer: "not done: approval required (id 1)".into(),
         })
         .unwrap();
-        let mut rt = Runtime::new(
-            s,
-            view,
-            (390.0, 844.0),
-            Env {
-                system_dark: true,
-                scale: 2.0,
-            },
-        );
+        let mut rt = rt_of(s);
         rt.poll = Some(poll);
-        rt.frame(0.0);
         rt.frame(1.0 / 60.0);
         assert_eq!(rt.state.log[0].1, "not done: approval required (id 1)");
     }
 
-    fn rt_with(mut snap: Value, setup: bool) -> Runtime<State> {
-        let mut s = State::new();
-        if setup {
-            snap = demo();
-            snap["setup"] = json!({"id": "wifi", "index": 2, "total": 13, "title": "Connect to Wi-Fi", "body": "Home", "options": ["skip"], "input": "text", "can_skip": true, "error": null});
-        }
-        s.snap = snap;
-        let mut rt = Runtime::new(
-            s,
-            view,
-            (390.0, 844.0),
-            Env {
-                system_dark: true,
-                scale: 2.0,
-            },
-        );
-        rt.frame(0.0);
-        rt
+    #[test]
+    fn a_quick_action_asks_the_agent() {
+        let mut rt = rt();
+        tap(&mut rt, "quick-torch");
+        assert_eq!(rt.state.sent.last().unwrap(), "chat torch on");
+        assert_eq!(rt.state.log.last().unwrap().0, "torch on");
     }
 
     #[test]
     fn setup_is_shown_over_everything_and_its_answers_are_sent() {
-        let mut rt = rt_with(Value::Null, true);
+        let mut s = State::new();
+        s.snap = setup_demo(
+            "wifi",
+            2,
+            "Connect to Wi-Fi",
+            "",
+            json!(["skip"]),
+            json!("text"),
+            true,
+        );
+        let mut rt = rt_of(s);
         assert!(rt.find("setup-screen").is_some());
         assert!(
             rt.find("tab-home").is_none(),
@@ -604,6 +607,55 @@ mod tests {
         );
         tap(&mut rt, "setup-option-0");
         assert_eq!(rt.state.sent.last().unwrap(), "setup answer skip");
+    }
+
+    #[test]
+    fn the_first_setup_step_has_no_back_button() {
+        let mut s = State::new();
+        s.snap = setup_demo(
+            "welcome",
+            1,
+            "Welcome",
+            "",
+            json!(["yes"]),
+            Value::Null,
+            true,
+        );
+        let rt = rt_of(s);
+        assert!(rt.find("setup-back").is_none());
+        let mut s = State::new();
+        s.snap = setup_demo(
+            "wifi",
+            2,
+            "Connect to Wi-Fi",
+            "",
+            json!(["skip"]),
+            json!("text"),
+            true,
+        );
+        assert!(rt_of(s).find("setup-back").is_some());
+    }
+
+    #[test]
+    fn the_setup_pin_is_typed_on_a_pad_and_sent_masked() {
+        let mut s = State::new();
+        s.snap = setup_demo(
+            "pin",
+            7,
+            "Screen lock",
+            "",
+            json!([]),
+            json!("password"),
+            false,
+        );
+        let mut rt = rt_of(s);
+        assert!(rt.find("setup-input").is_none(), "no text box for a PIN");
+        for k in ["setup-pin-4", "setup-pin-3", "setup-pin-2", "setup-pin-1"] {
+            tap(&mut rt, k);
+        }
+        tap(&mut rt, "setup-continue");
+        assert_eq!(rt.state.sent.last().unwrap(), "setup answer ****");
+        assert!(!rt.state.sent.iter().any(|s| s.contains("4321")));
     }
 
     #[test]
@@ -625,6 +677,16 @@ mod tests {
     }
 
     #[test]
+    fn approve_waits_for_four_digits() {
+        let mut rt = rt();
+        tap(&mut rt, "approve-3");
+        tap(&mut rt, "pin-1");
+        tap(&mut rt, "sheet-approve");
+        assert!(rt.state.sent.is_empty(), "one digit is not a PIN");
+        assert!(rt.state.sheet.is_some());
+    }
+
+    #[test]
     fn decline_on_the_sheet_sends_decline_and_clears_the_pin() {
         let mut rt = rt();
         tap(&mut rt, "approve-4");
@@ -642,13 +704,25 @@ mod tests {
         assert!(rt.find("contact-0").is_some());
         tap(&mut rt, "call-0");
         assert_eq!(rt.state.sent.last().unwrap(), "do call {\"to\":\"Mum\"}");
-        tap(&mut rt, "seg-keypad");
         tap(&mut rt, "answer-call");
         assert_eq!(rt.state.sent.last().unwrap(), "do answer_call {}");
     }
 
     #[test]
-    fn the_store_searches_by_category_and_installs_from_the_results() {
+    fn the_keypad_dials_what_is_typed() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-phone");
+        tap(&mut rt, "seg-keypad");
+        for k in ["kp-9", "kp-8", "kp-1"] {
+            tap(&mut rt, k);
+        }
+        tap(&mut rt, "kp-back");
+        tap(&mut rt, "keypad-call");
+        assert_eq!(rt.state.sent.last().unwrap(), "do call {\"to\":\"98\"}");
+    }
+
+    #[test]
+    fn the_store_searches_by_category_and_installs_and_removes() {
         let mut rt = rt();
         tap(&mut rt, "tab-store");
         tap(&mut rt, "chip-agents");
@@ -666,6 +740,11 @@ mod tests {
         assert_eq!(
             rt.state.sent.last().unwrap(),
             "do store_install {\"id\":\"zomato\"}"
+        );
+        tap(&mut rt, "store-remove-0");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "do store_remove {\"id\":\"trip-planner\"}"
         );
     }
 
@@ -685,10 +764,20 @@ mod tests {
     }
 
     #[test]
+    fn close_all_is_not_offered_when_nothing_runs() {
+        let mut s = State::new();
+        let mut d = demo();
+        d["android"]["running"] = json!(false);
+        s.snap = d;
+        s.tab = Tab::Android;
+        assert!(rt_of(s).find("close-all").is_none());
+    }
+
+    #[test]
     fn a_token_is_sent_masked_and_cleared_from_the_field() {
         let mut rt = rt();
         tap(&mut rt, "tab-system");
-        assert!(rt.find("connector-telegram").is_some());
+        tap(&mut rt, "connector-telegram");
         rt.state.token.text = "123:SECRET".into();
         tap(&mut rt, "connect-telegram");
         assert_eq!(
@@ -700,5 +789,27 @@ mod tests {
             "the token is cleared once sent"
         );
         assert!(!rt.state.sent.iter().any(|s| s.contains("SECRET")));
+    }
+
+    #[test]
+    fn restart_asks_for_a_second_tap() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-system");
+        tap(&mut rt, "restart");
+        assert!(rt.state.sent.is_empty(), "one tap does not restart");
+        tap(&mut rt, "restart-confirm");
+        assert_eq!(rt.state.sent.last().unwrap(), "restart");
+    }
+
+    #[test]
+    fn home_tab_shows_a_dot_when_something_waits() {
+        let rt = rt();
+        // the dot is drawn inside the Home tab; with nothing waiting there is none
+        assert!(rt.find("tab-home").is_some());
+        let mut s = State::new();
+        let mut d = demo();
+        d["pending"] = json!([]);
+        s.snap = d;
+        let _ = rt_of(s);
     }
 }
