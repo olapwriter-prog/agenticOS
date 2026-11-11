@@ -149,15 +149,18 @@ impl Catalog {
         self.items.iter().find(|i| i.id == id)
     }
 
-    /// Items whose name, summary or category contains the text, ignoring case.
+    /// Items whose name, summary, category, mode or kind contains the text, ignoring case. The kind
+    /// is searched by its name in lower case, so "agent" or "android" find those items.
     pub fn search(&self, text: &str) -> Vec<&Item> {
         let t = text.to_lowercase();
         self.items
             .iter()
             .filter(|i| {
-                [&i.name, &i.summary, &i.category]
+                let kind = format!("{:?}", i.kind).to_lowercase();
+                [&i.name, &i.summary, &i.category, &i.mode]
                     .iter()
                     .any(|f| f.to_lowercase().contains(&t))
+                    || kind.contains(&t)
             })
             .collect()
     }
@@ -208,6 +211,18 @@ mod tests {
     fn an_unknown_kind_is_an_error_that_names_the_item() {
         let e = parse("[[item]]\nid = \"oops\"\nname = \"Oops\"\nkind = \"bogus\"\n").unwrap_err();
         assert!(e.contains("oops") && e.contains("bogus"), "{e}");
+    }
+
+    #[test]
+    fn a_search_by_kind_finds_that_kind() {
+        let c = seed();
+        // the text search also reads summaries, so it finds every agent (and a few planned items that
+        // mention agents in their text)
+        let found = c.search("agent");
+        for a in c.items.iter().filter(|i| i.kind == Kind::Agent) {
+            assert!(found.iter().any(|i| i.id == a.id), "{} not found", a.id);
+        }
+        assert!(c.search("android").iter().any(|i| i.id == "whatsapp"));
     }
 
     #[test]
