@@ -167,3 +167,26 @@ Known issues to decide:
 - Android package names for WhatsApp, Instagram and the others are from memory and marked CHECK
   in `os/catalog/catalog.toml`; DigiLocker, mAadhaar and IRCTC are planned until confirmed on a phone.
 - The control loop now ticks by the clock, not only when idle (found while testing C3).
+
+## The executable build plan (v2): update, what is left
+Since the list above, done with tests: E2 in full except APK downloads (functions and the Android
+store page now install); E3 (run skill), E4 (agents answer with only their listed tools), E5 (a
+signed catalogue, `store refresh`); F1 to F9 (the UI: module split, tab bar, setup over everything,
+approval sheet with PIN pad, Phone, Services, Store, Android, System); F10 agent side (sway config,
+the screen service, the ui subpackage, the workspace switch around Waydroid).
+
+Still open, and why:
+- B6 (OAuth for remote MCP servers): stretch; the plan wants each server's sign-in rules read first.
+- C4 and G1 to G7 (the phone, the modem, Waydroid, the screen on the GPU, measurements): need hardware.
+- F0 (Stitch designs) and F10's device checks (the screen on the GPU, the keyboard signal, the
+  Waydroid app_id): need the device and a person.
+- G6 (session tools as the screen user): the phone's audio and vibration currently run as the
+  agentd-session user; moving them to the screen user needs the device to confirm it.
+- G4 (parsers on real fixtures) and G8 (D-Bus signals instead of polling, optional): after G3.
+- APK installs from the store: the HTTP layer returns text, so a binary download needs a bytes path.
+- The Android package names in the catalogue are from memory and marked CHECK.
+
+Behaviour to know:
+- Saying `run skill` again after a key approval runs the earlier steps again (duplicates are possible).
+- The UI's Approve button opens the PIN sheet when a PIN is set, and sends the press directly otherwise.
+- The UI's snapshot renders headless with `--snap`; the release build with LTO is slow (several minutes).
