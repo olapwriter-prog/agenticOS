@@ -127,3 +127,17 @@ Losses identical to four decimals. A batch of 4 now costs about what one example
 - Found while testing: a pptx slide id was read from `id` instead of `r:id`; LibreOffice PDFs gave
   no text with lopdf 0.34; skill frontmatter with an unquoted `: ` broke strict YAML; the phonesim
   scripts' startup wait never waited. All fixed.
+- **The 4B model with and without a skill excerpt** (Qwen3.5-4B Q4_K_M, agentos-llm on the x86
+  build machine's CPU, 100-token answers, 5 questions, graded by key phrases):
+  - Correct with the excerpt: 4 of 5. Without it: 1 of 5.
+  - Without the excerpt the model gave an old model id, a wrong DPoP fix, an invented Next.js
+    setting and a deploy command missing `--source`.
+  - The search found the right skill for 3 of the 5 questions as written. It missed the Next.js
+    question (it picked an Application Insights guide, and the answer stayed wrong) and the Cloud
+    Run question (it picked a load balancer guide). On Cloud Run the model said the guide did not
+    cover it and still gave `--source` from what it knew; the grader counted that as correct.
+  - Cost: prompts go from about 45 tokens to 670 to 890. That took answers from 26 to 190 s up to
+    570 to 640 s on this CPU. The phone's NEON path has not been measured for this.
+  - Next: improve the search for short questions that use none of the guide's own words (Next.js,
+    lucide). For example, weight the skill name and description, and expand terms such as "cold
+    start" to "bundle".
