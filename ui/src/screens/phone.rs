@@ -1,7 +1,7 @@
 //! The Phone tab (F5): recent calls, messages, contacts and a keypad. Every action is a tool call,
 //! so the same tiers and approval steps apply as in chat.
-use crate::{Seg, State};
 use crate::widgets::{button, card, line, quiet, str_of};
+use crate::{Seg, State};
 use rune::tok::{Theme, radius, type_};
 use rune::{Color, El, col, row, text_input};
 use serde_json::json;
@@ -15,7 +15,11 @@ pub fn view(s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
         (Seg::Keypad, "Keypad", "seg-keypad"),
     ] {
         let fill = if s.seg == seg { accent } else { t.control_off };
-        segs = segs.child(button(key.into(), label, fill, t.text).grow(1.0).on_press(move |s: &mut State| s.seg = seg));
+        segs = segs.child(
+            button(key.into(), label, fill, t.text)
+                .grow(1.0)
+                .on_press(move |s: &mut State| s.seg = seg),
+        );
     }
 
     let body = match s.seg {
@@ -30,7 +34,13 @@ pub fn view(s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
         .w_full()
         .child(quiet(str_of(&st["phone"]), t).grow(1.0).shrink().truncate());
 
-    col().key("phone").w_full().gap(12.0).child(header).child(segs).child(body)
+    col()
+        .key("phone")
+        .w_full()
+        .gap(12.0)
+        .child(header)
+        .child(segs)
+        .child(body)
 }
 
 fn recents(st: &serde_json::Value, t: Theme) -> El {
@@ -50,8 +60,9 @@ fn recents(st: &serde_json::Value, t: Theme) -> El {
                 .child(line(who.clone(), t).grow(1.0).shrink().truncate())
                 .child(quiet(str_of(&c["state"]), t))
                 .child(
-                    button(format!("callback-{i}"), "Call", t.control_off, t.text)
-                        .on_press(move |s: &mut State| s.send(json!({"to": who}).to_string().pipe_do("call"))),
+                    button(format!("callback-{i}"), "Call", t.control_off, t.text).on_press(
+                        move |s: &mut State| s.send(json!({"to": who}).to_string().pipe_do("call")),
+                    ),
                 ),
         );
     }
@@ -79,7 +90,13 @@ fn messages(st: &serde_json::Value, t: Theme) -> El {
 
 fn contacts(s: &State, st: &serde_json::Value, t: Theme) -> El {
     let mut list = col().gap(8.0);
-    for (i, c) in st["contacts"].as_array().cloned().unwrap_or_default().iter().enumerate() {
+    for (i, c) in st["contacts"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let name = str_of(&c["name"]);
         list = list.child(
             row()
@@ -90,8 +107,11 @@ fn contacts(s: &State, st: &serde_json::Value, t: Theme) -> El {
                 .child(line(name.clone(), t).grow(1.0).shrink().truncate())
                 .child(quiet(str_of(&c["number"]), t))
                 .child(
-                    button(format!("call-{i}"), "Call", t.control_off, t.text)
-                        .on_press(move |s: &mut State| s.send(json!({"to": name}).to_string().pipe_do("call"))),
+                    button(format!("call-{i}"), "Call", t.control_off, t.text).on_press(
+                        move |s: &mut State| {
+                            s.send(json!({"to": name}).to_string().pipe_do("call"))
+                        },
+                    ),
                 ),
         );
     }
@@ -124,16 +144,29 @@ fn contacts(s: &State, st: &serde_json::Value, t: Theme) -> El {
                 .on_edit(|s: &mut State| &mut s.new_number),
         )
         .child(
-            button("save-contact".into(), "Save", t.control_off, t.text).on_press(|s: &mut State| {
-                let (name, number) = (s.new_name.text.trim().to_string(), s.new_number.text.trim().to_string());
-                s.new_name.clear();
-                s.new_number.clear();
-                if !name.is_empty() && !number.is_empty() {
-                    s.send(json!({"name": name, "number": number}).to_string().pipe_do("add_contact"));
-                }
-            }),
+            button("save-contact".into(), "Save", t.control_off, t.text).on_press(
+                |s: &mut State| {
+                    let (name, number) = (
+                        s.new_name.text.trim().to_string(),
+                        s.new_number.text.trim().to_string(),
+                    );
+                    s.new_name.clear();
+                    s.new_number.clear();
+                    if !name.is_empty() && !number.is_empty() {
+                        s.send(
+                            json!({"name": name, "number": number})
+                                .to_string()
+                                .pipe_do("add_contact"),
+                        );
+                    }
+                },
+            ),
         );
-    col().w_full().gap(10.0).child(card("contacts", "Contacts", list, t)).child(form)
+    col()
+        .w_full()
+        .gap(10.0)
+        .child(card("contacts", "Contacts", list, t))
+        .child(form)
 }
 
 fn keypad(s: &State, t: Theme, accent: Color) -> El {
@@ -166,8 +199,16 @@ fn keypad(s: &State, t: Theme, accent: Color) -> El {
         .key("call-controls")
         .w_full()
         .gap(8.0)
-        .child(button("answer-call".into(), "Answer", t.control_off, t.text).grow(1.0).on_press(|s: &mut State| s.send("do answer_call {}".into())))
-        .child(button("hangup".into(), "Hang up", t.control_off, t.text).grow(1.0).on_press(|s: &mut State| s.send("do hangup {}".into())));
+        .child(
+            button("answer-call".into(), "Answer", t.control_off, t.text)
+                .grow(1.0)
+                .on_press(|s: &mut State| s.send("do answer_call {}".into())),
+        )
+        .child(
+            button("hangup".into(), "Hang up", t.control_off, t.text)
+                .grow(1.0)
+                .on_press(|s: &mut State| s.send("do hangup {}".into())),
+        );
     col().w_full().gap(10.0).child(row_call).child(calls)
 }
 

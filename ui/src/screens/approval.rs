@@ -7,10 +7,18 @@ use rune::{Color, El, col, row, text};
 
 pub fn sheet(s: &State, id: u64, t: Theme, accent: Color) -> El {
     let pending = s.snap["pending"].as_array().cloned().unwrap_or_default();
-    let item = pending.iter().find(|p| p["id"].as_u64() == Some(id)).cloned().unwrap_or_default();
+    let item = pending
+        .iter()
+        .find(|p| p["id"].as_u64() == Some(id))
+        .cloned()
+        .unwrap_or_default();
     let args: Vec<String> = item["args"]
         .as_object()
-        .map(|m| m.iter().map(|(k, v)| format!("{k}: {}", str_of(v))).collect())
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| format!("{k}: {}", str_of(v)))
+                .collect()
+        })
         .unwrap_or_default();
     let pin_set = s.snap["pin_set"].as_bool() == Some(true);
 
@@ -27,7 +35,16 @@ pub fn sheet(s: &State, id: u64, t: Theme, accent: Color) -> El {
 
     if pin_set {
         let dots: String = (0..s.pin.len()).map(|_| '•').collect();
-        card = card.child(text(if dots.is_empty() { "Enter your PIN".into() } else { dots }).key("pin-dots").font(type_::BODY).color(t.text));
+        card = card.child(
+            text(if dots.is_empty() {
+                "Enter your PIN".into()
+            } else {
+                dots
+            })
+            .key("pin-dots")
+            .font(type_::BODY)
+            .color(t.text),
+        );
         for row_keys in [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"]] {
             let mut r = row().gap(8.0).w_full();
             for k in row_keys {
@@ -36,11 +53,19 @@ pub fn sheet(s: &State, id: u64, t: Theme, accent: Color) -> El {
             card = card.child(r);
         }
         let mut last = row().gap(8.0).w_full();
-        last = last.child(button("pin-clear".into(), "Clear", t.control_off, t.text).grow(1.0).on_press(|s: &mut State| s.pin.clear()));
+        last = last.child(
+            button("pin-clear".into(), "Clear", t.control_off, t.text)
+                .grow(1.0)
+                .on_press(|s: &mut State| s.pin.clear()),
+        );
         last = last.child(pad_key("0", t));
-        last = last.child(button("pin-back".into(), "⌫", t.control_off, t.text).grow(1.0).on_press(|s: &mut State| {
-            s.pin.pop();
-        }));
+        last = last.child(
+            button("pin-back".into(), "⌫", t.control_off, t.text)
+                .grow(1.0)
+                .on_press(|s: &mut State| {
+                    s.pin.pop();
+                }),
+        );
         card = card.child(last);
     }
 
@@ -55,20 +80,28 @@ pub fn sheet(s: &State, id: u64, t: Theme, accent: Color) -> El {
             }),
     );
     buttons = buttons.child(
-        button("sheet-approve".into(), "Approve", accent, t.text).grow(1.0).on_press(move |s: &mut State| {
-            let pin_set = s.snap["pin_set"].as_bool() == Some(true);
-            let pin = std::mem::take(&mut s.pin);
-            s.sheet = None;
-            if pin_set {
-                s.send_shown(format!("press {id} {pin}"), format!("press {id} ****"));
-            } else {
-                s.send(format!("press {id}"));
-            }
-        }),
+        button("sheet-approve".into(), "Approve", accent, t.text)
+            .grow(1.0)
+            .on_press(move |s: &mut State| {
+                let pin_set = s.snap["pin_set"].as_bool() == Some(true);
+                let pin = std::mem::take(&mut s.pin);
+                s.sheet = None;
+                if pin_set {
+                    s.send_shown(format!("press {id} {pin}"), format!("press {id} ****"));
+                } else {
+                    s.send(format!("press {id}"));
+                }
+            }),
     );
     card = card.child(buttons);
 
-    col().w_full().h_full().padding(16.0).gap(12.0).fill(t.bg).child(card)
+    col()
+        .w_full()
+        .h_full()
+        .padding(16.0)
+        .gap(12.0)
+        .fill(t.bg)
+        .child(card)
 }
 
 fn pad_key(k: &'static str, t: Theme) -> El {

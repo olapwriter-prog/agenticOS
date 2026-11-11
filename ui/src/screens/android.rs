@@ -15,7 +15,11 @@ pub fn view(_s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
 
     // the banner: the OS closed the sandbox, and why
     if let Some(stop) = android["last_stop"].as_object() {
-        let reason = stop.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let reason = stop
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         page = page.child(
             col()
                 .key("android-banner")
@@ -23,7 +27,13 @@ pub fn view(_s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
                 .padding(12.0)
                 .radius(radius::SM)
                 .fill(BAD)
-                .child(text(format!("The OS closed the Android sandbox: {reason}")).font(type_::LABEL).color(t.text).w_full().wrap()),
+                .child(
+                    text(format!("The OS closed the Android sandbox: {reason}"))
+                        .font(type_::LABEL)
+                        .color(t.text)
+                        .w_full()
+                        .wrap(),
+                ),
         );
     }
 
@@ -37,11 +47,24 @@ pub fn view(_s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
         .h(10.0)
         .radius(5.0)
         .fill(t.control_off)
-        .child(el().key("memory-used").h(10.0).w(frac * 340.0).radius(5.0).fill(accent));
+        .child(
+            el().key("memory-used")
+                .h(10.0)
+                .w(frac * 340.0)
+                .radius(5.0)
+                .fill(accent),
+        );
     page = page.child(card(
         "memory",
         "Memory",
-        col().gap(6.0).child(line(format!("{mib} MiB free"), t)).child(bar).child(quiet(format!("pressure {:.1}%", mem["psi"].as_f64().unwrap_or(0.0)), t)),
+        col()
+            .gap(6.0)
+            .child(line(format!("{mib} MiB free"), t))
+            .child(bar)
+            .child(quiet(
+                format!("pressure {:.1}%", mem["psi"].as_f64().unwrap_or(0.0)),
+                t,
+            )),
         t,
     ));
 
@@ -63,7 +86,9 @@ pub fn view(_s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
         current = current.child(
             button(format!("app-{package}"), &name, t.card, t.text)
                 .grow(1.0)
-                .on_press(move |s: &mut State| s.send(format!("do android_open {}", json!({"app": p2})))),
+                .on_press(move |s: &mut State| {
+                    s.send(format!("do android_open {}", json!({"app": p2})))
+                }),
         );
         if i % 2 == 1 {
             grid = grid.child(current);
@@ -76,7 +101,10 @@ pub fn view(_s: &State, st: &serde_json::Value, t: Theme, accent: Color) -> El {
     page = page.child(card(
         "android-apps",
         "Apps",
-        col().gap(8.0).child(quiet(status, t).w_full().wrap()).child(grid),
+        col()
+            .gap(8.0)
+            .child(quiet(status, t).w_full().wrap())
+            .child(grid),
         t,
     ));
 
