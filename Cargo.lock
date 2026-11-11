@@ -136,7 +136,9 @@ name = "agentos-catalog"
 version = "0.1.0"
 dependencies = [
  "agentos-action",
+ "agentos-android",
  "agentos-executor",
+ "agentos-functions",
  "agentos-update",
  "ed25519-dalek",
  "serde",
