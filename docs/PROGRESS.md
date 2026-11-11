@@ -141,3 +141,29 @@ Losses identical to four decimals. A batch of 4 now costs about what one example
   - Next: improve the search for short questions that use none of the guide's own words (Next.js,
     lucide). For example, weight the skill name and description, and expand terms such as "cold
     start" to "bundle".
+
+## The executable build plan (v2): what is done (2026-11-11)
+Done, each with tests and one commit: A1–A5 (run-time tools, service secrets, persistent calendar
+and reminders, no demo messenger on a real phone, `do`/`restart`); B1–B5 (MCP client, remote
+servers from config, Telegram, OAuth by pasted link, Google Calendar and Gmail); C1–C3 (Android
+sandbox crate, governor rule, sandbox and governor in the daemon); D1–D4 (headless setup as a state
+machine, approval PIN, vCard import); E1–E2 (store catalogue with the app matrix, store tools and
+the install paths for agent, skill, connector and native items).
+
+Not done, and why:
+- B6 (OAuth for remote MCP servers): stretch, and the plan says a human reads each server's sign-in
+  rules first.
+- C4, G1–G8, F0, F10 (phone, Google Cloud client, Stitch designs): need the device or accounts.
+- E3, E4 (run installed skills and agents), E5 (signed remote catalogue): not started.
+- E2 install paths for `android` and `function`: answer "not wired yet"; the sandbox install and the
+  function store are not connected to the store yet.
+- F1–F9 (the Rune UI screens): not started. The UI is a separate workspace that fetches Rune from git.
+
+Known issues to decide:
+- `wanted_roles()` keeps the large model loaded whenever the phone is on the charger at 30% or more,
+  so the governor's "loading the large model" rule closes the Android sandbox whenever the phone is
+  charging. The plan's rule is implemented as written; the owner should decide whether plugged-in
+  should count.
+- Android package names for WhatsApp, Instagram and the others are from memory and marked CHECK
+  in `os/catalog/catalog.toml`; DigiLocker, mAadhaar and IRCTC are planned until confirmed on a phone.
+- The control loop now ticks by the clock, not only when idle (found while testing C3).
