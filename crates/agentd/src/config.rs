@@ -103,6 +103,9 @@ pub struct Config {
     pub skills_dir: Option<PathBuf>,
     /// Tokens a skill excerpt may take: about a sixth of a 4B model's context.
     pub skill_budget: usize,
+    /// Where Word, Excel, PowerPoint and PDF files are read from. Defaults to documents/ in
+    /// data_dir.
+    pub documents_dir: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -156,6 +159,7 @@ impl Default for Config {
             partner: None,
             skills_dir: None,
             skill_budget: 700,
+            documents_dir: None,
         }
     }
 }

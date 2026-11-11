@@ -187,6 +187,9 @@ impl Core {
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
+        let documents = cfg.documents_dir.clone().unwrap_or_else(|| dir.join("documents"));
+        std::fs::create_dir_all(&documents).map_err(|e| format!("{}: {e}", documents.display()))?;
+        connectors.push(Box::new(agentos_docs::Docs { dir: documents, budget: cfg.skill_budget }));
         let skills_dir = cfg.skills_dir.clone().unwrap_or_else(|| dir.join("skills"));
         let skill_lib = if skills_dir.join("index.json").exists() {
             connectors.push(Box::new(agentos_skillpack::tools::SkillTools::open(&skills_dir, cfg.skill_budget)?));

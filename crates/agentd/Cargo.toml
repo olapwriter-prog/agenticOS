@@ -33,6 +33,7 @@ agentos-functions = { path = "../functions" }
 agentos-partner = { path = "../partner" }
 agentos-screen = { path = "../screen" }
 agentos-skillpack = { path = "../skillpack" }
+agentos-docs = { path = "../docs" }
 agentos-learn = { path = "../learn" }
 agentos-understand = { path = "../understand" }
 serde = { version = "1", features = ["derive"] }

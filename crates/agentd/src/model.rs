@@ -42,10 +42,10 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        other => match agentos_skillpack::tools::describe(other) {
-            "" => agentos_partner::describe(other),
-            d => d,
-        },
+        other => [agentos_skillpack::tools::describe(other), agentos_docs::describe(other), agentos_partner::describe(other)]
+            .into_iter()
+            .find(|d| !d.is_empty())
+            .unwrap_or(""),
     }
 }
 
@@ -219,6 +219,11 @@ pub fn default_intents() -> IntentTable {
     t.add("skill {name}: {question}", "skill");
     t.add("read skill {name}", "skill");
     t.add("skill sources", "skill_sources");
+    // documents
+    t.add("documents", "documents");
+    t.add("my documents", "documents");
+    t.add("what does {name} say about {question}", "read_document");
+    t.add("read document {name}", "read_document");
     // functions the agent wrote
     t.add("list functions", "list_functions");
     t.add("my functions", "list_functions");
