@@ -1007,3 +1007,34 @@ fn service_secrets_survive_a_restart_and_only_conn_names_are_accepted() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn calendar_and_reminders_survive_a_restart() {
+    let (d, r, tok) = boot("persist");
+    call(
+        &r.http_addr,
+        &tok,
+        "add_event",
+        json!({"day":"mon","title":"dentist"}),
+    );
+    call(
+        &r.http_addr,
+        &tok,
+        "set_reminder",
+        json!({"text":"call mum","when":"6pm"}),
+    );
+    r.stop();
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let tok = s.gateway_token.clone();
+    let r = start(cfg(&d), s, Arc::new(ScaledClock::new(1))).unwrap();
+    assert!(text(&call(
+        &r.http_addr,
+        &tok,
+        "read_calendar",
+        json!({"day":"mon"})
+    ))
+    .contains("dentist"));
+    assert!(d.join("reminders.json").exists());
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

@@ -184,8 +184,8 @@ impl Core {
         let phone = Phone::new(backend, Contacts::load(dir.join("contacts.json"))?).shared();
         let tools_store = Store::open(&dir.join("tools.db")).map_err(io)?;
         let mut connectors: Vec<Box<dyn Connector>> = vec![
-            Box::new(Calendar::default()),
-            Box::new(Reminders::default()),
+            Box::new(Calendar::load(dir.join("calendar.json"))),
+            Box::new(Reminders::load(dir.join("reminders.json"))),
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
