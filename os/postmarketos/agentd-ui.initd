@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+# The phone's screen: sway with agentos-ui (see sway.config). Runs as the screen user, who owns
+# the Wayland session; Waydroid runs as the same user.
+
+name="agentd-ui"
+description="The phone's screen: sway, with agentos-ui and the Android window"
+: ${AGENTD_UI_USER:=user}
+: ${AGENTD_UI_UID:=10000}
+command="/usr/bin/sway"
+command_args="--config /etc/agentd/sway.config"
+command_user="$AGENTD_UI_USER"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=10
+respawn_period=300
+output_log="/var/log/agentd-ui.log"
+error_log="/var/log/agentd-ui.log"
+
+depend() {
+	need seatd agentd
+}
+
+start_pre() {
+	checkpath -d -m 0700 -o "$AGENTD_UI_USER:$AGENTD_UI_USER" "/run/user/$AGENTD_UI_UID"
+	checkpath -f -m 0640 -o "$AGENTD_UI_USER:$AGENTD_UI_USER" /var/log/agentd-ui.log
+}
+
+start_pre_env() {
+	export XDG_RUNTIME_DIR="/run/user/$AGENTD_UI_UID"
+	export WLR_LIBINPUT_NO_DEVICES=1
+}

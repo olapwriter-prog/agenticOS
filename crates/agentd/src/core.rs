@@ -343,6 +343,7 @@ impl Core {
                 runner: Box::new(agentos_android::System),
                 user: cfg.android_user.clone(),
                 env: cfg.android_env.clone(),
+                sway: cfg.android_sway,
             })
                 as Box<dyn agentos_android::Sandbox>))),
             other => {

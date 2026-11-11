@@ -133,6 +133,8 @@ pub struct Config {
     pub android_check_secs: u64,
     /// The proc filesystem, for meminfo and the pressure files.
     pub proc_root: PathBuf,
+    /// Move the screen's workspace with the sandbox (sway): the Android window on workspace 2.
+    pub android_sway: bool,
     /// The store's catalogue (TOML). Missing: an empty store.
     pub catalog: PathBuf,
     /// Where `store refresh` fetches a signed catalogue from (catalog.toml, catalog.json, catalog.sig).
@@ -248,6 +250,7 @@ impl Default for Config {
             android_stop_in_deep: true,
             android_check_secs: 5,
             proc_root: PathBuf::from("/proc"),
+            android_sway: true,
             catalog: PathBuf::from("/usr/share/agentd/catalog.toml"),
             catalog_url: None,
             catalog_pubkey: None,

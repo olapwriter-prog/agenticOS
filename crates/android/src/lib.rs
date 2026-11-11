@@ -42,6 +42,8 @@ pub struct Waydroid {
     pub user: String,
     /// Environment for the command, for example "XDG_RUNTIME_DIR=/run/user/10000 WAYLAND_DISPLAY=wayland-1".
     pub env: String,
+    /// Switch sway's workspace with the sandbox: 2 while an app is open, 1 when it is closed.
+    pub sway: bool,
 }
 
 impl Waydroid {
@@ -90,14 +92,32 @@ impl Sandbox for Waydroid {
         Ok(parse_app_list(&self.waydroid("app list")?))
     }
     fn open(&mut self, package: &str) -> Result<(), String> {
-        self.waydroid(&format!("app launch {package}")).map(|_| ())
+        self.waydroid(&format!("app launch {package}"))?;
+        if self.sway {
+            // the Android window goes to workspace 2; a failure here is not a failure to open
+            let _ = self.waydroid_sway("workspace 2");
+        }
+        Ok(())
     }
     fn install(&mut self, apk_path: &str) -> Result<(), String> {
         self.waydroid(&format!("app install {apk_path}"))
             .map(|_| ())
     }
     fn stop_all(&mut self) -> Result<(), String> {
-        self.waydroid("session stop").map(|_| ())
+        self.waydroid("session stop")?;
+        if self.sway {
+            let _ = self.waydroid_sway("workspace 1");
+        }
+        Ok(())
+    }
+}
+
+impl Waydroid {
+    /// swaymsg as the screen user, in the same session as Waydroid.
+    fn waydroid_sway(&mut self, args: &str) -> Result<String, String> {
+        let cmd = format!("{} swaymsg {args}", self.env);
+        let user = self.user.clone();
+        self.runner.run("su", &["-l", &user, "-c", &cmd])
     }
 }
 
@@ -331,6 +351,7 @@ mod tests {
                 runner: Box::new(fake),
                 user: "user".into(),
                 env: ENV.into(),
+                sway: false,
             },
             calls,
         )
@@ -369,6 +390,36 @@ mod tests {
             .map(|c| c.replace(&format!("su -l user -c {ENV}"), "su -l user -c ENV"))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn with_sway_the_window_moves_to_workspace_2_and_back() {
+        let calls = Rc::new(RefCell::new(vec![]));
+        let fake = Fake {
+            calls: calls.clone(),
+            answers: vec![
+                ("app launch", "".into()),
+                ("session stop", "".into()),
+                ("swaymsg", "".into()),
+            ],
+        };
+        let mut w = Waydroid {
+            runner: Box::new(fake),
+            user: "user".into(),
+            env: ENV.into(),
+            sway: true,
+        };
+        w.open("org.example.notes").unwrap();
+        w.stop_all().unwrap();
+        let got = calls.borrow().clone();
+        assert!(
+            got.iter().any(|c| c.ends_with("swaymsg workspace 2")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter().any(|c| c.ends_with("swaymsg workspace 1")),
+            "{got:?}"
+        );
     }
 
     #[test]

@@ -39,7 +39,7 @@ depends="
 # rust and rust-wasm are runtime dependencies too: the agent writes its functions in Rust, and
 # agentd compiles them with rustc to WebAssembly for the sandbox. (check() compiles some.)
 makedepends="cargo cargo-auditable rust-wasm"
-subpackages="$pkgname-openrc"
+subpackages="$pkgname-openrc $pkgname-ui:ui"
 install="$pkgname.pre-install"
 source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
 	agentd.initd
@@ -47,6 +47,8 @@ source="$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz
 	agentd.toml
 	agentd-session.initd
 	agentd-session.sh
+	agentd-ui.initd
+	sway.config
 	"
 builddir="$srcdir/agenticOS-$pkgver"
 options="net" # cargo fetches crates
@@ -64,6 +66,9 @@ build() {
 	# commits in skills/sources.tsv, only those whose license allows redistribution
 	cargo auditable build --release --frozen -p agentos-skillpack
 	cargo auditable build --release --frozen -p agentos-apps --bin agentos-apps-check
+	# the screen: its own workspace; it fetches Rune from git at a pinned revision, so this step
+	# needs network access (options="net" above)
+	(cd ui && cargo build --release)
 	sh scripts/fetch-skills.sh "$builddir/skillpack" "$srcdir/skill-sources"
 }
 
@@ -92,6 +97,15 @@ package() {
 	install -dm700 "$pkgdir"/var/lib/agentd/models
 	cp -r "$builddir"/skillpack "$pkgdir"/var/lib/agentd/skills
 	install -Dm644 skills/sources.tsv "$pkgdir"/usr/share/doc/agentd/skill-sources.tsv
+}
+
+# The screen: agentos-ui full screen under sway, with the Waydroid window beside it on workspace 2.
+ui() {
+	pkgdesc="agentOS screen: agentos-ui in sway, with the on-screen keyboard"
+	depends="$pkgname sway seatd wvkbd"
+	install -Dm755 "$builddir"/ui/target/release/agentos-ui "$subpkgdir"/usr/bin/agentos-ui
+	install -Dm644 "$srcdir"/sway.config "$subpkgdir"/etc/agentd/sway.config
+	install -Dm755 "$srcdir"/agentd-ui.initd "$subpkgdir"/etc/init.d/agentd-ui
 }
 
 # Generated, one line per source file: run `pmbootstrap checksum agentd` (or `abuild checksum`)
