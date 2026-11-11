@@ -12,11 +12,11 @@ mod widgets;
 use rune::tok::{self, type_};
 use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, row, text};
 use screens::{android, approval, home, phone, setup, store, system};
-use widgets::{button, str_of};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
+use widgets::{button, str_of};
 
 /// Where agentd listens.
 fn socket() -> String {
@@ -171,7 +171,10 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
             }
             Event::State(Err(e)) => s.error = Some(e),
             Event::Reply { asked, answer } => {
-                if asked.starts_with("do store_") || asked.starts_with("do android_") || asked.starts_with("store") {
+                if asked.starts_with("do store_")
+                    || asked.starts_with("do android_")
+                    || asked.starts_with("store")
+                {
                     s.replies.push((asked.clone(), answer.clone()));
                     if s.replies.len() > 10 {
                         s.replies.remove(0);
@@ -226,11 +229,19 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                 .px(10.0)
                 .center()
                 .radius(12.0)
-                .fill(if stage == "Active" { accent } else { t.control_off })
+                .fill(if stage == "Active" {
+                    accent
+                } else {
+                    t.control_off
+                })
                 .child(
-                    text(if stage.is_empty() { "…".to_string() } else { stage.clone() })
-                        .font(type_::LABEL)
-                        .color(t.text),
+                    text(if stage.is_empty() {
+                        "…".to_string()
+                    } else {
+                        stage.clone()
+                    })
+                    .font(type_::LABEL)
+                    .color(t.text),
                 ),
         );
     let status = widgets::quiet(
@@ -251,7 +262,10 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         Tab::Android => ("android", "Android"),
         Tab::System => ("system", "System"),
     };
-    let title_el = text(title).key(format!("title-{key}")).font(H1).color(t.text);
+    let title_el = text(title)
+        .key(format!("title-{key}"))
+        .font(H1)
+        .color(t.text);
 
     let body = match s.tab {
         Tab::Home => home::cards(st, t, accent),
@@ -272,9 +286,14 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     ] {
         let active = s.tab == tab;
         bar = bar.child(
-            button(k.to_string(), label, if active { accent } else { t.control_off }, t.text)
-                .grow(1.0)
-                .on_press(move |s: &mut State| s.tab = tab),
+            button(
+                k.to_string(),
+                label,
+                if active { accent } else { t.control_off },
+                t.text,
+            )
+            .grow(1.0)
+            .on_press(move |s: &mut State| s.tab = tab),
         );
     }
 
@@ -381,6 +400,30 @@ fn main() {
                 });
                 s.snap = d;
             }),
+            ("phone", |s| {
+                s.snap = demo();
+                s.tab = Tab::Phone;
+            }),
+            ("store", |s| {
+                s.snap = demo();
+                s.tab = Tab::Store;
+                s.replies.push((
+                    "do store_search {\"text\":\"agent\"}".into(),
+                    "trip-planner: Trip planner — Plans a trip\ndaily-digest: Daily digest — A morning summary".into(),
+                ));
+            }),
+            ("android", |s| {
+                s.snap = demo();
+                s.tab = Tab::Android;
+            }),
+            ("system", |s| {
+                s.snap = demo();
+                s.tab = Tab::System;
+            }),
+            ("sheet", |s| {
+                s.snap = demo();
+                s.sheet = Some(3);
+            }),
             ("live", |s| {
                 match ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
                 {
@@ -438,7 +481,16 @@ mod tests {
     #[test]
     fn everything_the_daemon_reports_is_on_screen() {
         let mut rt = rt();
-        for key in ["header", "stage", "waiting", "pending-3", "pending-4", "recent", "recent-4", "chat"] {
+        for key in [
+            "header",
+            "stage",
+            "waiting",
+            "pending-3",
+            "pending-4",
+            "recent",
+            "recent-4",
+            "chat",
+        ] {
             assert!(rt.find(key).is_some(), "{key} missing");
         }
         tap(&mut rt, "tab-system");
@@ -511,7 +563,15 @@ mod tests {
             snap["setup"] = json!({"id": "wifi", "index": 2, "total": 13, "title": "Connect to Wi-Fi", "body": "Home", "options": ["skip"], "input": "text", "can_skip": true, "error": null});
         }
         s.snap = snap;
-        let mut rt = Runtime::new(s, view, (390.0, 844.0), Env { system_dark: true, scale: 2.0 });
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (390.0, 844.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
         rt.frame(0.0);
         rt
     }
@@ -520,7 +580,10 @@ mod tests {
     fn setup_is_shown_over_everything_and_its_answers_are_sent() {
         let mut rt = rt_with(Value::Null, true);
         assert!(rt.find("setup-screen").is_some());
-        assert!(rt.find("tab-home").is_none(), "the tabs are not shown during setup");
+        assert!(
+            rt.find("tab-home").is_none(),
+            "the tabs are not shown during setup"
+        );
         tap(&mut rt, "setup-option-0");
         assert_eq!(rt.state.sent.last().unwrap(), "setup answer skip");
     }
@@ -529,7 +592,10 @@ mod tests {
     fn the_pin_is_typed_on_the_sheet_and_never_sent_or_kept_unmasked() {
         let mut rt = rt();
         tap(&mut rt, "approve-3");
-        assert!(rt.find("sheet").is_some(), "approving with a PIN set opens the sheet");
+        assert!(
+            rt.find("sheet").is_some(),
+            "approving with a PIN set opens the sheet"
+        );
         for k in ["pin-1", "pin-2", "pin-3", "pin-4"] {
             tap(&mut rt, k);
         }
@@ -568,7 +634,10 @@ mod tests {
         let mut rt = rt();
         tap(&mut rt, "tab-store");
         tap(&mut rt, "chip-agents");
-        assert_eq!(rt.state.sent.last().unwrap(), "do store_search {\"text\":\"agent\"}");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "do store_search {\"text\":\"agent\"}"
+        );
         rt.state.replies.push((
             "do store_search {\"text\":\"agent\"}".into(),
             "zomato: Zomato — order food\nswiggy: Swiggy — order food".into(),
@@ -576,7 +645,10 @@ mod tests {
         tap(&mut rt, "tab-home");
         tap(&mut rt, "tab-store");
         tap(&mut rt, "store-install-0");
-        assert_eq!(rt.state.sent.last().unwrap(), "do store_install {\"id\":\"zomato\"}");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "do store_install {\"id\":\"zomato\"}"
+        );
     }
 
     #[test]
@@ -586,7 +658,10 @@ mod tests {
         assert!(rt.find("memory-bar").is_some());
         assert!(rt.find("android-banner").is_some());
         tap(&mut rt, "app-com.whatsapp");
-        assert_eq!(rt.state.sent.last().unwrap(), "do android_open {\"app\":\"com.whatsapp\"}");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "do android_open {\"app\":\"com.whatsapp\"}"
+        );
         tap(&mut rt, "close-all");
         assert_eq!(rt.state.sent.last().unwrap(), "do android_close_all {}");
     }
@@ -598,8 +673,14 @@ mod tests {
         assert!(rt.find("connector-telegram").is_some());
         rt.state.token.text = "123:SECRET".into();
         tap(&mut rt, "connect-telegram");
-        assert_eq!(rt.state.sent.last().unwrap(), "secret set conn.telegram ****");
-        assert!(rt.state.token.text.is_empty(), "the token is cleared once sent");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "secret set conn.telegram ****"
+        );
+        assert!(
+            rt.state.token.text.is_empty(),
+            "the token is cleared once sent"
+        );
         assert!(!rt.state.sent.iter().any(|s| s.contains("SECRET")));
     }
 }
