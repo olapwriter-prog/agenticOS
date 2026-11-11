@@ -133,6 +133,8 @@ pub struct Config {
     pub android_check_secs: u64,
     /// The proc filesystem, for meminfo and the pressure files.
     pub proc_root: PathBuf,
+    /// The store's catalogue (TOML). Missing: an empty store.
+    pub catalog: PathBuf,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -242,6 +244,7 @@ impl Default for Config {
             android_stop_in_deep: true,
             android_check_secs: 5,
             proc_root: PathBuf::from("/proc"),
+            catalog: PathBuf::from("/usr/share/agentd/catalog.toml"),
         }
     }
 }

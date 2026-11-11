@@ -7,6 +7,7 @@ edition.workspace = true
 agentos-mcpc = { path = "../mcpc" }
 agentos-services = { path = "../services" }
 agentos-android = { path = "../android" }
+agentos-catalog = { path = "../catalog" }
 agentos-ledger = { path = "../ledger" }
 agentos-hal = { path = "../hal" }
 agentos-stage = { path = "../stage" }

@@ -37,6 +37,7 @@ dependencies = [
  "agentos-android",
  "agentos-apps",
  "agentos-brain",
+ "agentos-catalog",
  "agentos-commercial",
  "agentos-connectors",
  "agentos-docs",
@@ -132,7 +133,10 @@ dependencies = [
 name = "agentos-catalog"
 version = "0.1.0"
 dependencies = [
+ "agentos-action",
+ "agentos-executor",
  "serde",
+ "serde_json",
  "toml",
 ]
 

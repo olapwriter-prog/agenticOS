@@ -1,6 +1,8 @@
 //! The store's catalogue: what can be installed, how it runs, and what permissions it asks for.
 //! A catalogue is a TOML file of [[item]] tables. Later files override earlier items with the same
 //! id, so a remote catalogue can update the shipped one.
+pub mod store;
+
 use serde::Deserialize;
 use std::path::PathBuf;
 

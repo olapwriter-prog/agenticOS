@@ -85,6 +85,7 @@ package() {
 	install -Dm755 "$srcdir"/agentd-session.sh "$pkgdir"/usr/libexec/agentd/agentd-session
 	# Phase 5 bring-up: checks for this phone and the guided run with a second phone
 	install -Dm755 scripts/phone-preflight.sh "$pkgdir"/usr/share/agentd/phone-preflight.sh
+	install -Dm644 os/catalog/catalog.toml "$pkgdir"/usr/share/agentd/catalog.toml
 	install -Dm755 scripts/phone-scenarios.sh "$pkgdir"/usr/share/agentd/phone-scenarios.sh
 	install -Dm755 scripts/phone-bench.sh "$pkgdir"/usr/share/agentd/phone-bench.sh
 	install -dm700 "$pkgdir"/var/lib/agentd

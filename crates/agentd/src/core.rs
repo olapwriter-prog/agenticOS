@@ -36,6 +36,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The MCP servers the store installed, from mcp_servers.toml in the data directory.
+fn read_store_servers(dir: &std::path::Path) -> Vec<crate::config::McpServer> {
+    #[derive(serde::Deserialize)]
+    struct File {
+        #[serde(default)]
+        mcp_servers: Vec<crate::config::McpServer>,
+    }
+    std::fs::read_to_string(dir.join("mcp_servers.toml"))
+        .ok()
+        .and_then(|t| toml::from_str::<File>(&t).ok())
+        .map(|f| f.mcp_servers)
+        .unwrap_or_default()
+}
+
 fn setup_screen_json(s: &crate::setup::Screen) -> Value {
     json!({
         "id": s.id,
@@ -322,6 +336,15 @@ impl Core {
                 )
             }
         };
+        let store_catalog = if cfg.catalog.exists() {
+            agentos_catalog::Catalog::load(&[cfg.catalog.clone()]).unwrap_or_default()
+        } else {
+            agentos_catalog::Catalog::default()
+        };
+        connectors.push(Box::new(agentos_catalog::store::StoreTools {
+            catalog: store_catalog,
+            dir: dir.clone(),
+        }));
         let android_on = android.is_some();
         let setup_path = dir.join("setup.json");
         let android_policy = agentos_android::governor::Policy {
@@ -373,7 +396,10 @@ impl Core {
         }
         // remote servers come after the functions, so the functions cannot call their tools
         let mut mcp_status = Vec::new();
-        for s in &cfg.mcp_servers {
+        // the servers in the config, then those the store installed (mcp_servers.toml)
+        let mut mcp_servers = cfg.mcp_servers.clone();
+        mcp_servers.extend(read_store_servers(&dir));
+        for s in &mcp_servers {
             let token = s
                 .secret
                 .as_ref()
@@ -1267,6 +1293,7 @@ impl Core {
             "functions": lines(self.functions.borrow().list()),
             "learning": self.learner.stats(),
             "setup": self.setup_state(),
+            "store": {"installed": agentos_catalog::store::installed(&self.cfg.data_dir)},
             "android": self.android_state(),
             "memory": self.memory_state(),
         })
@@ -1846,7 +1873,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors oauth pin import setup".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors oauth pin import setup store".into(),
             other => format!("unknown command: {other}"),
         }
     }

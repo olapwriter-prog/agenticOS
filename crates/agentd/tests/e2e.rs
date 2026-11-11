@@ -1320,3 +1320,48 @@ fn setup_resumes_on_the_same_step_after_a_restart() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn store_install_waits_for_the_key_and_remove_undoes_it() {
+    let d = dir("store");
+    std::fs::create_dir_all(&d).unwrap();
+    let catalog = d.join("catalog.toml");
+    std::fs::write(
+        &catalog,
+        "[[item]]\nid = \"trip-recipe\"\nname = \"Trip recipe\"\nkind = \"skill\"\nsummary = \"Plans a trip.\"\nbody = \"name = \\\"trip\\\"\\n\"\n",
+    )
+    .unwrap();
+    let c = Config {
+        catalog: catalog.clone(),
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    assert!(ctl_send(&r.ctl_path, "do store_search {\"text\":\"trip\"}")
+        .unwrap()
+        .contains("trip-recipe"));
+    // a High action: asked, nothing happens yet
+    let asked = ctl_send(&r.ctl_path, r#"do store_install {"id":"trip-recipe"}"#).unwrap();
+    assert!(asked.contains("approval required"), "{asked}");
+    assert!(!d.join("skills/trip-recipe.toml").exists());
+    // the key approves it
+    let pressed = ctl_send(&r.ctl_path, "press 1").unwrap();
+    assert!(pressed.contains("approved"), "{pressed}");
+    // asked again within ten minutes, it runs
+    let done = ctl_send(&r.ctl_path, r#"do store_install {"id":"trip-recipe"}"#).unwrap();
+    assert!(done.contains("installed"), "{done}");
+    assert!(d.join("skills/trip-recipe.toml").exists());
+    assert!(ctl_send(&r.ctl_path, "do store_installed {}")
+        .unwrap()
+        .contains("trip-recipe"));
+    let state: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(state["store"]["installed"], json!(["trip-recipe"]));
+    assert!(
+        ctl_send(&r.ctl_path, r#"do store_remove {"id":"trip-recipe"}"#)
+            .unwrap()
+            .contains("removed")
+    );
+    assert!(!d.join("skills/trip-recipe.toml").exists());
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
