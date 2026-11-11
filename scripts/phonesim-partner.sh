@@ -80,7 +80,7 @@ EOF
 $AGENTD init -c "$W/agentd.toml" >/dev/null
 $AGENTD run -c "$W/agentd.toml" >"$W/agentd.log" 2>&1 &
 AGENTD_PID=$!
-for _ in $(seq 1 100); do ctl status >/dev/null 2>&1 && break; sleep 0.2; done
+for _ in $(seq 1 100); do $AGENTD ctl -c "$W/agentd.toml" status >/dev/null 2>&1 && break; sleep 0.2; done
 sleep 2
 
 section "1. morning: the inbox, with a reply drafted for each customer"

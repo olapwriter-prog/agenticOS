@@ -349,7 +349,7 @@ impl World {
             }
             ("GET", ["sim", "state"]) => ok(self.v.clone()),
             ("GET", ["health"]) => ok(json!({"status": "ok"})),
-            _ => err(404, &format!("no route {method} {path}")),
+            _ => crate::apps_world::handle(method, &seg, query, &today).unwrap_or_else(|| err(404, &format!("no route {method} {path}"))),
         }
     }
 

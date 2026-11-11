@@ -63,6 +63,7 @@ build() {
 	# the skill library: Google, Microsoft, OpenAI, Anthropic and Vercel skill guides at the
 	# commits in skills/sources.tsv, only those whose license allows redistribution
 	cargo auditable build --release --frozen -p agentos-skillpack
+	cargo auditable build --release --frozen -p agentos-apps --bin agentos-apps-check
 	sh scripts/fetch-skills.sh "$builddir/skillpack" "$srcdir/skill-sources"
 }
 
@@ -74,6 +75,8 @@ check() {
 package() {
 	install -Dm755 target/release/agentd "$pkgdir"/usr/bin/agentd
 	install -Dm755 target/release/agentos-llm "$pkgdir"/usr/bin/agentos-llm
+	# calls every app once against the live public APIs: run it on the phone once it is online
+	install -Dm755 target/release/agentos-apps-check "$pkgdir"/usr/bin/agentos-apps-check
 	install -Dm644 "$srcdir"/agentd.toml "$pkgdir"/etc/agentd/agentd.toml
 	install -Dm755 "$srcdir"/agentd.initd "$pkgdir"/etc/init.d/agentd
 	install -Dm644 "$srcdir"/agentd.confd "$pkgdir"/etc/conf.d/agentd

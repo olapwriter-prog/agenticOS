@@ -34,6 +34,7 @@ name = "agentd"
 version = "0.1.0"
 dependencies = [
  "agentos-action",
+ "agentos-apps",
  "agentos-brain",
  "agentos-commercial",
  "agentos-connectors",
@@ -90,6 +91,18 @@ dependencies = [
  "agentos-hal",
  "agentos-stage",
  "agentos-store",
+]
+
+[[package]]
+name = "agentos-apps"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+ "agentos-screen",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -330,9 +343,11 @@ name = "agentos-phonesim"
 version = "0.1.0"
 dependencies = [
  "agentos-action",
+ "agentos-apps",
  "agentos-executor",
  "agentos-partner",
  "agentos-phone",
+ "agentos-screen",
  "libc",
  "serde",
  "serde_json",

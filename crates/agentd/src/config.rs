@@ -106,6 +106,10 @@ pub struct Config {
     /// Where Word, Excel, PowerPoint and PDF files are read from. Defaults to documents/ in
     /// data_dir.
     pub documents_dir: Option<PathBuf>,
+    /// The apps over public APIs (weather, maps, currency, ...): where each service is, and the
+    /// home place and country. `apps_enabled = false` leaves them out (a phone kept offline).
+    pub apps: agentos_apps::Config,
+    pub apps_enabled: bool,
 }
 
 impl Default for Config {
@@ -160,6 +164,8 @@ impl Default for Config {
             skills_dir: None,
             skill_budget: 700,
             documents_dir: None,
+            apps: agentos_apps::Config::default(),
+            apps_enabled: true,
         }
     }
 }

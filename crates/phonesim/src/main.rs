@@ -39,6 +39,7 @@
 //!   agentos-phonesim wa NUMBER NAME TEXT   a customer writes on WhatsApp   } to the world at
 //!   agentos-phonesim mail FROM SUBJECT BODY   an email arrives             } $PHONESIM_WORLD
 //!   agentos-phonesim collect FROM_VPA RUPEES NOTE   a customer pays by UPI } (127.0.0.1:18900)
+mod apps_world;
 mod world;
 
 use serde::{Deserialize, Serialize};

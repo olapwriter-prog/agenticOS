@@ -42,7 +42,7 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        other => [agentos_skillpack::tools::describe(other), agentos_docs::describe(other), agentos_partner::describe(other)]
+        other => [agentos_skillpack::tools::describe(other), agentos_docs::describe(other), agentos_apps::describe(other), agentos_partner::describe(other)]
             .into_iter()
             .find(|d| !d.is_empty())
             .unwrap_or(""),
@@ -224,6 +224,41 @@ pub fn default_intents() -> IntentTable {
     t.add("my documents", "documents");
     t.add("what does {name} say about {question}", "read_document");
     t.add("read document {name}", "read_document");
+    // apps over public APIs (after everything else: their phrases are the broadest)
+    t.add("weather in {place}", "weather");
+    t.add("what's the weather in {place}", "weather");
+    t.add("will it rain in {place}", "weather");
+    t.add("weather", "weather");
+    t.add("air quality in {place}", "air_quality");
+    t.add("air quality", "air_quality");
+    t.add("what time is it in {place}", "time_in");
+    t.add("time in {place}", "time_in");
+    t.add("directions from {from} to {to}", "directions");
+    t.add("how do i get to {to}", "directions");
+    t.add("route to {to}", "directions");
+    t.add("find {query} nearby", "places");
+    t.add("places {query}", "places");
+    t.add("convert {amount} {from} to {to}", "convert_currency");
+    t.add("tell me about {topic}", "wiki");
+    t.add("wiki {topic}", "wiki");
+    t.add("define {word}", "define");
+    t.add("meaning of {word}", "define");
+    t.add("what does {word} mean", "define");
+    t.add("public holidays in {country}", "holidays");
+    t.add("holidays in {country}", "holidays");
+    t.add("holidays", "holidays");
+    t.add("books by {query}", "books");
+    t.add("books about {query}", "books");
+    t.add("play {query} radio", "radio");
+    t.add("radio {query}", "radio");
+    t.add("podcasts about {query}", "podcasts");
+    t.add("podcasts on {query}", "podcasts");
+    t.add("recipe for {dish}", "recipe");
+    t.add("how to make {dish}", "recipe");
+    t.add("translate {text} from {from} to {to}", "translate");
+    t.add("translate {text} to {to}", "translate");
+    t.add("price of {coin}", "crypto");
+    t.add("{coin} price", "crypto");
     // functions the agent wrote
     t.add("list functions", "list_functions");
     t.add("my functions", "list_functions");

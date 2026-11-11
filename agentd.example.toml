@@ -62,3 +62,27 @@ phone_poll_secs = 2               # how often to look for incoming calls and tex
 # platforms = ["shopkart", "bazaarnow", "quickmart"]
 # feeds = ["business", "tech", "travel", "music", "movies", "sports"]   # or full RSS URLs
 # train_nightly = true               # (top level) learn every night from what was confirmed that day
+
+# ---- skills, documents and apps --------------------------------------------------------------
+# The skill library (scripts/fetch-skills.sh builds it; the package installs it): guides from
+# Google, Microsoft, OpenAI, Anthropic and Vercel, searched on the phone and cut to a token budget
+# so a 4B model can use them. Without index.json in the directory no skill tools are offered.
+# skills_dir = "/var/lib/agentd/skills"      # default: <data_dir>/skills
+# skill_budget = 700                          # tokens of guide or document per answer
+# Word, Excel, PowerPoint and PDF files the phone can read and answer questions about.
+# documents_dir = "/var/lib/agentd/documents" # default: <data_dir>/documents
+# Apps over public APIs, shown as screens (no keys, no accounts): weather, air quality, local
+# time, places, directions, currency, Wikipedia, dictionary, holidays, books, radio, podcasts,
+# recipes, translation, crypto prices. `agentos-apps-check` calls each once to see they answer.
+# apps_enabled = true
+# [apps]
+# home = "Bengaluru"       # "weather" with no place means here
+# country = "IN"
+# currency = "INR"
+# Each service's base URL can be changed (a mirror, a self-hosted instance, the simulator):
+# open_meteo = "https://api.open-meteo.com"
+# nominatim = "https://nominatim.openstreetmap.org"   # 1 request a second, a real User-Agent
+# osrm = "https://router.project-osrm.org"            # the demo server: light use only
+# frankfurter = "https://api.frankfurter.dev"
+# (also geocoding, air_quality, wikipedia, dictionary, nager, openlibrary, radio, itunes,
+#  mealdb, mymemory, coingecko)

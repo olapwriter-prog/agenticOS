@@ -49,6 +49,35 @@ cargo run --release -- --snap ui.png --scene demo             # headless render,
 AGENTD_SOCK=../agentd-data/control.sock cargo run --release -- --snap ui.png --scene live
 ```
 
+## Skills, documents and apps
+
+**Skills.** 663 guides from Google, Microsoft, OpenAI, Anthropic and Vercel (the Agent Skills
+format, SKILL.md), at the commits pinned in `skills/sources.tsv`, kept only where a license allows
+redistribution (`scripts/fetch-skills.sh`; skipped ones and the reason go to `reports/`). On the
+phone they are an index, searched with BM25 in tens of milliseconds, and an excerpt of the part
+that answers the question, cut to a token budget (700 by default) so a 4B model with a 4K context
+can use it. Vendor scripts are never run; what they did for documents is done natively below.
+
+| Say | Tool |
+|---|---|
+| `skills about deploying a container to google cloud run` | `skills`: the best guides, with source and license |
+| `skill google/cloud-run-basics: how do I deploy from source` | `skill`: the part that answers, within the budget |
+| `skill sources` | where each catalog came from, its commit and license |
+
+**Documents.** Word, Excel, PowerPoint and PDF files in `<data_dir>/documents`, read in Rust (zip
+and XML; PDF text with lopdf): `my documents`, `what does agreement say about late payment`,
+`read document statement.pdf`.
+
+**Apps without app stores.** Services that are only an API, answered as a screen: `weather`,
+`will it rain in Pune`, `air quality`, `what time is it in London`, `find cafes in Indiranagar
+nearby`, `directions from Bengaluru to Mysore Palace`, `convert 100 dollars to rupees`, `tell me
+about mysore palace`, `what does serendipity mean`, `public holidays in germany`, `books by
+narayan`, `play jazz radio`, `podcasts about gst`, `how to make biryani`, `translate good morning
+to hindi`, `bitcoin price`. Keyless public APIs (Open-Meteo, OpenStreetMap Nominatim and OSRM,
+Frankfurter, Wikipedia, dictionaryapi.dev, Nager.Date, Open Library, radio-browser, iTunes Search,
+TheMealDB, MyMemory, CoinGecko); each base URL is configurable. `agentos-apps-check` calls each
+once on a connected phone; `agentos-phonesim world` serves the same paths for tests.
+
 ## Its own inference engine
 
 `agentos-llm` (`crates/infer`) is this OS's LLM engine, written in Rust for phones, a drop-in for
@@ -159,6 +188,11 @@ cp agentd.example.toml agentd.toml
 | `crates/agentd` | The daemon: wires everything together, MCP over HTTP, control socket |
 | `crates/phone` | **Headless phone services**: calls, SMS, contacts, USSD, Wi-Fi, data, GPS, torch, feedback |
 | `crates/phonesim` | **Simulated phone**: fake mmcli/nmcli/callaudiocli/fbcli/wpctl, ModemManager signals on a private D-Bus, a key device; `scripts/phonesim-scenarios.sh` runs every phone scenario on agentd's real backend |
+| `crates/screen` | **Screens**: the UI document every headless tool answers with (cards, lines, buttons that say requests) |
+| `crates/partner` | **Business partner**: WhatsApp/email inbox, GST invoices and returns, bills, wallet, shopping, news, bookings |
+| `crates/skillpack` | **Skills**: import Agent Skills catalogs with license checks, BM25 search, token-budgeted excerpts |
+| `crates/docs` | **Documents**: Word, Excel, PowerPoint and PDF read natively, answered by question |
+| `crates/apps` | **Apps over public APIs**: weather, maps, currency, encyclopedia, dictionary, holidays, books, radio, podcasts, recipes, translation, crypto |
 | `crates/prio` | **Chipset priority**: cgroups, fast cores, uclamp, cpufreq/GPU boost, thermal guard, call core |
 | `crates/models` | **Model supervisor**: runs llama-server per stage, restarts, health, verified downloads |
 | `crates/infer` | **agentos-llm**: GGUF, BPE tokenizer, Qwen2/3/3.5 forward pass, NEON kernels, grammar, server |
