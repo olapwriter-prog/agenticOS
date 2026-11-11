@@ -67,8 +67,14 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
     let token = secrets.gateway_token.clone();
     let origins = cfg.allowed_origins.clone();
     let ctl_path2 = ctl_path.clone();
-    let watch = cfg.dbus_monitor.clone().filter(|_| cfg.phone == "modemmanager");
-    let key = cfg.approval_key.clone().map(|d| (d, cfg.approval_keycode, cfg.approval_hold_ms));
+    let watch = cfg
+        .dbus_monitor
+        .clone()
+        .filter(|_| cfg.phone == "modemmanager");
+    let key = cfg
+        .approval_key
+        .clone()
+        .map(|d| (d, cfg.approval_keycode, cfg.approval_hold_ms));
 
     let listener = TcpListener::bind(&listen)
         .map_err(|e| BootError::Other(format!("cannot listen on {listen}: {e}")))?;
@@ -131,7 +137,10 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
                     Signal::Wake(w) => w,
                 };
                 let (rt, rr) = channel();
-                if txw.send(Cmd::Ctl(format!("phone-signal {what}"), rt)).is_ok() {
+                if txw
+                    .send(Cmd::Ctl(format!("phone-signal {what}"), rt))
+                    .is_ok()
+                {
                     // what arrived, for the log (a headless phone's only record besides the ledger)
                     if let Ok(said) = rr.recv() {
                         if said != "nothing new" {

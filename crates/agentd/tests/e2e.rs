@@ -854,7 +854,11 @@ fn on_the_charger_the_model_learns_the_confirmed_requests_and_can_be_rolled_back
     let args = || std::fs::read_to_string(format!("{}.args", model.display())).unwrap_or_default();
 
     assert!(ctl("chat save Mum as +919876543210").starts_with("done"));
-    assert!(ctl("learn status").contains("not on the charger"), "{}", ctl("learn status"));
+    assert!(
+        ctl("learn status").contains("not on the charger"),
+        "{}",
+        ctl("learn status")
+    );
     ctl("power 90 charger");
     let ledger = || std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
@@ -863,7 +867,10 @@ fn on_the_charger_the_model_learns_the_confirmed_requests_and_can_be_rolled_back
     }
     let l = ledger();
     assert!(l.contains("training small on 1 confirmed requests"), "{l}");
-    assert!(l.contains("training kept") && l.contains("50% -> 80%"), "{l}");
+    assert!(
+        l.contains("training kept") && l.contains("50% -> 80%"),
+        "{l}"
+    );
     assert!(d.join("learn/adapter.lora").exists());
     assert!(d.join("learn/sft.jsonl").exists() && d.join("learn/grammar.gbnf").exists());
     // the model server comes back with the adapter
@@ -871,10 +878,18 @@ fn on_the_charger_the_model_learns_the_confirmed_requests_and_can_be_rolled_back
     while !args().contains("--lora") && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
-    assert!(args().contains("--lora") && args().contains("adapter.lora"), "{}", args());
+    assert!(
+        args().contains("--lora") && args().contains("adapter.lora"),
+        "{}",
+        args()
+    );
     assert!(ctl("learn status").contains("adapter in use:"));
     // nothing new confirmed since: no second run
-    assert!(ctl("learn status").contains("0 new confirmed requests"), "{}", ctl("learn status"));
+    assert!(
+        ctl("learn status").contains("0 new confirmed requests"),
+        "{}",
+        ctl("learn status")
+    );
 
     // and back
     assert!(ctl("learn rollback").contains("no adapter"));
@@ -940,15 +955,55 @@ fn holding_the_hardware_key_approves_the_one_waiting_action() {
     call(&r.http_addr, &tok, "send_message", ravi.clone());
     hold(2500);
     assert!(ledger_has("2 actions waiting; none approved"));
-    assert_eq!(call(&r.http_addr, &tok, "send_message", asha.clone())["result"]["isError"], true);
+    assert_eq!(
+        call(&r.http_addr, &tok, "send_message", asha.clone())["result"]["isError"],
+        true
+    );
     ctl_send(&r.ctl_path, "decline 2").unwrap();
     // one waiting: a short press is the volume's; a two-second hold approves it
     hold(300);
     hold(2100);
-    assert!(ledger_has("with the approval key"), "{}", std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default());
+    assert!(
+        ledger_has("with the approval key"),
+        "{}",
+        std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default()
+    );
     let v = call(&r.http_addr, &tok, "send_message", asha);
     assert_eq!(v["result"]["isError"], false, "{v}");
     assert!(text(&v).contains("sent to Asha"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn service_secrets_survive_a_restart_and_only_conn_names_are_accepted() {
+    let (d, r, _tok) = boot("secrets-ctl");
+    assert!(ctl_send(&r.ctl_path, "secret set conn.test abc123")
+        .unwrap()
+        .contains("stored conn.test"));
+    assert!(ctl_send(&r.ctl_path, "secret set gate_secret x")
+        .unwrap()
+        .contains("refused"));
+    assert!(ctl_send(&r.ctl_path, "secret set gateway_token x")
+        .unwrap()
+        .contains("refused"));
+    r.stop();
+    // the same data directory, a second boot: the secret is still there, and the value is not
+    let c = cfg(&d);
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let list = ctl_send(&r.ctl_path, "secret list").unwrap();
+    assert!(list.contains("conn.test"), "{list}");
+    assert!(!list.contains("abc123"));
+    let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    assert!(ledger.contains("secret set: conn.test"));
+    assert!(!ledger.contains("abc123"), "the value reached the ledger");
+    assert!(ctl_send(&r.ctl_path, "secret rm conn.test")
+        .unwrap()
+        .contains("removed"));
+    assert!(ctl_send(&r.ctl_path, "secret list")
+        .unwrap()
+        .contains("no service secrets"));
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }

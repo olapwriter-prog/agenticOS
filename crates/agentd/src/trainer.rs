@@ -35,10 +35,16 @@ impl Conditions {
             return Some("not on the charger".into());
         }
         if self.battery < self.min_battery {
-            return Some(format!("battery {}% (needs {}%)", self.battery, self.min_battery));
+            return Some(format!(
+                "battery {}% (needs {}%)",
+                self.battery, self.min_battery
+            ));
         }
         if let Some(t) = self.temperature.filter(|t| *t >= self.cool_c) {
-            return Some(format!("phone at {t:.0}°C (needs below {:.0}°C)", self.cool_c));
+            return Some(format!(
+                "phone at {t:.0}°C (needs below {:.0}°C)",
+                self.cool_c
+            ));
         }
         if self.busy {
             return Some("the model is busy".into());
@@ -79,9 +85,18 @@ pub struct Trainer {
 
 /// What happened, for the ledger and for `learn status`.
 pub enum Outcome {
-    Kept { adapter: PathBuf, base: f64, tuned: f64 },
-    Discarded { base: f64, tuned: f64 },
-    Paused { step: u64 },
+    Kept {
+        adapter: PathBuf,
+        base: f64,
+        tuned: f64,
+    },
+    Discarded {
+        base: f64,
+        tuned: f64,
+    },
+    Paused {
+        step: u64,
+    },
     Failed(String),
 }
 
@@ -92,7 +107,9 @@ impl Trainer {
             .ok()
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
-        let last_day = std::fs::read_to_string(dir.join("last_day")).ok().and_then(|s| s.trim().parse().ok());
+        let last_day = std::fs::read_to_string(dir.join("last_day"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok());
         Trainer {
             dir,
             running: None,
@@ -127,7 +144,14 @@ impl Trainer {
     }
 
     /// Start a job on the exported data (sft.jsonl, grammar.gbnf in the learn directory).
-    pub fn start(&mut self, bin: &Path, model: &Path, examples: usize, steps: usize, chunk_secs: u64) -> Result<u32, String> {
+    pub fn start(
+        &mut self,
+        bin: &Path,
+        model: &Path,
+        examples: usize,
+        steps: usize,
+        chunk_secs: u64,
+    ) -> Result<u32, String> {
         let out = self.dir.join("train.out");
         let log = std::fs::File::create(self.dir.join("train.log")).map_err(|e| e.to_string())?;
         let stdout = std::fs::File::create(&out).map_err(|e| e.to_string())?;
@@ -158,9 +182,15 @@ impl Trainer {
                 });
             }
         }
-        let child = cmd.spawn().map_err(|e| format!("cannot start {}: {e}", bin.display()))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("cannot start {}: {e}", bin.display()))?;
         let pid = child.id();
-        self.running = Some(Running { child, out, examples });
+        self.running = Some(Running {
+            child,
+            out,
+            examples,
+        });
         Ok(pid)
     }
 
@@ -203,10 +233,17 @@ impl Trainer {
                 step: v["step"].as_u64().unwrap_or(0),
             },
             Some(v) => {
-                let (base, tuned) = (v["base"].as_f64().unwrap_or(0.0), v["tuned"].as_f64().unwrap_or(0.0));
+                let (base, tuned) = (
+                    v["base"].as_f64().unwrap_or(0.0),
+                    v["tuned"].as_f64().unwrap_or(0.0),
+                );
                 if v["kept"] == true {
                     match self.promote() {
-                        Ok(adapter) => Outcome::Kept { adapter, base, tuned },
+                        Ok(adapter) => Outcome::Kept {
+                            adapter,
+                            base,
+                            tuned,
+                        },
                         Err(e) => Outcome::Failed(e),
                     }
                 } else {
@@ -275,25 +312,92 @@ mod tests {
     #[test]
     fn every_night_it_learns_the_day_however_little_once() {
         // 3 new requests is below the threshold, but nightly training takes them
-        assert!(Conditions { new_examples: 3, nightly_due: true, ..ok() }.blocker().is_none());
-        assert!(Conditions { new_examples: 3, nightly_due: false, ..ok() }.blocker().unwrap().contains("new confirmed"));
+        assert!(Conditions {
+            new_examples: 3,
+            nightly_due: true,
+            ..ok()
+        }
+        .blocker()
+        .is_none());
+        assert!(Conditions {
+            new_examples: 3,
+            nightly_due: false,
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("new confirmed"));
         // never off the charger, hot, or outside the Deep stage, nightly or not
-        assert!(Conditions { new_examples: 3, nightly_due: true, charging: false, ..ok() }.blocker().is_some());
-        assert!(Conditions { new_examples: 3, nightly_due: true, deep: false, ..ok() }.blocker().is_some());
+        assert!(Conditions {
+            new_examples: 3,
+            nightly_due: true,
+            charging: false,
+            ..ok()
+        }
+        .blocker()
+        .is_some());
+        assert!(Conditions {
+            new_examples: 3,
+            nightly_due: true,
+            deep: false,
+            ..ok()
+        }
+        .blocker()
+        .is_some());
     }
 
     #[test]
     fn trains_only_when_the_phone_can_spare_it() {
         assert!(ok().blocker().is_none());
-        assert!(Conditions { charging: false, ..ok() }.blocker().unwrap().contains("charger"));
-        assert!(Conditions { battery: 30, ..ok() }.blocker().unwrap().contains("battery"));
-        assert!(Conditions { temperature: Some(75.0), ..ok() }.blocker().unwrap().contains("°C"));
-        assert!(Conditions { deep: false, ..ok() }.blocker().unwrap().contains("Deep"));
-        assert!(Conditions { new_examples: 5, ..ok() }.blocker().unwrap().contains("new confirmed"));
+        assert!(Conditions {
+            charging: false,
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("charger"));
+        assert!(Conditions {
+            battery: 30,
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("battery"));
+        assert!(Conditions {
+            temperature: Some(75.0),
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("°C"));
+        assert!(Conditions {
+            deep: false,
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("Deep"));
+        assert!(Conditions {
+            new_examples: 5,
+            ..ok()
+        }
+        .blocker()
+        .unwrap()
+        .contains("new confirmed"));
         // asked for: the schedule is skipped, never the battery or the heat
-        let forced = Conditions { deep: false, new_examples: 0, forced: true, ..ok() };
+        let forced = Conditions {
+            deep: false,
+            new_examples: 0,
+            forced: true,
+            ..ok()
+        };
         assert!(forced.blocker().is_none());
-        assert!(Conditions { temperature: Some(75.0), ..forced }.blocker().is_some());
+        assert!(Conditions {
+            temperature: Some(75.0),
+            ..forced
+        }
+        .blocker()
+        .is_some());
     }
 
     #[test]

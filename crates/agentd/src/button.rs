@@ -36,7 +36,12 @@ pub fn parse(buf: &[u8]) -> Vec<Event> {
             let ty = u16::from_ne_bytes([e[tv], e[tv + 1]]);
             let code = u16::from_ne_bytes([e[tv + 2], e[tv + 3]]);
             let value = i32::from_ne_bytes(e[tv + 4..tv + 8].try_into().unwrap());
-            (ty, code, value, (sec.max(0) as u64) * 1000 + (usec.max(0) as u64) / 1000)
+            (
+                ty,
+                code,
+                value,
+                (sec.max(0) as u64) * 1000 + (usec.max(0) as u64) / 1000,
+            )
         })
         .collect()
 }
@@ -50,7 +55,11 @@ pub struct Hold {
 
 impl Hold {
     pub fn new(code: u16, hold_ms: u64) -> Self {
-        Hold { code, hold_ms, down_at: None }
+        Hold {
+            code,
+            hold_ms,
+            down_at: None,
+        }
     }
     /// Feed one event; true when it ends a long enough hold.
     pub fn feed(&mut self, (ty, code, value, t): Event) -> bool {
@@ -62,7 +71,10 @@ impl Hold {
                 self.down_at = Some(t);
                 false
             }
-            0 => self.down_at.take().is_some_and(|d| t.saturating_sub(d) >= self.hold_ms),
+            0 => self
+                .down_at
+                .take()
+                .is_some_and(|d| t.saturating_sub(d) >= self.hold_ms),
             _ => false, // autorepeat
         }
     }
@@ -121,7 +133,10 @@ mod tests {
         let mut b = raw(10, 500_000, EV_KEY, KEY_VOLUMEDOWN, 1);
         b.extend(raw(12, 600_000, 0, 0, 0)); // EV_SYN
         b.extend([1, 2, 3]); // a partial event is ignored
-        assert_eq!(parse(&b), vec![(EV_KEY, KEY_VOLUMEDOWN, 1, 10_500), (0, 0, 0, 12_600)]);
+        assert_eq!(
+            parse(&b),
+            vec![(EV_KEY, KEY_VOLUMEDOWN, 1, 10_500), (0, 0, 0, 12_600)]
+        );
     }
 
     #[test]

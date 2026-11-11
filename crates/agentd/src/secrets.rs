@@ -9,6 +9,8 @@ pub struct Secrets {
     pub gate_secret: Vec<u8>,
     pub anchor_key: Vec<u8>,
     pub commercial_key: Option<String>,
+    /// The open vault: the service tokens (names starting with conn.) live here too.
+    pub vault: Vault,
 }
 
 fn random(n: usize) -> Result<Vec<u8>, String> {
@@ -61,6 +63,7 @@ pub fn open_or_create(dir: &Path, pass: &str, kdf_mib: u32) -> Result<Secrets, S
         commercial_key: v
             .get("commercial_key")
             .and_then(|b| String::from_utf8(b.to_vec()).ok()),
+        vault: v,
     })
 }
 

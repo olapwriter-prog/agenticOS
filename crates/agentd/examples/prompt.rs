@@ -11,14 +11,19 @@ use agentos_phone::{Contacts, Phone, PhoneTools, Sim};
 
 fn main() {
     let tmp = std::env::temp_dir().join(format!("agentd-prompt-{}", std::process::id()));
-    let phone = Phone::new(Box::new(Sim::new()), Contacts::load(tmp.join("contacts.json")).unwrap()).shared();
+    let phone = Phone::new(
+        Box::new(Sim::new()),
+        Contacts::load(tmp.join("contacts.json")).unwrap(),
+    )
+    .shared();
     let mut connectors: Vec<Box<dyn Connector>> = vec![
         Box::new(Calendar::default()),
         Box::new(Reminders::default()),
         Box::new(Messenger::default()),
         Box::new(PhoneTools(phone)),
     ];
-    let phone_tools: Vec<agentos_action::Tool> = connectors.iter().flat_map(|c| c.tools()).collect();
+    let phone_tools: Vec<agentos_action::Tool> =
+        connectors.iter().flat_map(|c| c.tools()).collect();
     let reserved: Vec<&str> = phone_tools.iter().map(|t| t.name).collect();
     let compiler = Compiler::new("rustc".into(), tmp.join("compile"));
     let functions = FunctionStore::in_memory(&reserved, compiler).shared();
@@ -29,7 +34,10 @@ fn main() {
     let _ = std::fs::remove_dir_all(&tmp);
     let a: Vec<String> = std::env::args().collect();
     let [_, requests, dir] = &a[..] else {
-        println!("{}", serde_json::json!({"system": system, "grammar": grammar}));
+        println!(
+            "{}",
+            serde_json::json!({"system": system, "grammar": grammar})
+        );
         return;
     };
     let mut sft = String::new();

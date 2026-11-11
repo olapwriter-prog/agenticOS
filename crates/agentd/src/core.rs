@@ -76,6 +76,8 @@ pub struct Core {
     /// Set if the priority manager could not set up its cgroups (not fatal).
     prio_error: Option<String>,
     anchor_key: Vec<u8>,
+    /// The vault: service tokens under names starting with conn.
+    vault: agentos_vault::Vault,
     ledger_path: PathBuf,
     last_activity_ms: u64,
     last_anchor_ms: u64,
@@ -187,17 +189,31 @@ impl Core {
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
-        let documents = cfg.documents_dir.clone().unwrap_or_else(|| dir.join("documents"));
+        let documents = cfg
+            .documents_dir
+            .clone()
+            .unwrap_or_else(|| dir.join("documents"));
         std::fs::create_dir_all(&documents).map_err(|e| format!("{}: {e}", documents.display()))?;
-        connectors.push(Box::new(agentos_docs::Docs { dir: documents, budget: cfg.skill_budget }));
+        connectors.push(Box::new(agentos_docs::Docs {
+            dir: documents,
+            budget: cfg.skill_budget,
+        }));
         if cfg.apps_enabled {
-            connectors.push(Box::new(agentos_apps::Apps { cfg: cfg.apps.clone() }));
+            connectors.push(Box::new(agentos_apps::Apps {
+                cfg: cfg.apps.clone(),
+            }));
         }
         let skills_dir = cfg.skills_dir.clone().unwrap_or_else(|| dir.join("skills"));
         let skill_lib = if skills_dir.join("index.json").exists() {
-            connectors.push(Box::new(agentos_skillpack::tools::SkillTools::open(&skills_dir, cfg.skill_budget)?));
+            connectors.push(Box::new(agentos_skillpack::tools::SkillTools::open(
+                &skills_dir,
+                cfg.skill_budget,
+            )?));
             // a second handle for the model's own prompts (the connector is the executor's)
-            Some(agentos_skillpack::tools::SkillTools::open(&skills_dir, cfg.skill_budget)?)
+            Some(agentos_skillpack::tools::SkillTools::open(
+                &skills_dir,
+                cfg.skill_budget,
+            )?)
         } else {
             None
         };
@@ -340,6 +356,7 @@ impl Core {
             small_url: small_url.clone(),
             large_url: large_url.clone(),
             anchor_key: secrets.anchor_key,
+            vault: secrets.vault,
             ledger_path,
             last_activity_ms: now,
             last_anchor_ms: now,
@@ -1070,11 +1087,64 @@ impl Core {
     }
 
     /// The control channel: the approval key and operator commands.
+    /// secret set <name> <value> | secret list | secret rm <name>. Names must start with conn.;
+    /// values are never printed or written to the ledger.
+    fn secret_cmd(&mut self, rest: &str) -> String {
+        let (sub, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        match sub {
+            "list" => {
+                let names: Vec<&str> = self
+                    .vault
+                    .names()
+                    .into_iter()
+                    .filter(|n| n.starts_with("conn."))
+                    .collect();
+                if names.is_empty() {
+                    "no service secrets".into()
+                } else {
+                    names.join("\n")
+                }
+            }
+            "set" => {
+                let (name, value) = args.split_once(' ').unwrap_or((args, ""));
+                if !name.starts_with("conn.") || name.len() <= 5 {
+                    return format!("refused: a service secret name starts with conn. ({name})");
+                }
+                if value.is_empty() {
+                    return "usage: secret set <name> <value>".into();
+                }
+                match self.vault.put(name, value.as_bytes()) {
+                    Ok(()) => {
+                        let _ = self.kernel.record(&format!("secret set: {name}"));
+                        format!("stored {name}")
+                    }
+                    Err(e) => format!("cannot store {name}: {e:?}"),
+                }
+            }
+            "rm" => {
+                let name = args.trim();
+                if !name.starts_with("conn.") {
+                    return format!("refused: a service secret name starts with conn. ({name})");
+                }
+                match self.vault.delete(name) {
+                    Ok(true) => {
+                        let _ = self.kernel.record(&format!("secret removed: {name}"));
+                        format!("removed {name}")
+                    }
+                    Ok(false) => format!("no secret {name}"),
+                    Err(e) => format!("cannot remove {name}: {e:?}"),
+                }
+            }
+            _ => "usage: secret set <name> <value> | secret list | secret rm <name>".into(),
+        }
+    }
+
     pub fn ctl(&mut self, line_in: &str) -> String {
         let line_in = line_in.trim();
         let (cmd, rest) = line_in.split_once(' ').unwrap_or((line_in, ""));
         match cmd {
             "status" => self.status_line(),
+            "secret" => self.secret_cmd(rest),
             "stage" => format!("{:?}", self.kernel.stage),
             "chat" => self.chat(rest),
             "state" => self.ui_state().to_string(),
@@ -1405,7 +1475,11 @@ impl Core {
             let _ = self.kernel.handle(Event::WindDownDone);
         }
         self.react_to_power();
-        let every = if self.signals_up { self.cfg.phone_signal_poll_secs } else { self.cfg.phone_poll_secs };
+        let every = if self.signals_up {
+            self.cfg.phone_signal_poll_secs
+        } else {
+            self.cfg.phone_poll_secs
+        };
         let again = self.poll_again_at.is_some_and(|t| now >= t);
         if again || now.saturating_sub(self.last_phone_poll_ms) >= every * 1000 {
             self.poll_again_at = None;
@@ -1440,7 +1514,9 @@ impl Core {
         let active = self.trainer.active();
         if self.models.set_adapter(&spec.name, active.clone()) {
             let what = active.map_or("no adapter".to_string(), |p| p.display().to_string());
-            let _ = self.kernel.record(&format!("model {} now served with {what}", spec.name));
+            let _ = self
+                .kernel
+                .record(&format!("model {} now served with {what}", spec.name));
         }
     }
 
@@ -1453,7 +1529,10 @@ impl Core {
             temperature: self.prio.temperature(),
             cool_c: self.cfg.cool_c,
             busy: !self.coder_jobs.is_empty(),
-            new_examples: self.learner.labelled().saturating_sub(self.trainer.trained_on),
+            new_examples: self
+                .learner
+                .labelled()
+                .saturating_sub(self.trainer.trained_on),
             min_new: self.cfg.train_min_new,
             forced: self.trainer.forced,
             nightly_due: self.cfg.train_nightly
@@ -1467,7 +1546,11 @@ impl Core {
         if let Some(outcome) = self.trainer.poll() {
             use crate::trainer::Outcome;
             let line = match outcome {
-                Outcome::Kept { adapter, base, tuned } => {
+                Outcome::Kept {
+                    adapter,
+                    base,
+                    tuned,
+                } => {
                     self.serve_adapter();
                     format!(
                         "training kept {}: {:.0}% -> {:.0}% on held-out requests",
@@ -1481,7 +1564,9 @@ impl Core {
                     base * 100.0,
                     tuned * 100.0
                 ),
-                Outcome::Paused { step } => format!("training paused at step {step}; continues next time"),
+                Outcome::Paused { step } => {
+                    format!("training paused at step {step}; continues next time")
+                }
                 Outcome::Failed(why) => format!("training failed: {why}"),
             };
             let _ = self.kernel.record(&line);
@@ -1489,9 +1574,13 @@ impl Core {
         }
         let blocker = self.train_conditions().blocker();
         if self.trainer.running.is_some() {
-            if let Some(why) = blocker.filter(|w| !w.contains("busy") || !self.coder_jobs.is_empty()) {
+            if let Some(why) =
+                blocker.filter(|w| !w.contains("busy") || !self.coder_jobs.is_empty())
+            {
                 if self.trainer.stop() {
-                    let line = format!("training stopped ({why}); continues from its checkpoint next time");
+                    let line = format!(
+                        "training stopped ({why}); continues from its checkpoint next time"
+                    );
                     let _ = self.kernel.record(&line);
                     self.trainer.last = Some(line);
                 }
@@ -1512,12 +1601,21 @@ impl Core {
         let examples = self.learner.labelled();
         let model = self.models.path(&spec);
         let bin = self.cfg.llama_server.clone();
-        match self.trainer.start(&bin, &model, examples, self.cfg.train_steps, self.cfg.train_chunk_secs) {
+        match self.trainer.start(
+            &bin,
+            &model,
+            examples,
+            self.cfg.train_steps,
+            self.cfg.train_chunk_secs,
+        ) {
             Ok(pid) => {
                 self.prio.adopt(pid);
                 let today = self.local_day();
                 self.trainer.started_on(today);
-                let line = format!("training {} on {examples} confirmed requests (pid {pid})", spec.name);
+                let line = format!(
+                    "training {} on {examples} confirmed requests (pid {pid})",
+                    spec.name
+                );
                 let _ = self.kernel.record(&line);
                 self.trainer.last = Some(line);
             }
