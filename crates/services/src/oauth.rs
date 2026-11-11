@@ -182,7 +182,15 @@ mod tests {
         bodies: Rc<RefCell<Vec<Vec<(String, String)>>>>,
     }
     impl Http for Fake {
-        fn get(&mut self, _url: &str) -> Result<String, String> {
+        fn get(&mut self, _url: &str, _bearer: Option<&str>) -> Result<String, String> {
+            Err("not used".into())
+        }
+        fn post_json(
+            &mut self,
+            _url: &str,
+            _bearer: Option<&str>,
+            _body: &serde_json::Value,
+        ) -> Result<String, String> {
             Err("not used".into())
         }
         fn post_form(&mut self, _url: &str, fields: &[(&str, &str)]) -> Result<String, String> {

@@ -49,7 +49,7 @@ impl Telegram {
 
     fn read(&mut self) -> Result<String, String> {
         let url = format!("{}?offset={}", self.url("getUpdates"), self.offset);
-        let raw = self.http.get(&url).map_err(|e| self.clean(e))?;
+        let raw = self.http.get(&url, None).map_err(|e| self.clean(e))?;
         let v: Value =
             serde_json::from_str(&raw).map_err(|_| "telegram: bad answer".to_string())?;
         if v["ok"] != Value::Bool(true) {
@@ -133,13 +133,21 @@ mod tests {
     }
     struct Fake(Rc<RefCell<Log>>);
     impl Http for Fake {
-        fn get(&mut self, url: &str) -> Result<String, String> {
+        fn get(&mut self, url: &str, _bearer: Option<&str>) -> Result<String, String> {
             let mut l = self.0.borrow_mut();
             l.gets.push(url.to_string());
             if let Some(e) = l.fail.clone() {
                 return Err(e);
             }
             Ok(l.answers.remove(0))
+        }
+        fn post_json(
+            &mut self,
+            _url: &str,
+            _bearer: Option<&str>,
+            _body: &serde_json::Value,
+        ) -> Result<String, String> {
+            Err("not used".into())
         }
         fn post_form(&mut self, url: &str, fields: &[(&str, &str)]) -> Result<String, String> {
             let mut l = self.0.borrow_mut();

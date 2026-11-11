@@ -30,9 +30,27 @@ use agentos_status::{line, Facts};
 use agentos_store::Store;
 use agentos_update::anchor::Verdict;
 use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
+
+type GoogleSlot = Rc<RefCell<Option<agentos_services::oauth::Tokens>>>;
+
+/// The tokens as the vault keeps them: JSON with access, refresh and expires_at_ms.
+fn tokens_json(t: &agentos_services::oauth::Tokens) -> String {
+    json!({"access": t.access, "refresh": t.refresh, "expires_at_ms": t.expires_at_ms}).to_string()
+}
+
+fn parse_tokens(bytes: &[u8]) -> Option<agentos_services::oauth::Tokens> {
+    let v: Value = serde_json::from_slice(bytes).ok()?;
+    Some(agentos_services::oauth::Tokens {
+        access: v["access"].as_str()?.to_string(),
+        refresh: v["refresh"].as_str().map(str::to_string),
+        expires_at_ms: v["expires_at_ms"].as_u64()?,
+    })
+}
 
 pub struct Core {
     pub cfg: Config,
@@ -57,6 +75,8 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// New Google tokens from a refresh, waiting to be written to the vault by the next tick.
+    google_slot: GoogleSlot,
     /// Sign-ins started with `oauth begin` and not yet finished, by provider.
     oauth_pending: std::collections::HashMap<String, agentos_services::oauth::Pending>,
     /// Remote MCP servers as they were at boot: (name, state, tools).
@@ -246,6 +266,29 @@ impl Core {
                 token, http,
             )));
         }
+        // Google Calendar and Gmail, when the owner has made a client and signed in
+        let google_slot: GoogleSlot = Rc::new(RefCell::new(None));
+        if let (Some(client), Some(tokens)) = (
+            secrets
+                .vault
+                .get("conn.google_client")
+                .map(|b| String::from_utf8_lossy(b).to_string()),
+            secrets.vault.get("conn.google").and_then(parse_tokens),
+        ) {
+            let slot = google_slot.clone();
+            let clock2 = clock.clone();
+            let google = agentos_services::google::Google::new(
+                agentos_services::google::provider(&client),
+                tokens,
+                Box::new(agentos_services::Ureq::default()),
+                Box::new(move || clock2.now_ms()),
+                cfg.utc_offset_minutes,
+                Box::new(move |t: &agentos_services::oauth::Tokens| {
+                    *slot.borrow_mut() = Some(t.clone())
+                }),
+            );
+            connectors.push(Box::new(google));
+        }
         // remote servers come after the functions, so the functions cannot call their tools
         let mut mcp_status = Vec::new();
         for s in &cfg.mcp_servers {
@@ -376,6 +419,7 @@ impl Core {
             sim_power,
             kernel,
             mcp_status,
+            google_slot,
             oauth_pending: std::collections::HashMap::new(),
             gateway,
             engine,
@@ -1174,23 +1218,24 @@ impl Core {
     fn oauth_cmd(&mut self, rest: &str) -> String {
         let (sub, args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
         let (name, pasted) = args.trim().split_once(' ').unwrap_or((args.trim(), ""));
-        let Some(p) = self
-            .cfg
-            .oauth_providers
-            .iter()
-            .find(|p| p.name == name)
-            .cloned()
-        else {
-            return format!("no sign-in provider {name:?} in the config");
-        };
-        let provider = agentos_services::oauth::Provider {
-            name: p.name.clone(),
-            client_id: p.client_id.clone(),
-            client_secret: p.client_secret.clone(),
-            auth_url: p.auth_url.clone(),
-            token_url: p.token_url.clone(),
-            scopes: p.scopes.clone(),
-            redirect: p.redirect.clone(),
+        let name = name.to_string();
+        let provider = match self.cfg.oauth_providers.iter().find(|p| p.name == name) {
+            Some(p) => agentos_services::oauth::Provider {
+                name: name.clone(),
+                client_id: p.client_id.clone(),
+                client_secret: p.client_secret.clone(),
+                auth_url: p.auth_url.clone(),
+                token_url: p.token_url.clone(),
+                scopes: p.scopes.clone(),
+                redirect: p.redirect.clone(),
+            },
+            // Google needs no config entry once its client is in the vault
+            None => match (name.as_str(), self.vault.get("conn.google_client")) {
+                ("google", Some(c)) => {
+                    agentos_services::google::provider(&String::from_utf8_lossy(c))
+                }
+                _ => return format!("no sign-in provider {name:?} in the config"),
+            },
         };
         match sub {
             "begin" => {
@@ -1199,17 +1244,17 @@ impl Core {
                     return format!("cannot make a sign-in: {e}");
                 }
                 let (url, pending) = agentos_services::oauth::begin(&provider, &random);
-                self.oauth_pending.insert(p.name.clone(), pending);
+                self.oauth_pending.insert(name.clone(), pending);
                 format!(
                     "open this in a browser and approve:\n{url}\nthen paste the address it lands on: oauth finish {} <address>",
-                    p.name
+                    name
                 )
             }
             "finish" => {
-                let Some(pending) = self.oauth_pending.get(&p.name) else {
+                let Some(pending) = self.oauth_pending.get(&name) else {
                     return format!(
                         "no sign-in is waiting for {}; run oauth begin {} first",
-                        p.name, p.name
+                        name, name
                     );
                 };
                 let mut http = agentos_services::Ureq::default();
@@ -1219,13 +1264,13 @@ impl Core {
                         let stored = json!({"access": t.access, "refresh": t.refresh, "expires_at_ms": t.expires_at_ms});
                         if let Err(e) = self
                             .vault
-                            .put(&format!("conn.{}", p.name), stored.to_string().as_bytes())
+                            .put(&format!("conn.{}", name), stored.to_string().as_bytes())
                         {
                             return format!("cannot store the sign-in: {e:?}");
                         }
-                        self.oauth_pending.remove(&p.name);
-                        let _ = self.kernel.record(&format!("signed in to {}", p.name));
-                        format!("signed in to {}", p.name)
+                        self.oauth_pending.remove(&name);
+                        let _ = self.kernel.record(&format!("signed in to {}", name));
+                        format!("signed in to {}", name)
                     }
                     Err(e) => e,
                 }
@@ -1631,6 +1676,18 @@ impl Core {
 
     /// Called about once a second by the run loop.
     pub fn tick(&mut self) {
+        let fresh = self.google_slot.borrow_mut().take();
+        if let Some(t) = fresh {
+            if self
+                .vault
+                .put("conn.google", tokens_json(&t).as_bytes())
+                .is_err()
+            {
+                let _ = self
+                    .kernel
+                    .record("google: could not save the refreshed sign-in");
+            }
+        }
         let now = self.clock.now_ms();
         if self.kernel.stage == Stage::Active
             && now.saturating_sub(self.last_activity_ms) >= self.cfg.idle_secs * 1000
