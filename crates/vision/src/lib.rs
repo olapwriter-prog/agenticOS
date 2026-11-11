@@ -252,7 +252,16 @@ fn map(img: &RgbImage, f: impl Fn([f32; 3]) -> [f32; 3]) -> RgbImage {
 pub fn apply(img: &DynamicImage, edit: &str) -> Result<DynamicImage, String> {
     let rgb = img.to_rgb8();
     let out = match edit {
-        "enhance" => saturate(&auto_levels(&rgb), 1.12),
+        "enhance" => {
+            // stretch the levels, then lift or lower the midtones toward a balanced brightness:
+            // what an auto-enhance does, so a dark photo comes out brighter, not only harder
+            let stretched = auto_levels(&rgb);
+            let mean = look(&DynamicImage::ImageRgb8(stretched.clone()))
+                .brightness
+                .clamp(0.05, 0.95);
+            let gamma = (0.5f32.ln() / mean.ln()).clamp(0.55, 1.4);
+            saturate(&map(&stretched, |p| p.map(|c| c.powf(gamma))), 1.12)
+        }
         "brighten" => map(&rgb, |p| p.map(|c| c.powf(0.7))),
         "vivid" => saturate(&rgb, 1.4),
         "bw" => map(&rgb, |p| {
@@ -535,6 +544,10 @@ mod tests {
         let after = |e: &str| look(&apply(&img, e).unwrap());
         assert!(after("brighten").brightness > before.brightness);
         assert!(after("enhance").contrast > before.contrast);
+        assert!(
+            after("enhance").brightness > before.brightness,
+            "enhance does not darken a dark photo"
+        );
         assert!(after("vivid").saturation > before.saturation);
         assert!(after("bw").saturation < 0.02);
         assert!(after("warm").warmth > before.warmth);

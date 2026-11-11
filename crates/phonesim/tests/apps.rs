@@ -119,6 +119,7 @@ fn answers_carry_widgets_the_screen_draws() {
     let highs = weather.cards.iter().find_map(|c| c.chart.as_ref().filter(|ch| ch.kind == "line")).expect("a chart of the highs");
     assert_eq!(highs.labels.len(), highs.values.len());
     assert_eq!(highs.labels[0], "Today");
+    assert!(weather.cards.iter().any(|c| c.title == "Fri 13 Nov"), "days read as dates people use");
     let air = ui(&mut a, "air_quality", &[("place", "Bengaluru")]);
     assert_eq!(air.cards[0].metric.as_ref().unwrap().value, "87");
     assert!((air.cards[0].progress.unwrap() - 87.0 / 300.0).abs() < 0.001);

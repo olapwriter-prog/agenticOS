@@ -302,7 +302,11 @@ pub fn document(doc: &Value, key: &str, s: &State, with_actions: bool) -> El {
     for (i, card) in doc["cards"].as_array().into_iter().flatten().enumerate() {
         out = out.child(card_view(card, &format!("{key}-card-{i}"), s, false));
     }
-    let actions = doc["actions"].as_array().cloned().unwrap_or_default();
+    let actions = if with_actions {
+        doc["actions"].as_array().cloned().unwrap_or_default()
+    } else {
+        vec![]
+    };
     if !actions.is_empty() {
         let mut r = row().w_full().gap(8.0).flex_wrap();
         for (i, b) in actions.iter().enumerate() {
@@ -311,7 +315,7 @@ pub fn document(doc: &Value, key: &str, s: &State, with_actions: bool) -> El {
                 pill(
                     &format!("{key}-act-{i}"),
                     &str_of(&b["label"]),
-                    SURFACE2,
+                    SURFACE3,
                     TEXT,
                 )
                 .on_press(move |s: &mut State| s.ask(&say)),

@@ -1004,4 +1004,13 @@ mod tests {
             assert!(rt.find(&k).is_some(), "{k}");
         }
     }
+
+    #[test]
+    fn the_latest_answer_shows_its_buttons_only_as_suggestions() {
+        let mut s = State::new();
+        chat_demo(&mut s);
+        let rt = rt_of(s);
+        assert!(rt.find("answer-1-act-0").is_none(), "no duplicate inside the latest answer");
+        assert!(rt.find("idea-0").is_some(), "they show above the box");
+    }
 }
