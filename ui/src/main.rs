@@ -430,6 +430,24 @@ fn main() {
                     Ok(v) => s.snap = v,
                     Err(e) => s.error = Some(e),
                 }
+                // for snapshots of a state: AGENTOS_TAB=home|phone|store|android|system,
+                // AGENTOS_SEG=recents|messages|contacts|keypad, AGENTOS_SHEET=<pending id>
+                s.tab = match std::env::var("AGENTOS_TAB").as_deref() {
+                    Ok("phone") => Tab::Phone,
+                    Ok("store") => Tab::Store,
+                    Ok("android") => Tab::Android,
+                    Ok("system") => Tab::System,
+                    _ => Tab::Home,
+                };
+                s.seg = match std::env::var("AGENTOS_SEG").as_deref() {
+                    Ok("messages") => Seg::Messages,
+                    Ok("contacts") => Seg::Contacts,
+                    Ok("keypad") => Seg::Keypad,
+                    _ => Seg::Recents,
+                };
+                s.sheet = std::env::var("AGENTOS_SHEET")
+                    .ok()
+                    .and_then(|v| v.parse().ok());
             }),
         ],
         setup: Some(setup),

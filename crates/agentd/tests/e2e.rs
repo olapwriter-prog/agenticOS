@@ -1665,3 +1665,33 @@ fn mcp_signin_discovers_registers_and_starts_the_pasted_link_sign_in() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_app_list_is_there_in_the_first_seconds_after_boot() {
+    // the daemon's clock starts at 0: the first read of the app list must not be skipped
+    let d = dir("android-apps-boot");
+    let c = Config {
+        android: "sim".into(),
+        proc_root: d.join("proc"),
+        ..cfg(&d)
+    };
+    std::fs::create_dir_all(d.join("proc/pressure")).unwrap();
+    std::fs::write(d.join("proc/meminfo"), "MemAvailable: 2097152 kB\n").unwrap();
+    std::fs::write(d.join("proc/pressure/memory"), "some avg10=0.00\n").unwrap();
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    ctl_send(
+        &r.ctl_path,
+        r#"do android_open {"app":"org.example.notes"}"#,
+    )
+    .unwrap();
+    let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(st["android"]["running"], json!(true));
+    assert_eq!(
+        st["android"]["apps"].as_array().map(|a| a.len()),
+        Some(1),
+        "{st}"
+    );
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

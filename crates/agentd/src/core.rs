@@ -147,7 +147,8 @@ pub struct Core {
     /// The last time the governor closed the sandbox: (reason, at ms).
     android_last_stop: Option<(String, u64)>,
     /// The app list, read at most every 30 seconds: (read at ms, apps).
-    android_apps: (u64, Vec<agentos_android::App>),
+    /// None until the first read: a clock that starts at 0 must not look "fresh" at boot.
+    android_apps: Option<(u64, Vec<agentos_android::App>)>,
     /// New Google tokens from a refresh, waiting to be written to the vault by the next tick.
     google_slot: GoogleSlot,
     /// Remote MCP servers that were signed in by discovery (mcp signin): their providers.
@@ -560,7 +561,7 @@ impl Core {
             android_policy,
             android_last_check_ms: now,
             android_last_stop: None,
-            android_apps: (0, Vec::new()),
+            android_apps: None,
             mcp_providers: std::collections::HashMap::new(),
             oauth_pending: std::collections::HashMap::new(),
             gateway,
@@ -1602,14 +1603,18 @@ impl Core {
         };
         let now = self.clock.now_ms();
         let running = sb.borrow_mut().running();
-        if running && now.saturating_sub(self.android_apps.0) >= 30_000 {
+        let stale = self
+            .android_apps
+            .as_ref()
+            .is_none_or(|(at, _)| now.saturating_sub(*at) >= 30_000);
+        if running && stale {
             let apps = sb.borrow_mut().apps().unwrap_or_default();
-            self.android_apps = (now, apps);
+            self.android_apps = Some((now, apps));
         }
         let apps: Vec<Value> = if running {
             self.android_apps
-                .1
                 .iter()
+                .flat_map(|(_, apps)| apps.iter())
                 .map(|a| json!({"name": a.name, "package": a.package}))
                 .collect()
         } else {
