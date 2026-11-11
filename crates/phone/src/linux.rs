@@ -40,7 +40,11 @@ impl Session {
                 return None;
             }
             let uid = f[2].parse().ok()?;
-            Some(Session { uid, gid: f[3].parse().ok()?, runtime: PathBuf::from(format!("/run/user/{uid}")) })
+            Some(Session {
+                uid,
+                gid: f[3].parse().ok()?,
+                runtime: PathBuf::from(format!("/run/user/{uid}")),
+            })
         })
     }
     /// The environment a session tool needs to find the session.
@@ -62,7 +66,11 @@ impl Runner for SystemRunner {
     fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
         let mut cmd = std::process::Command::new(prog);
         cmd.args(args);
-        if let Some(s) = self.session.as_ref().filter(|_| SESSION_TOOLS.contains(&prog)) {
+        if let Some(s) = self
+            .session
+            .as_ref()
+            .filter(|_| SESSION_TOOLS.contains(&prog))
+        {
             use std::os::unix::process::CommandExt;
             cmd.uid(s.uid).gid(s.gid).envs(s.env());
         }
@@ -159,9 +167,13 @@ impl Linux {
     }
     /// Run callaudiocli, fbcli and wpctl in `user`'s session (see the agentd-session service).
     pub fn with_session(mut self, user: &str) -> Result<Self, String> {
-        let passwd = std::fs::read_to_string("/etc/passwd").map_err(|e| format!("/etc/passwd: {e}"))?;
-        let session = Session::of(user, &passwd).ok_or(format!("no user {user:?} for the audio session"))?;
-        self.runner = Box::new(SystemRunner { session: Some(session) });
+        let passwd =
+            std::fs::read_to_string("/etc/passwd").map_err(|e| format!("/etc/passwd: {e}"))?;
+        let session =
+            Session::of(user, &passwd).ok_or(format!("no user {user:?} for the audio session"))?;
+        self.runner = Box::new(SystemRunner {
+            session: Some(session),
+        });
         Ok(self)
     }
     fn mm(&mut self, args: &[&str]) -> Result<String, String> {
@@ -473,7 +485,10 @@ mod tests {
             s.env(),
             vec![
                 ("XDG_RUNTIME_DIR", "/run/user/1001".to_string()),
-                ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1001/bus".to_string())
+                (
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/run/user/1001/bus".to_string()
+                )
             ]
         );
         assert_eq!(Session::of("nobody", passwd), None);

@@ -10,4 +10,5 @@ pub mod model;
 pub mod qa;
 pub mod secrets;
 pub mod server;
+pub mod setup;
 pub mod trainer;

@@ -1191,3 +1191,132 @@ fn the_governor_closes_the_android_sandbox_and_refuses_to_open_one() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_approval_pin_guards_every_press() {
+    let (d, r, _tok) = boot("pin");
+    // with no PIN the old behaviour is unchanged: a bare press approves
+    assert!(ctl_send(&r.ctl_path, r#"do call {"to":"Mum"}"#)
+        .unwrap()
+        .contains("approval required"));
+    assert!(ctl_send(&r.ctl_path, "press 1")
+        .unwrap()
+        .contains("approved"));
+    // set a PIN
+    assert_eq!(ctl_send(&r.ctl_path, "pin set 12345").unwrap(), "PIN set");
+    assert!(ctl_send(&r.ctl_path, "pin set 12")
+        .unwrap()
+        .contains("4 to 8 digits"));
+    assert!(ctl_send(&r.ctl_path, "pin set 99999 1111")
+        .unwrap()
+        .contains("old PIN is wrong"));
+    // a new pending action: a bare press fails, a wrong PIN fails
+    assert!(ctl_send(&r.ctl_path, r#"do call {"to":"Asha"}"#)
+        .unwrap()
+        .contains("approval required"));
+    assert!(ctl_send(&r.ctl_path, "press 2")
+        .unwrap()
+        .contains("a PIN is needed"));
+    assert_eq!(ctl_send(&r.ctl_path, "press 2 00000").unwrap(), "wrong PIN");
+    // five wrong PINs in a row lock every press, even the right one
+    for _ in 0..4 {
+        ctl_send(&r.ctl_path, "press 2 00001").unwrap();
+    }
+    let locked = ctl_send(&r.ctl_path, "press 2 12345").unwrap();
+    assert!(locked.contains("locked"), "{locked}");
+    let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    assert!(ledger.contains("five wrong approval PINs"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn the_right_pin_approves() {
+    let (d, r, _tok) = boot("pin-ok");
+    assert_eq!(ctl_send(&r.ctl_path, "pin set 4321").unwrap(), "PIN set");
+    assert!(ctl_send(&r.ctl_path, r#"do call {"to":"Mum"}"#)
+        .unwrap()
+        .contains("approval required"));
+    assert!(ctl_send(&r.ctl_path, "press 1 4321")
+        .unwrap()
+        .contains("approved #1"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn import_contacts_reads_a_vcard_file() {
+    let (d, r, _tok) = boot("vcard");
+    let f = d.join("contacts.vcf");
+    std::fs::write(
+        &f,
+        "BEGIN:VCARD\nFN:Mum\nTEL:+91 98765 43210\nEND:VCARD\nBEGIN:VCARD\nFN:Ravi\nTEL:+91 98123 45678\nEND:VCARD\n",
+    )
+    .unwrap();
+    assert_eq!(
+        ctl_send(&r.ctl_path, &format!("import contacts {}", f.display())).unwrap(),
+        "added 2 contacts, skipped 0"
+    );
+    assert!(ctl_send(&r.ctl_path, r#"do find_contact {"name":"Mum"}"#)
+        .unwrap()
+        .contains("98765"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn setup_walks_every_step_and_leaves_the_state() {
+    let (d, r, _tok) = boot("setup");
+    let screen = ctl_send(&r.ctl_path, "setup").unwrap();
+    assert!(screen.contains("\"id\":\"welcome\""), "{screen}");
+    for a in [
+        "setup answer yes",
+        "setup answer home|pw1",
+        "setup answer continue",
+        "setup answer yes",
+        "setup answer Asha|+91 98765 43210",
+        "setup answer skip",
+        "setup answer 1234",
+        "setup answer yes",
+        "setup answer later",
+        "setup answer skip",
+        "setup answer skip",
+    ] {
+        let out = ctl_send(&r.ctl_path, a).unwrap();
+        assert!(
+            !out.contains("\"error\":\"") || out.contains("\"error\":null"),
+            "{a}: {out}"
+        );
+    }
+    let state: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(state["setup"], Value::Null);
+    assert!(ctl_send(&r.ctl_path, r#"do find_contact {"name":"Me"}"#)
+        .unwrap()
+        .contains("98765"));
+    // the PIN is in the vault, not in the saved setup
+    let saved = std::fs::read_to_string(d.join("setup.json")).unwrap();
+    assert!(!saved.contains("1234"));
+    // chat still works after setup
+    assert!(!ctl_send(&r.ctl_path, "chat what's on mon")
+        .unwrap()
+        .is_empty());
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn setup_resumes_on_the_same_step_after_a_restart() {
+    let d = dir("setup-resume");
+    let c = cfg(&d);
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    ctl_send(&r.ctl_path, "setup answer yes").unwrap();
+    ctl_send(&r.ctl_path, "setup answer skip").unwrap();
+    r.stop();
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(cfg(&d), s, Arc::new(ScaledClock::new(1))).unwrap();
+    let screen = ctl_send(&r.ctl_path, "setup").unwrap();
+    assert!(screen.contains("\"id\":\"sim\""), "{screen}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

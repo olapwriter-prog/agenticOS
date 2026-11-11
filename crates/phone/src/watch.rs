@@ -77,7 +77,10 @@ pub fn spawn(program: PathBuf, on: impl Fn(Signal) + Send + 'static) {
                     on(Signal::Down);
                 }
                 Err(e) if !warned => {
-                    eprintln!("agentd: {}: {e}; polling instead of D-Bus signals", program.display());
+                    eprintln!(
+                        "agentd: {}: {e}; polling instead of D-Bus signals",
+                        program.display()
+                    );
                     warned = true;
                 }
                 Err(_) => {}
@@ -103,7 +106,10 @@ mod tests {
         assert_eq!(wake_of(SMS), Some("sms"));
         assert_eq!(wake_of(STATE), Some("call-state"));
         // the body lines after a header, and other signals, are not wakes
-        assert_eq!(wake_of("   object path \"/org/freedesktop/ModemManager1/SMS/4\""), None);
+        assert_eq!(
+            wake_of("   object path \"/org/freedesktop/ModemManager1/SMS/4\""),
+            None
+        );
         assert_eq!(wake_of("   boolean true"), None);
         let other = SMS.replace("member=Added", "member=Deleted");
         assert_eq!(wake_of(&other), None);
@@ -120,7 +126,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("agentos-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let prog = dir.join("dbus-monitor");
-        std::fs::write(&prog, format!("#!/bin/sh\necho '{CALL}'\necho '   string \"x\"'\necho '{SMS}'\n")).unwrap();
+        std::fs::write(
+            &prog,
+            format!("#!/bin/sh\necho '{CALL}'\necho '   string \"x\"'\necho '{SMS}'\n"),
+        )
+        .unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -132,7 +142,12 @@ mod tests {
         }
         assert_eq!(
             seen.lock().unwrap()[..4],
-            [Signal::Up, Signal::Wake("call"), Signal::Wake("sms"), Signal::Down]
+            [
+                Signal::Up,
+                Signal::Wake("call"),
+                Signal::Wake("sms"),
+                Signal::Down
+            ]
         );
         let _ = std::fs::remove_dir_all(dir);
     }

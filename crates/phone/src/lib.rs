@@ -143,6 +143,44 @@ pub struct Phone {
 pub type Shared = Rc<RefCell<Phone>>;
 
 impl Phone {
+    /// Import the cards of a vCard file: the FN line is the name, the first TEL line the number.
+    /// A card with no name, no valid number, or a name already in the list is skipped.
+    /// Returns (added, skipped).
+    pub fn import_vcard(&mut self, text: &str) -> (usize, usize) {
+        let (mut added, mut skipped) = (0, 0);
+        for card in text.split("BEGIN:VCARD").skip(1) {
+            let card = card.split("END:VCARD").next().unwrap_or("");
+            let mut name: Option<String> = None;
+            let mut number: Option<String> = None;
+            for line in card.lines().map(str::trim) {
+                if let Some(v) = line.strip_prefix("FN:") {
+                    name.get_or_insert_with(|| v.trim().to_string());
+                } else if line.starts_with("TEL") && number.is_none() {
+                    if let Some((_, v)) = line.rsplit_once(':') {
+                        number = normalize_number(v);
+                    }
+                }
+            }
+            let exists = |n: &str| {
+                self.contacts
+                    .list
+                    .iter()
+                    .any(|c| c.name.eq_ignore_ascii_case(n))
+            };
+            match (name, number) {
+                (Some(n), Some(num)) if !n.is_empty() && !exists(&n) => {
+                    if self.contacts.add(&n, &num).is_ok() {
+                        added += 1;
+                    } else {
+                        skipped += 1;
+                    }
+                }
+                _ => skipped += 1,
+            }
+        }
+        (added, skipped)
+    }
+
     pub fn new(backend: Box<dyn Backend>, contacts: Contacts) -> Self {
         Phone {
             backend,
@@ -448,7 +486,11 @@ impl Connector for PhoneTools {
                     .take(10)
                     .map(|c| {
                         let dir = if c.incoming { "from" } else { "to" };
-                        format!("{dir} {} {}", p.who(&c.number), format!("{:?}", c.state).to_lowercase())
+                        format!(
+                            "{dir} {} {}",
+                            p.who(&c.number),
+                            format!("{:?}", c.state).to_lowercase()
+                        )
                     })
                     .collect::<Vec<_>>()
                     .join("\n"))
@@ -482,7 +524,11 @@ impl Connector for PhoneTools {
                         .iter()
                         .map(|c| {
                             let dir = if c.incoming { "from" } else { "to" };
-                            format!("{dir} {} {}", p.who(&c.number), format!("{:?}", c.state).to_lowercase())
+                            format!(
+                                "{dir} {} {}",
+                                p.who(&c.number),
+                                format!("{:?}", c.state).to_lowercase()
+                            )
                         })
                         .collect::<Vec<_>>()
                         .join("\n")
@@ -608,6 +654,26 @@ mod tests {
         assert_eq!(c.name_for("9876543210"), Some("Mum"));
     }
     #[test]
+    fn a_vcard_import_adds_the_good_cards_and_skips_the_rest() {
+        let card = |name: &str, tel: &str| {
+            format!("BEGIN:VCARD\nVERSION:3.0\nFN:{name}\nTEL;TYPE=CELL:{tel}\nEND:VCARD\n")
+        };
+        let text = format!(
+            "{}{}{}",
+            card("Mum", "+91 98765 43210"),
+            card("Asha", "+91 99999 88888"),
+            card("Bad", "12")
+        );
+        let mut phone = Phone::new(Box::new(Sim::default()), Contacts::default());
+        assert_eq!(phone.import_vcard(&text), (2, 1));
+        assert_eq!(
+            phone.import_vcard(&text),
+            (0, 3),
+            "a second import adds nothing"
+        );
+    }
+
+    #[test]
     fn contacts_survive_a_restart() {
         let p = std::env::temp_dir().join(format!("contacts-{}.json", std::process::id()));
         let _ = std::fs::remove_file(&p);
@@ -717,10 +783,17 @@ mod tests {
     #[test]
     fn call_listings_keep_names_as_saved() {
         let (mut t, p) = phone();
-        t.call(&act("add_contact", &[("name", "Ravi"), ("number", "+919812345678")])).unwrap();
+        t.call(&act(
+            "add_contact",
+            &[("name", "Ravi"), ("number", "+919812345678")],
+        ))
+        .unwrap();
         p.borrow_mut().backend.inject_call("+919812345678").unwrap();
         let log = t.call(&act("call_log", &[])).unwrap();
-        assert_eq!(log, "from Ravi (+919812345678) ringing", "only the state is lowercase");
+        assert_eq!(
+            log, "from Ravi (+919812345678) ringing",
+            "only the state is lowercase"
+        );
     }
     #[test]
     fn switches_and_bad_values() {

@@ -36,6 +36,23 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
+fn setup_screen_json(s: &crate::setup::Screen) -> Value {
+    json!({
+        "id": s.id,
+        "index": s.index,
+        "total": s.total,
+        "title": s.title,
+        "body": s.body,
+        "options": s.options,
+        "input": s.input,
+        "can_skip": s.can_skip,
+        "error": s.error,
+    })
+}
+
+/// The vault name of the approval PIN. Not a conn. name, so the secret commands cannot reach it.
+const PIN_NAME: &str = "approval_pin";
+
 /// The Android phrases, added after the others so the specific ones still win. Only when the
 /// sandbox is configured: otherwise "open ..." would name a tool that does not exist.
 fn intents_with_android(
@@ -89,6 +106,12 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// First-boot setup, saved in setup.json after every answer.
+    setup: crate::setup::Setup,
+    setup_path: PathBuf,
+    /// Wrong approval PINs in a row, and until when presses are refused.
+    pin_failures: u32,
+    pin_locked_until_ms: u64,
     /// The Android sandbox, if configured, and the governor's word on opening apps.
     android: Option<agentos_android::Shared>,
     android_blocked: agentos_android::Blocked,
@@ -300,6 +323,7 @@ impl Core {
             }
         };
         let android_on = android.is_some();
+        let setup_path = dir.join("setup.json");
         let android_policy = agentos_android::governor::Policy {
             min_free_mib: cfg.android_min_free_mib,
             max_psi: cfg.android_max_psi,
@@ -478,6 +502,10 @@ impl Core {
             kernel,
             mcp_status,
             google_slot,
+            setup: crate::setup::Setup::load(&setup_path),
+            setup_path,
+            pin_failures: 0,
+            pin_locked_until_ms: 0,
             android,
             android_blocked,
             android_policy,
@@ -1238,6 +1266,7 @@ impl Core {
             "prio": self.prio.report().lines().next().unwrap_or_default(),
             "functions": lines(self.functions.borrow().list()),
             "learning": self.learner.stats(),
+            "setup": self.setup_state(),
             "android": self.android_state(),
             "memory": self.memory_state(),
         })
@@ -1280,6 +1309,15 @@ impl Core {
         json!({"mode": self.cfg.android, "running": running, "apps": apps, "last_stop": last})
     }
 
+    /// The setup screen while setup is not done, null afterwards.
+    fn setup_state(&mut self) -> Value {
+        if self.setup.is_done() {
+            return Value::Null;
+        }
+        let facts = self.setup_facts();
+        setup_screen_json(&self.setup.screen(&facts))
+    }
+
     fn memory_state(&self) -> Value {
         let p = agentos_android::governor::Pressure::read(&self.cfg.proc_root);
         json!({"available_mib": p.available_mib, "psi": p.psi})
@@ -1310,6 +1348,181 @@ impl Core {
             return format!("error: {text}");
         }
         text
+    }
+
+    fn setup_facts(&mut self) -> crate::setup::Facts {
+        let android_available = match self.android.clone() {
+            Some(sb) => sb.borrow_mut().available(),
+            None => false,
+        };
+        crate::setup::Facts {
+            networks: vec![],
+            known_apps: vec![],
+            android_available,
+        }
+    }
+
+    /// setup: the current screen. setup answer <text> | setup skip | setup back | setup reset.
+    /// Each change is saved and the new screen is printed.
+    fn setup_cmd(&mut self, rest: &str) -> String {
+        let (sub, text) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let facts = self.setup_facts();
+        let effects = match sub {
+            "" => vec![],
+            "answer" => self.setup.answer(text, &facts),
+            "skip" => {
+                self.setup.skip();
+                vec![]
+            }
+            "back" => {
+                self.setup.back();
+                vec![]
+            }
+            "reset" => {
+                self.setup = crate::setup::Setup::default();
+                vec![]
+            }
+            _ => {
+                return "usage: setup | setup answer <text> | setup skip | setup back | setup reset"
+                    .into()
+            }
+        };
+        if let Err(e) = self.setup.save(&self.setup_path) {
+            let _ = self.kernel.record(&format!("setup: cannot save: {e}"));
+        }
+        self.run_setup_effects(effects);
+        let facts = self.setup_facts();
+        setup_screen_json(&self.setup.screen(&facts)).to_string()
+    }
+
+    /// Run what the setup answers asked for, through the same tools and vault as everything else.
+    fn run_setup_effects(&mut self, effects: Vec<crate::setup::Effect>) {
+        use crate::setup::Effect;
+        for e in effects {
+            match e {
+                Effect::RunTool { tool, args } => {
+                    let (ok, text) = self.call_tool(&tool, &args);
+                    if !ok {
+                        let _ = self
+                            .kernel
+                            .record(&format!("setup: {tool} did not run: {text}"));
+                    }
+                }
+                Effect::SetSecret { name, value } => {
+                    let _ = self.vault.put(&name, value.as_bytes());
+                    let _ = self.kernel.record(&format!("setup: secret set: {name}"));
+                }
+                Effect::SetPin(pin) => {
+                    let _ = self.vault.put(PIN_NAME, pin.as_bytes());
+                    let _ = self.kernel.record("setup: approval PIN set");
+                }
+                Effect::PullModels => {
+                    // downloads run on their own thread; the daemon keeps answering meanwhile
+                    let specs = self.cfg.models.clone();
+                    let dests: Vec<PathBuf> = specs.iter().map(|m| self.models.path(m)).collect();
+                    std::thread::spawn(move || {
+                        for (spec, dest) in specs.iter().zip(dests) {
+                            if dest.exists() {
+                                continue;
+                            }
+                            if let Err(e) = agentos_models::pull(spec, &dest, &mut |_, _| {}) {
+                                eprintln!("model {}: {e}", spec.name);
+                            }
+                        }
+                    });
+                }
+                Effect::ImportContacts(path) => match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let (added, skipped) = self.phone.borrow_mut().import_vcard(&text);
+                        let _ = self.kernel.record(&format!(
+                            "setup: {added} contacts imported, {skipped} skipped"
+                        ));
+                    }
+                    Err(e) => {
+                        let _ = self
+                            .kernel
+                            .record(&format!("setup: cannot read {path}: {e}"));
+                    }
+                },
+                Effect::Finish => {
+                    let _ = self.kernel.record("setup finished");
+                }
+            }
+        }
+    }
+
+    /// press <id> [<pin>]: approves a waiting action. With a PIN set, the PIN is required; five
+    /// wrong PINs lock presses for a minute.
+    fn press_cmd(&mut self, rest: &str) -> String {
+        let mut parts = rest.split_whitespace();
+        let id = match parts
+            .next()
+            .map(|t| t.trim_start_matches('#').parse::<u64>())
+        {
+            Some(Ok(id)) => id,
+            _ => return "no such pending item".into(),
+        };
+        let given = parts.next();
+        if let Some(stored) = self.vault.get(PIN_NAME).map(|b| b.to_vec()) {
+            let now = self.clock.now_ms();
+            if now < self.pin_locked_until_ms {
+                return format!(
+                    "presses are locked after wrong PINs; try again in {} s",
+                    (self.pin_locked_until_ms - now) / 1000 + 1
+                );
+            }
+            let Some(given) = given else {
+                return format!("a PIN is needed: press {id} <pin>");
+            };
+            if !agentos_gateway::http::ct_eq(given.as_bytes(), &stored) {
+                self.pin_failures += 1;
+                if self.pin_failures >= 5 {
+                    self.pin_failures = 0;
+                    self.pin_locked_until_ms = now + 60_000;
+                    let _ = self
+                        .kernel
+                        .record("five wrong approval PINs; presses refused for 60 s");
+                    return "wrong PIN; too many tries, presses are locked for 60 s".into();
+                }
+                return "wrong PIN".into();
+            }
+            self.pin_failures = 0;
+        }
+        if self.gateway.press_key(id) {
+            self.learner.approved(id, self.clock.now_ms());
+            self.retrain();
+            format!("approved #{id}; ask again within 10 minutes")
+        } else {
+            "no such pending item".into()
+        }
+    }
+
+    /// pin set <new> [<old>]: 4 to 8 digits. Changing a PIN needs the old one.
+    fn pin_cmd(&mut self, rest: &str) -> String {
+        let mut parts = rest.split_whitespace();
+        if parts.next() != Some("set") {
+            return "usage: pin set <new> [<old>]".into();
+        }
+        let new = parts.next().unwrap_or("");
+        let old = parts.next();
+        if !(4..=8).contains(&new.len()) || !new.bytes().all(|b| b.is_ascii_digit()) {
+            return "a PIN is 4 to 8 digits".into();
+        }
+        if let Some(stored) = self.vault.get(PIN_NAME).map(|b| b.to_vec()) {
+            let Some(old) = old else {
+                return "changing the PIN needs the old one: pin set <new> <old>".into();
+            };
+            if !agentos_gateway::http::ct_eq(old.as_bytes(), &stored) {
+                return "the old PIN is wrong".into();
+            }
+        }
+        match self.vault.put(PIN_NAME, new.as_bytes()) {
+            Ok(()) => {
+                let _ = self.kernel.record("approval PIN set");
+                "PIN set".into()
+            }
+            Err(e) => format!("cannot store the PIN: {e:?}"),
+        }
     }
 
     /// oauth begin <provider> | oauth finish <provider> <pasted address or code>
@@ -1469,13 +1682,18 @@ impl Core {
                         .join("\n")
                 }
             }
-            "press" => match rest.trim().trim_start_matches('#').parse::<u64>() {
-                Ok(id) if self.gateway.press_key(id) => {
-                    self.learner.approved(id, self.clock.now_ms());
-                    self.retrain();
-                    format!("approved #{id}; ask again within 10 minutes")
-                }
-                _ => "no such pending item".into(),
+            "press" => self.press_cmd(rest),
+            "pin" => self.pin_cmd(rest),
+            "setup" => self.setup_cmd(rest),
+            "import" => match rest.trim().strip_prefix("contacts ") {
+                Some(path) => match std::fs::read_to_string(path.trim()) {
+                    Ok(text) => {
+                        let (added, skipped) = self.phone.borrow_mut().import_vcard(&text);
+                        format!("added {added} contacts, skipped {skipped}")
+                    }
+                    Err(e) => format!("cannot read {}: {e}", path.trim()),
+                },
+                None => "usage: import contacts <path to a vCard file>".into(),
             },
             // the hardware approval key: approves the one waiting action, never a guess among several
             "key" => {
@@ -1628,7 +1846,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors oauth".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors oauth pin import setup".into(),
             other => format!("unknown command: {other}"),
         }
     }
