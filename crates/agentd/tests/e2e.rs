@@ -1614,3 +1614,54 @@ fn the_state_has_the_calls_messages_contacts_and_connectors() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn mcp_signin_discovers_registers_and_starts_the_pasted_link_sign_in() {
+    let d = dir("mcp-signin");
+    std::fs::create_dir_all(&d).unwrap();
+    let files = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let base = fake_catalog_server(files.clone());
+    {
+        let mut m = files.lock().unwrap();
+        m.insert(
+            ".well-known/oauth-authorization-server".to_string(),
+            format!(
+                r#"{{"authorization_endpoint":"https://auth.example/authorize","token_endpoint":"https://auth.example/token","registration_endpoint":"{base}/register"}}"#
+            ),
+        );
+        m.insert(
+            "register".to_string(),
+            r#"{"client_id":"client-xyz"}"#.to_string(),
+        );
+    }
+    let server = agentd::config::McpServer {
+        name: "zomato".into(),
+        url: format!("{base}/mcp"),
+        secret: Some("conn.zomato".into()),
+        tier: "high".into(),
+        trust_hints: false,
+        allow: vec![],
+    };
+    let c = Config {
+        mcp_servers: vec![server],
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let begun = ctl_send(&r.ctl_path, "mcp signin zomato").unwrap();
+    assert!(
+        begun.contains("https://auth.example/authorize?response_type=code&client_id=client-xyz"),
+        "{begun}"
+    );
+    let refused = ctl_send(
+        &r.ctl_path,
+        "oauth finish zomato http://127.0.0.1:8765/oauth/callback?code=x&state=wrong",
+    )
+    .unwrap();
+    assert!(refused.contains("state does not match"), "{refused}");
+    assert!(ctl_send(&r.ctl_path, "mcp signin nobody")
+        .unwrap()
+        .contains("no remote server"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

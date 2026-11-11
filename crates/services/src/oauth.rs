@@ -5,6 +5,7 @@
 use crate::Http;
 use sha2::{Digest, Sha256};
 
+#[derive(Debug, Clone)]
 pub struct Provider {
     pub name: String,
     pub client_id: String,

@@ -150,6 +150,8 @@ pub struct Core {
     android_apps: (u64, Vec<agentos_android::App>),
     /// New Google tokens from a refresh, waiting to be written to the vault by the next tick.
     google_slot: GoogleSlot,
+    /// Remote MCP servers that were signed in by discovery (mcp signin): their providers.
+    mcp_providers: std::collections::HashMap<String, agentos_services::oauth::Provider>,
     /// Sign-ins started with `oauth begin` and not yet finished, by provider.
     oauth_pending: std::collections::HashMap<String, agentos_services::oauth::Pending>,
     /// Remote MCP servers as they were at boot: (name, state, tools).
@@ -559,6 +561,7 @@ impl Core {
             android_last_check_ms: now,
             android_last_stop: None,
             android_apps: (0, Vec::new()),
+            mcp_providers: std::collections::HashMap::new(),
             oauth_pending: std::collections::HashMap::new(),
             gateway,
             engine,
@@ -1019,6 +1022,46 @@ impl Core {
             }
             Err(_) => format!("{name} did not pick an action it may use"),
         }
+    }
+
+    /// mcp signin <server>: find the server's sign-in details from its origin, register a client
+    /// there, and start the pasted-link sign-in. Then: oauth finish <server> <pasted address>. The
+    /// tokens go to the vault as conn.<server>; the server's config names that secret.
+    fn mcp_signin(&mut self, name: &str) -> String {
+        let url = self
+            .cfg
+            .mcp_servers
+            .iter()
+            .map(|s| (s.name.clone(), s.url.clone()))
+            .chain(
+                read_store_servers(&self.cfg.data_dir)
+                    .into_iter()
+                    .map(|s| (s.name.clone(), s.url.clone())),
+            )
+            .find(|(n, _)| n == name)
+            .map(|(_, u)| u);
+        let Some(url) = url else {
+            return format!("no remote server called {name} in the config");
+        };
+        let redirect = "http://127.0.0.1:8765/oauth/callback";
+        let mut http = agentos_services::Ureq::default();
+        let meta = match agentos_services::mcp_oauth::discover(&mut http, &url) {
+            Ok(m) => m,
+            Err(e) => return format!("cannot find {name}'s sign-in: {e}"),
+        };
+        let Some(endpoint) = meta.registration_endpoint.clone() else {
+            return format!("{name} does not register clients; sign in by hand with oauth begin");
+        };
+        let client = match agentos_services::mcp_oauth::register(&mut http, &endpoint, redirect) {
+            Ok(c) => c,
+            Err(e) => return format!("cannot register with {name}: {e}"),
+        };
+        let provider = agentos_services::mcp_oauth::provider(name, &meta, &client, redirect);
+        self.mcp_providers.insert(name.to_string(), provider);
+        let _ = self
+            .kernel
+            .record(&format!("registered a client with {name}"));
+        self.oauth_cmd(&format!("begin {name}"))
     }
 
     /// store refresh: fetch the signed catalogue, check it, and save it for the next restart.
@@ -1810,6 +1853,8 @@ impl Core {
                 scopes: p.scopes.clone(),
                 redirect: p.redirect.clone(),
             },
+            // a server signed in by discovery (mcp signin) keeps its provider here
+            None if self.mcp_providers.contains_key(&name) => self.mcp_providers[&name].clone(),
             // Google needs no config entry once its client is in the vault
             None => match (name.as_str(), self.vault.get("conn.google_client")) {
                 ("google", Some(c)) => {
@@ -1920,6 +1965,10 @@ impl Core {
             "status" => self.status_line(),
             "do" => self.do_cmd(rest),
             "oauth" => self.oauth_cmd(rest),
+            "mcp" => match rest.trim().strip_prefix("signin ") {
+                Some(name) => self.mcp_signin(name.trim()),
+                None => "usage: mcp signin <server name>".into(),
+            },
             "connectors" => {
                 if self.mcp_status.is_empty() {
                     "no remote servers configured".into()
