@@ -57,6 +57,8 @@ pub struct Core {
     prio: Prio,
     models: Supervisor,
     functions: agentos_functions::Shared,
+    /// Remote MCP servers as they were at boot: (name, state, tools).
+    mcp_status: Vec<(String, String, usize)>,
     /// Episodes and rewards: what the human approved, declined and corrected.
     learner: Learner,
     /// What kind of request is this? Answers regular requests without the LLM (crate::qa).
@@ -156,7 +158,7 @@ impl Core {
                 (Arc::new(p.clone()), Some(p))
             }
         };
-        let kernel = Kernel::new(
+        let mut kernel = Kernel::new(
             clock.clone(),
             power.clone(),
             freezer,
@@ -231,6 +233,34 @@ impl Core {
         let compiler = Compiler::new(cfg.rustc.clone(), dir.join("run/compile"));
         let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
         connectors.push(Box::new(FunctionTools(functions.clone())));
+        // remote servers come after the functions, so the functions cannot call their tools
+        let mut mcp_status = Vec::new();
+        for s in &cfg.mcp_servers {
+            let token = s
+                .secret
+                .as_ref()
+                .and_then(|n| secrets.vault.get(n))
+                .map(|b| String::from_utf8_lossy(b).to_string());
+            let transport = Box::new(agentos_mcpc::Http {
+                url: s.url.clone(),
+                token,
+            });
+            let options = agentos_mcpc::Options {
+                default_tier: Self::parse_tier(&s.tier),
+                trust_hints: s.trust_hints,
+                allow: s.allow.clone(),
+            };
+            match agentos_mcpc::Remote::connect(&s.name, transport, options) {
+                Ok(r) => {
+                    mcp_status.push((s.name.clone(), "connected".into(), r.tool_count()));
+                    connectors.push(Box::new(r));
+                }
+                Err(e) => {
+                    let _ = kernel.record(&format!("mcp {} unavailable: {e}", s.name));
+                    mcp_status.push((s.name.clone(), "unavailable".into(), 0));
+                }
+            }
+        }
         let coder_prompt = crate::coder::system_prompt(&phone_tools);
         let phone_tool_names: Vec<&'static str> = phone_tools.iter().map(|t| t.name).collect();
         let exec = Executor::new(
@@ -332,6 +362,7 @@ impl Core {
             power,
             sim_power,
             kernel,
+            mcp_status,
             gateway,
             engine,
             model,
@@ -1089,6 +1120,15 @@ impl Core {
     }
 
     /// The control channel: the approval key and operator commands.
+    /// "low", "medium" or "high"; anything else is High, so a typo never lowers a tier.
+    fn parse_tier(s: &str) -> agentos_action::Tier {
+        match s {
+            "low" => Tier::Low,
+            "medium" => Tier::Medium,
+            _ => Tier::High,
+        }
+    }
+
     /// do <tool> <json object>: call a tool exactly as an MCP client would, with the same tiers
     /// and approval steps. The answer is the text of the tool's result.
     fn do_cmd(&mut self, rest: &str) -> String {
@@ -1174,6 +1214,17 @@ impl Core {
         match cmd {
             "status" => self.status_line(),
             "do" => self.do_cmd(rest),
+            "connectors" => {
+                if self.mcp_status.is_empty() {
+                    "no remote servers configured".into()
+                } else {
+                    self.mcp_status
+                        .iter()
+                        .map(|(n, st, k)| format!("{n}: {st}, {k} tools"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                }
+            }
             "restart" => {
                 // the core loop sees STOP within a second; the service manager starts agentd again
                 crate::server::STOP.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1354,7 +1405,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart connectors".into(),
             other => format!("unknown command: {other}"),
         }
     }

@@ -112,6 +112,31 @@ pub struct Config {
     /// home place and country. `apps_enabled = false` leaves them out (a phone kept offline).
     pub apps: agentos_apps::Config,
     pub apps_enabled: bool,
+    /// Remote MCP servers ([[mcp_servers]]): each one's tools are offered as connectors, behind
+    /// the same tiers and approval key. A server that cannot be reached is skipped at boot.
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// One remote MCP server. `secret` names a vault entry (conn.<name>) holding its bearer token.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServer {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// The tier of its tools: "low", "medium" or "high". Anything else is High.
+    #[serde(default = "high_tier")]
+    pub tier: String,
+    /// Believe its readOnlyHint and destructiveHint annotations.
+    #[serde(default)]
+    pub trust_hints: bool,
+    /// When not empty, only these remote tools are offered.
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+fn high_tier() -> String {
+    "high".into()
 }
 
 impl Default for Config {
@@ -169,6 +194,7 @@ impl Default for Config {
             documents_dir: None,
             apps: agentos_apps::Config::default(),
             apps_enabled: true,
+            mcp_servers: Vec::new(),
         }
     }
 }
