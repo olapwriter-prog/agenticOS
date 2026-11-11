@@ -233,6 +233,17 @@ impl Core {
         let compiler = Compiler::new(cfg.rustc.clone(), dir.join("run/compile"));
         let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
         connectors.push(Box::new(FunctionTools(functions.clone())));
+        // a Telegram bot, only when its token is in the vault
+        if let Some(token) = secrets
+            .vault
+            .get("conn.telegram")
+            .map(|b| String::from_utf8_lossy(b).to_string())
+        {
+            let http = Box::new(agentos_services::Ureq::default());
+            connectors.push(Box::new(agentos_services::telegram::Telegram::new(
+                token, http,
+            )));
+        }
         // remote servers come after the functions, so the functions cannot call their tools
         let mut mcp_status = Vec::new();
         for s in &cfg.mcp_servers {

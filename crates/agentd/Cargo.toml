@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 agentos-mcpc = { path = "../mcpc" }
+agentos-services = { path = "../services" }
 agentos-ledger = { path = "../ledger" }
 agentos-hal = { path = "../hal" }
 agentos-stage = { path = "../stage" }

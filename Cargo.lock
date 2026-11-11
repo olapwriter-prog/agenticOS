@@ -60,6 +60,7 @@ dependencies = [
  "agentos-prio",
  "agentos-router",
  "agentos-screen",
+ "agentos-services",
  "agentos-skillpack",
  "agentos-stage",
  "agentos-status",
@@ -401,6 +402,16 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "agentos-services"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
