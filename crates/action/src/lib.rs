@@ -20,6 +20,23 @@ pub struct Tool {
     pub tier: Tier,
 }
 
+/// Tools made at run time (remote MCP servers, the store). The names are leaked once, at load,
+/// because a tool lives as long as the daemon does.
+fn leak(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
+impl Tool {
+    pub fn dynamic(name: &str, args: &[String], tier: Tier) -> Tool {
+        let a: Vec<&'static str> = args.iter().map(|s| leak(s)).collect();
+        Tool {
+            name: leak(name),
+            args: Box::leak(a.into_boxed_slice()),
+            tier,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Action {
     pub tool: String,
@@ -137,6 +154,18 @@ mod tests {
                 tier: Tier::High,
             },
         ])
+    }
+
+    #[test]
+    fn a_dynamic_tool_parses_and_is_in_the_grammar() {
+        let t = Tool::dynamic("zomato_search", &["query".to_string()], Tier::Low);
+        let r = Registry::new(vec![t]);
+        let a = r
+            .parse(r#"{"tool":"zomato_search","args":{"query":"biryani"}}"#)
+            .unwrap();
+        assert_eq!(a.tool, "zomato_search");
+        assert!(r.gbnf().contains("zomato-search"));
+        assert!(r.gbnf().contains("\\\"query\\\""));
     }
 
     #[test]
