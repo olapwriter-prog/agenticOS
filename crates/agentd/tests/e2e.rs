@@ -1038,3 +1038,28 @@ fn calendar_and_reminders_survive_a_restart() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn a_real_phone_offers_no_fake_messenger() {
+    let d = dir("nodemo");
+    let c = Config {
+        demo_connectors: false,
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let tok = s.gateway_token.clone();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let v = post(
+        &r.http_addr,
+        Some(&tok),
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .1;
+    let names = v.to_string();
+    assert!(!names.contains("send_message"), "{names}");
+    assert!(names.contains("read_calendar"));
+    let reply = ctl_send(&r.ctl_path, "chat message mum hello").unwrap();
+    assert!(!reply.contains("sent to"), "{reply}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

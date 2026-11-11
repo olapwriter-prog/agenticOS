@@ -31,6 +31,8 @@ pub struct Config {
     pub power_dir: Option<PathBuf>,
     /// Use the real cgroup and cpufreq trees. False writes to a simulated tree under data_dir.
     pub real_hardware: bool,
+    /// Offer the demo messenger, which sends nothing and only records. Off on a real phone.
+    pub demo_connectors: bool,
     /// Vault key-derivation memory in MiB. Raise it on the phone; tests use 1.
     pub kdf_mib: u32,
     /// "sim" keeps a simulated phone in memory; "modemmanager" drives the real modem, Wi-Fi,
@@ -131,6 +133,7 @@ impl Default for Config {
             daily_budget: 5,
             power_dir: None,
             real_hardware: false,
+            demo_connectors: true,
             kdf_mib: 32,
             phone: "sim".into(),
             leds_dir: PathBuf::from("/sys/class/leds"),
@@ -229,6 +232,10 @@ mod tests {
         let c = Config::from_toml(include_str!("../../../os/postmarketos/agentd.toml")).unwrap();
         assert_eq!(c.phone, "modemmanager");
         assert!(c.real_hardware);
+        assert!(
+            !c.demo_connectors,
+            "a real phone must not offer a messenger that sends nothing"
+        );
         assert_eq!(c.models.len(), 2);
         assert!(c
             .models

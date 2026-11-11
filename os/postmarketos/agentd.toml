@@ -19,6 +19,7 @@ approval_keycode = 114
 approval_hold_ms = 2000
 
 real_hardware = true              # real cgroup freezer and cpufreq governor
+demo_connectors = false           # no demo messenger: send_message is not offered on the phone
 power_dir = "/sys/class/power_supply/battery"   # check: ls /sys/class/power_supply
 kdf_mib = 64
 

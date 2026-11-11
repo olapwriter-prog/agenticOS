@@ -186,9 +186,11 @@ impl Core {
         let mut connectors: Vec<Box<dyn Connector>> = vec![
             Box::new(Calendar::load(dir.join("calendar.json"))),
             Box::new(Reminders::load(dir.join("reminders.json"))),
-            Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
+        if cfg.demo_connectors {
+            connectors.insert(2, Box::new(Messenger::default()));
+        }
         let documents = cfg
             .documents_dir
             .clone()
