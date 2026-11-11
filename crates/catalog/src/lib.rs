@@ -2,6 +2,7 @@
 //! A catalogue is a TOML file of [[item]] tables. Later files override earlier items with the same
 //! id, so a remote catalogue can update the shipped one.
 pub mod store;
+pub mod update;
 
 use serde::Deserialize;
 use std::path::PathBuf;

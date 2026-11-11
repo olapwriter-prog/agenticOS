@@ -8,6 +8,7 @@ agentos-mcpc = { path = "../mcpc" }
 agentos-services = { path = "../services" }
 agentos-android = { path = "../android" }
 agentos-catalog = { path = "../catalog" }
+agentos-skills = { path = "../skills" }
 agentos-ledger = { path = "../ledger" }
 agentos-hal = { path = "../hal" }
 agentos-stage = { path = "../stage" }
@@ -52,3 +53,6 @@ libc = "0.2"
 name = "agentd-fake-llama"
 path = "tests/support/fake_llama.rs"
 test = false
+
+[dev-dependencies]
+ed25519-dalek = "2"

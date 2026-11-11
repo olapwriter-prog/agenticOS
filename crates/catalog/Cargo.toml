@@ -9,3 +9,5 @@ agentos-executor = { path = "../executor" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
+agentos-update = { path = "../update" }
+ed25519-dalek = "2"

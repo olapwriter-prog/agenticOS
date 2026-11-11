@@ -135,6 +135,10 @@ pub struct Config {
     pub proc_root: PathBuf,
     /// The store's catalogue (TOML). Missing: an empty store.
     pub catalog: PathBuf,
+    /// Where `store refresh` fetches a signed catalogue from (catalog.toml, catalog.json, catalog.sig).
+    pub catalog_url: Option<String>,
+    /// The owner's public key for those catalogues, as 64 hex digits.
+    pub catalog_pubkey: Option<String>,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -245,6 +249,8 @@ impl Default for Config {
             android_check_secs: 5,
             proc_root: PathBuf::from("/proc"),
             catalog: PathBuf::from("/usr/share/agentd/catalog.toml"),
+            catalog_url: None,
+            catalog_pubkey: None,
         }
     }
 }

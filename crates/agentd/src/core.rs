@@ -50,6 +50,14 @@ fn read_store_servers(dir: &std::path::Path) -> Vec<crate::config::McpServer> {
         .unwrap_or_default()
 }
 
+/// Push, and drop the oldest entries past 20.
+fn push_capped(log: &mut std::collections::VecDeque<Value>, v: Value) {
+    log.push_back(v);
+    while log.len() > 20 {
+        log.pop_front();
+    }
+}
+
 fn setup_screen_json(s: &crate::setup::Screen) -> Value {
     json!({
         "id": s.id,
@@ -123,6 +131,11 @@ pub struct Core {
     /// First-boot setup, saved in setup.json after every answer.
     setup: crate::setup::Setup,
     setup_path: PathBuf,
+    /// The last calls and messages the phone reported, newest last (at most 20 each).
+    calls_log: std::collections::VecDeque<Value>,
+    messages_log: std::collections::VecDeque<Value>,
+    /// The phone's status text, kept for 5 seconds: reading it runs the modem tools.
+    phone_status_cache: Option<(u64, String)>,
     /// Wrong approval PINs in a row, and until when presses are refused.
     pin_failures: u32,
     pin_locked_until_ms: u64,
@@ -155,6 +168,8 @@ pub struct Core {
     trainer: crate::trainer::Trainer,
     coder_prompt: String,
     phone_tool_names: Vec<&'static str>,
+    /// Every tool the executor offers: an installed agent is limited to a subset of these.
+    all_tools: Vec<agentos_action::Tool>,
     small_url: Option<String>,
     large_url: Option<String>,
     /// Set if the priority manager could not set up its cgroups (not fatal).
@@ -336,11 +351,11 @@ impl Core {
                 )
             }
         };
-        let store_catalog = if cfg.catalog.exists() {
-            agentos_catalog::Catalog::load(&[cfg.catalog.clone()]).unwrap_or_default()
-        } else {
-            agentos_catalog::Catalog::default()
-        };
+        // the shipped catalogue, then the one `store refresh` saved (which overrides it)
+        let mut catalog_files = vec![cfg.catalog.clone()];
+        catalog_files.push(dir.join("catalog.toml"));
+        catalog_files.retain(|p| p.exists());
+        let store_catalog = agentos_catalog::Catalog::load(&catalog_files).unwrap_or_default();
         connectors.push(Box::new(agentos_catalog::store::StoreTools {
             catalog: store_catalog,
             dir: dir.clone(),
@@ -530,6 +545,9 @@ impl Core {
             google_slot,
             setup: crate::setup::Setup::load(&setup_path),
             setup_path,
+            calls_log: std::collections::VecDeque::new(),
+            messages_log: std::collections::VecDeque::new(),
+            phone_status_cache: None,
             pin_failures: 0,
             pin_locked_until_ms: 0,
             android,
@@ -562,6 +580,7 @@ impl Core {
             trainer: crate::trainer::Trainer::new(&dir),
             coder_prompt,
             phone_tool_names,
+            all_tools: registry_tools.clone(),
             small_url: small_url.clone(),
             large_url: large_url.clone(),
             anchor_key: secrets.anchor_key,
@@ -797,6 +816,17 @@ impl Core {
                 None => "nothing to give feedback on yet".into(),
             };
         }
+        if let Some(rest) = text.trim().strip_prefix("run skill ") {
+            return self.run_skill(rest);
+        }
+        if let Some(rest) = text
+            .trim()
+            .strip_prefix('@')
+            .or_else(|| text.trim().strip_prefix("ask "))
+        {
+            let (name, ask) = rest.split_once(' ').unwrap_or((rest, ""));
+            return self.ask_agent(name, ask);
+        }
         let is_intent = self.intents.resolve(text).is_some();
         // a request the human approved before goes straight to the same action (through the tiers)
         if !is_intent {
@@ -911,6 +941,211 @@ impl Core {
     }
 
     /// Carry out a chosen action and record how it went, for learning.
+    /// @<agent> <text>: an installed agent answers. An agent with tools may pick one of them, and
+    /// only those; a pick that is not on its list is refused. An agent with no tools answers in text.
+    fn ask_agent(&mut self, name: &str, ask: &str) -> String {
+        let name = name.trim();
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return "usage: @<agent> <text>".into();
+        }
+        let path = self
+            .cfg
+            .data_dir
+            .join("agents")
+            .join(format!("{name}.toml"));
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return format!("no agent called {name} is installed"),
+        };
+        #[derive(serde::Deserialize)]
+        struct AgentFile {
+            instructions: String,
+            #[serde(default)]
+            tools: Vec<String>,
+        }
+        let agent: AgentFile = match toml::from_str(&text) {
+            Ok(a) => a,
+            Err(e) => return format!("agent {name} is broken: {e}"),
+        };
+        let Some(url) = self.small_url.clone() else {
+            return "no small model is configured, so agents cannot answer".into();
+        };
+        if agent.tools.is_empty() {
+            let schema = json!({"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]});
+            let messages = vec![
+                ("system".to_string(), agent.instructions.clone()),
+                ("user".to_string(), ask.to_string()),
+            ];
+            return match agentos_host::chat_json(
+                &url,
+                &messages,
+                &schema,
+                256,
+                Duration::from_secs(self.cfg.model_timeout_secs),
+            ) {
+                Ok(raw) => serde_json::from_str::<Value>(&raw)
+                    .ok()
+                    .and_then(|v| v["answer"].as_str().map(str::to_string))
+                    .unwrap_or_else(|| "the agent did not answer".into()),
+                Err(e) => format!("the agent could not answer: {e}"),
+            };
+        }
+        let tools: Vec<agentos_action::Tool> = self
+            .all_tools
+            .iter()
+            .filter(|t| agent.tools.iter().any(|n| n == t.name))
+            .cloned()
+            .collect();
+        if tools.is_empty() {
+            return format!("agent {name} lists no tools this phone has");
+        }
+        let registry = Registry::new(tools);
+        let mut host = LlamaHost {
+            small_url: url.clone(),
+            large_url: url,
+            grammar: registry.gbnf(),
+            max_tokens: 128,
+            timeout: Duration::from_secs(self.cfg.model_timeout_secs),
+            system: Some(agent.instructions.clone()),
+        };
+        let out = agentos_brain::Model::complete(&mut host, agentos_router::Brain::LocalSmall, ask);
+        match registry.parse(&out) {
+            Ok(action) => {
+                let now = self.clock.now_ms();
+                self.act(ask, action, "agent", now)
+            }
+            Err(_) => format!("{name} did not pick an action it may use"),
+        }
+    }
+
+    /// store refresh: fetch the signed catalogue, check it, and save it for the next restart.
+    fn store_refresh(&mut self) -> String {
+        let (Some(url), Some(key)) = (
+            self.cfg.catalog_url.clone(),
+            self.cfg.catalog_pubkey.clone(),
+        ) else {
+            return "no catalog_url and catalog_pubkey in the config".into();
+        };
+        let pubkey = match agentos_catalog::update::pubkey_from_hex(&key) {
+            Ok(k) => k,
+            Err(e) => return e,
+        };
+        let base = url.trim_end_matches('/').to_string();
+        let mut http = agentos_services::Ureq::default();
+        let fetch = |http: &mut agentos_services::Ureq, name: &str| {
+            agentos_services::Http::get(http, &format!("{base}/{name}"), None)
+        };
+        let (toml_text, json, sig) = match (
+            fetch(&mut http, "catalog.toml"),
+            fetch(&mut http, "catalog.json"),
+            fetch(&mut http, "catalog.sig"),
+        ) {
+            (Ok(t), Ok(j), Ok(s)) => (t, j, s),
+            (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                return format!("cannot fetch the catalogue: {e}")
+            }
+        };
+        let installed = std::fs::read_to_string(self.cfg.data_dir.join("catalog.version"))
+            .ok()
+            .and_then(|t| t.trim().parse::<u64>().ok())
+            .unwrap_or(0);
+        let manifest = match agentos_catalog::update::check(
+            &pubkey,
+            installed,
+            json.as_bytes(),
+            sig.trim(),
+            toml_text.as_bytes(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = self.kernel.record(&format!("store catalogue refused: {e}"));
+                return e;
+            }
+        };
+        if let Err(e) = agentos_catalog::parse(&toml_text) {
+            return format!("catalogue refused: it does not parse: {e}");
+        }
+        let save =
+            std::fs::write(self.cfg.data_dir.join("catalog.toml"), &toml_text).and_then(|_| {
+                std::fs::write(
+                    self.cfg.data_dir.join("catalog.version"),
+                    manifest.version.to_string(),
+                )
+            });
+        match save {
+            Ok(()) => {
+                let _ = self.kernel.record(&format!(
+                    "store catalogue saved, version {}",
+                    manifest.version
+                ));
+                format!(
+                    "catalogue version {} saved; restart agentd to use it",
+                    manifest.version
+                )
+            }
+            Err(e) => format!("cannot save the catalogue: {e}"),
+        }
+    }
+
+    /// run skill <name> with k=v; k=v. Runs the steps in order through the same tools and tiers.
+    /// It stops at the first step that waits for the key; after the key, say it again.
+    fn run_skill(&mut self, rest: &str) -> String {
+        let (name, given_text) = rest.split_once(" with ").unwrap_or((rest, ""));
+        let name = name.trim();
+        if name.is_empty() || name.contains('/') || name.contains("..") {
+            return "usage: run skill <name> with k=v; k=v".into();
+        }
+        let path = self
+            .cfg
+            .data_dir
+            .join("skills")
+            .join(format!("{name}.toml"));
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return format!("no skill called {name} is installed"),
+        };
+        let skill = match agentos_skills::Skill::from_toml(&text) {
+            Ok(s) => s,
+            Err(e) => return format!("skill {name} is broken: {e:?}"),
+        };
+        let mut given = std::collections::HashMap::new();
+        for pair in given_text
+            .split(';')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+        {
+            match pair.split_once('=') {
+                Some((k, v)) => {
+                    given.insert(k.trim().to_string(), v.trim().to_string());
+                }
+                None => return format!("write each parameter as name=value, not {pair:?}"),
+            }
+        }
+        let actions = match skill.instantiate(&given) {
+            Ok(a) => a,
+            Err(agentos_skills::SkillError::MissingParam(p)) => {
+                return format!("missing parameter {p} for {name}")
+            }
+            Err(e) => return format!("skill {name}: {e:?}"),
+        };
+        let mut done = Vec::new();
+        for (i, a) in actions.iter().enumerate() {
+            let (ok, out) = self.call_tool(&a.tool, &a.args);
+            if !ok && out.contains("approval required") {
+                return format!(
+                    "{name} stopped at step {} ({}): {out}. Press the key, then say the skill again.",
+                    i + 1,
+                    a.tool
+                );
+            }
+            if !ok {
+                return format!("{name} failed at step {} ({}): {out}", i + 1, a.tool);
+            }
+            done.push(out);
+        }
+        format!("{name} done: {}", done.join("; "))
+    }
+
     fn act(&mut self, prompt: &str, a: agentos_action::Action, source: &str, now: u64) -> String {
         let ep = self
             .learner
@@ -1284,7 +1519,12 @@ impl Core {
         json!({
             "stage": format!("{:?}", self.kernel.stage),
             "status": self.status_line(),
-            "phone": self.phone.borrow_mut().status_text().unwrap_or_else(|e| format!("phone: {e}")),
+            "phone": self.phone_text(),
+            "calls": self.calls_log.iter().cloned().collect::<Vec<_>>(),
+            "messages": self.messages_log.iter().cloned().collect::<Vec<_>>(),
+            "contacts": self.phone.borrow().contacts.list.iter().map(|c| json!({"name": c.name, "number": c.number})).collect::<Vec<_>>(),
+            "connectors": self.mcp_status.iter().map(|(n, st, k)| json!({"name": n, "state": st, "tools": k})).collect::<Vec<_>>(),
+            "pin_set": self.vault.get(PIN_NAME).is_some(),
             "pending": pending,
             "recent": recent,
             "screen": self.screen,
@@ -1712,6 +1952,10 @@ impl Core {
             "press" => self.press_cmd(rest),
             "pin" => self.pin_cmd(rest),
             "setup" => self.setup_cmd(rest),
+            "store" => match rest.trim() {
+                "refresh" => self.store_refresh(),
+                _ => "usage: store refresh".into(),
+            },
             "import" => match rest.trim().strip_prefix("contacts ") {
                 Some(path) => match std::fs::read_to_string(path.trim()) {
                     Ok(text) => {
@@ -1962,6 +2206,42 @@ impl Core {
 
     /// Look for incoming calls and texts; wake up, log them, and tell the human headlessly
     /// (vibration and sound through feedbackd), respecting quiet hours for texts.
+    /// Keep the last 20 calls and messages for the screen.
+    fn remember_phone_event(&mut self, ev: &PhoneEvent) {
+        let at = self.clock.now_ms();
+        match ev {
+            PhoneEvent::IncomingCall { from } => push_capped(
+                &mut self.calls_log,
+                json!({"who": from, "state": "incoming", "at": at}),
+            ),
+            PhoneEvent::MissedCall { from } => push_capped(
+                &mut self.calls_log,
+                json!({"who": from, "state": "missed", "at": at}),
+            ),
+            PhoneEvent::NewSms { from, text } => push_capped(
+                &mut self.messages_log,
+                json!({"who": from, "text": text, "at": at}),
+            ),
+        }
+    }
+
+    /// The phone's status text, read at most every 5 seconds.
+    fn phone_text(&mut self) -> String {
+        let now = self.clock.now_ms();
+        if let Some((at, text)) = &self.phone_status_cache {
+            if now.saturating_sub(*at) < 5_000 {
+                return text.clone();
+            }
+        }
+        let text = self
+            .phone
+            .borrow_mut()
+            .status_text()
+            .unwrap_or_else(|e| format!("phone: {e}"));
+        self.phone_status_cache = Some((now, text.clone()));
+        text
+    }
+
     fn poll_phone(&mut self) -> Vec<String> {
         self.last_phone_poll_ms = self.clock.now_ms();
         let events = self.phone.borrow_mut().poll();
@@ -2000,6 +2280,7 @@ impl Core {
                 ),
             };
             self.touch();
+            self.remember_phone_event(&ev);
             let _ = self.kernel.record(&ledger);
             let line = format!("{}: {} from {}", note.app, note.text, note.sender);
             match self.notifier.offer(note, self.minute_of_day()) {

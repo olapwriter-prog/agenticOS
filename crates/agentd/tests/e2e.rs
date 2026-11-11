@@ -1365,3 +1365,252 @@ fn store_install_waits_for_the_key_and_remove_undoes_it() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn run_skill_runs_the_steps_and_stops_at_the_one_that_needs_the_key() {
+    let d = dir("skill-run");
+    std::fs::create_dir_all(d.join("skills")).unwrap();
+    std::fs::write(
+        d.join("skills/tell-family-trip.toml"),
+        include_str!("../../skills/skills/tell-family-trip.toml"),
+    )
+    .unwrap();
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(cfg(&d), s, Arc::new(ScaledClock::new(1))).unwrap();
+    let out = ctl_send(
+        &r.ctl_path,
+        "chat run skill tell-family-trip with day=mon; who=Mum; place=Ooty",
+    )
+    .unwrap();
+    assert!(
+        out.contains("stopped at step 3") && out.contains("send_message"),
+        "{out}"
+    );
+    // the two steps before it ran
+    assert!(ctl_send(&r.ctl_path, "do read_calendar {\"day\":\"mon\"}")
+        .unwrap()
+        .contains("Trip to Ooty"));
+    let missing = ctl_send(
+        &r.ctl_path,
+        "chat run skill tell-family-trip with day=mon; who=Mum",
+    )
+    .unwrap();
+    assert!(missing.contains("missing parameter place"), "{missing}");
+    let unknown = ctl_send(&r.ctl_path, "chat run skill nope with a=b").unwrap();
+    assert!(unknown.contains("no skill called nope"), "{unknown}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A fake llama-server: answers each chat request with the content for the first marker word that
+/// appears in the request, so one server can play several agents.
+fn fake_chat(answers: Vec<(&'static str, &'static str)>) -> String {
+    use std::io::BufRead;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    break;
+                }
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; len];
+            let _ = reader.read_exact(&mut body);
+            let text = String::from_utf8_lossy(&body).to_string();
+            let content = answers
+                .iter()
+                .find(|(m, _)| text.contains(m))
+                .map(|(_, a)| *a)
+                .unwrap_or("{}");
+            let reply = json!({"choices":[{"message":{"content": content}}]}).to_string();
+            let mut out = stream;
+            let _ = write!(out, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}", reply.len());
+        }
+    });
+    url
+}
+
+#[test]
+fn agents_answer_with_only_the_tools_they_list() {
+    let d = dir("agents");
+    std::fs::create_dir_all(d.join("agents")).unwrap();
+    std::fs::write(
+        d.join("agents/reader.toml"),
+        "instructions = \"reader-instructions\"\ntools = [\"read_calendar\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("agents/helper.toml"),
+        "instructions = \"helper-instructions\"\ntools = [\"send_message\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        d.join("agents/talker.toml"),
+        "instructions = \"talker-instructions\"\ntools = []\n",
+    )
+    .unwrap();
+    let model = fake_chat(vec![
+        // reader wants a tool it does not list
+        (
+            "reader-instructions",
+            r#"{"tool":"add_event","args":{"day":"mon","title":"x"}}"#,
+        ),
+        // helper picks its High tool: it waits for the key
+        (
+            "helper-instructions",
+            r#"{"tool":"send_message","args":{"to":"Mum","text":"hi"}}"#,
+        ),
+        ("talker-instructions", r#"{"answer":"hello there"}"#),
+    ]);
+    let c = Config {
+        small_url: Some(model),
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let refused = ctl_send(&r.ctl_path, "chat @reader add an event on mon called x").unwrap();
+    assert!(
+        refused.contains("did not pick an action it may use"),
+        "{refused}"
+    );
+    let waiting = ctl_send(&r.ctl_path, "chat @helper message Mum hi").unwrap();
+    assert!(waiting.contains("approval required"), "{waiting}");
+    let text = ctl_send(&r.ctl_path, "chat ask talker say hello").unwrap();
+    assert!(text.contains("hello there"), "{text}");
+    let ghost = ctl_send(&r.ctl_path, "chat @ghost hi").unwrap();
+    assert!(ghost.contains("no agent called ghost"), "{ghost}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+/// A fake web server for the catalogue files: serves whatever is in `files`, which the test changes.
+fn fake_catalog_server(
+    files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+) -> String {
+    use std::io::BufRead;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let path = line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .trim_start_matches('/')
+                .to_string();
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+            }
+            let body = files.lock().unwrap().get(&path).cloned();
+            let mut out = stream;
+            match body {
+                Some(b) => {
+                    let _ = write!(
+                        out,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}",
+                        b.len()
+                    );
+                }
+                None => {
+                    let _ = out.write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            }
+        }
+    });
+    url
+}
+
+#[test]
+fn store_refresh_takes_only_a_signed_newer_catalogue() {
+    use ed25519_dalek::SigningKey;
+    let d = dir("store-refresh");
+    std::fs::create_dir_all(&d).unwrap();
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let pubkey: String = key
+        .verifying_key()
+        .to_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let served = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    let url = fake_catalog_server(served.clone());
+    let publish = |version: u64, toml: &str| {
+        let (json, sig) = agentos_update::manifest::sign(&key, version, "catalog", toml.as_bytes());
+        let sig_hex: String = sig.iter().map(|b| format!("{b:02x}")).collect();
+        let mut m = served.lock().unwrap();
+        m.insert("catalog.toml".into(), toml.to_string());
+        m.insert("catalog.json".into(), String::from_utf8(json).unwrap());
+        m.insert("catalog.sig".into(), sig_hex);
+    };
+    let v2 = "[[item]]\nid = \"fresh\"\nname = \"Fresh\"\nkind = \"native\"\nsummary = \"new\"\n";
+    publish(2, v2);
+    let c = Config {
+        catalog_url: Some(url),
+        catalog_pubkey: Some(pubkey),
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    // a good catalogue is saved
+    let saved = ctl_send(&r.ctl_path, "store refresh").unwrap();
+    assert!(saved.contains("version 2 saved"), "{saved}");
+    assert!(std::fs::read_to_string(d.join("catalog.toml"))
+        .unwrap()
+        .contains("fresh"));
+    // the same version again is refused: not newer
+    let again = ctl_send(&r.ctl_path, "store refresh").unwrap();
+    assert!(again.contains("Rollback"), "{again}");
+    // a changed byte is refused
+    publish(3, &v2.replace("new", "bad"));
+    served
+        .lock()
+        .unwrap()
+        .insert("catalog.toml".into(), v2.replace("new", "bad") + "\n");
+    let changed = ctl_send(&r.ctl_path, "store refresh").unwrap();
+    assert!(changed.contains("refused"), "{changed}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn the_state_has_the_calls_messages_contacts_and_connectors() {
+    let (d, r, _tok) = boot("state-f2");
+    ctl_send(&r.ctl_path, "sim-call Asha").unwrap();
+    ctl_send(&r.ctl_path, "sim-sms Ravi|see you at 6").unwrap();
+    // the phone polls in the background: wait until both show up
+    let mut st: Value = Value::Null;
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        st = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+        if st["calls"].as_array().is_some_and(|c| !c.is_empty())
+            && st["messages"].as_array().is_some_and(|m| !m.is_empty())
+        {
+            break;
+        }
+    }
+    assert!(st["calls"].to_string().contains("Asha"), "{st}");
+    assert!(st["messages"].to_string().contains("see you at 6"), "{st}");
+    assert_eq!(st["pin_set"], json!(false));
+    assert!(st["connectors"].is_array());
+    assert!(st["contacts"].is_array());
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
