@@ -1063,3 +1063,22 @@ fn a_real_phone_offers_no_fake_messenger() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn do_calls_a_tool_with_the_same_approval_steps() {
+    let (d, r, _tok) = boot("do");
+    assert!(ctl_send(
+        &r.ctl_path,
+        r#"do add_event {"day":"mon","title":"dentist"}"#
+    )
+    .unwrap()
+    .contains("added"));
+    assert!(ctl_send(&r.ctl_path, r#"do call {"to":"Mum"}"#)
+        .unwrap()
+        .contains("approval required"));
+    assert!(ctl_send(&r.ctl_path, "do nope {}")
+        .unwrap()
+        .starts_with("error"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

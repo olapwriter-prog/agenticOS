@@ -1089,6 +1089,33 @@ impl Core {
     }
 
     /// The control channel: the approval key and operator commands.
+    /// do <tool> <json object>: call a tool exactly as an MCP client would, with the same tiers
+    /// and approval steps. The answer is the text of the tool's result.
+    fn do_cmd(&mut self, rest: &str) -> String {
+        let (tool, json_args) = rest.trim().split_once(' ').unwrap_or((rest.trim(), "{}"));
+        let args: Value = match serde_json::from_str(json_args.trim()) {
+            Ok(v @ Value::Object(_)) => v,
+            _ => return "usage: do <tool> <json object>".into(),
+        };
+        let body = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":tool,"arguments":args}}).to_string();
+        let reply = match self.mcp(&body) {
+            Some(r) => r,
+            None => return format!("no answer from {tool}"),
+        };
+        let v: Value = serde_json::from_str(&reply).unwrap_or(Value::Null);
+        if let Some(msg) = v["error"]["message"].as_str() {
+            return format!("error: {msg}");
+        }
+        let text = v["result"]["content"][0]["text"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("error: no text in the answer from {tool}"));
+        if v["result"]["isError"] == json!(true) {
+            return format!("error: {text}");
+        }
+        text
+    }
+
     /// secret set <name> <value> | secret list | secret rm <name>. Names must start with conn.;
     /// values are never printed or written to the ledger.
     fn secret_cmd(&mut self, rest: &str) -> String {
@@ -1146,6 +1173,12 @@ impl Core {
         let (cmd, rest) = line_in.split_once(' ').unwrap_or((line_in, ""));
         match cmd {
             "status" => self.status_line(),
+            "do" => self.do_cmd(rest),
+            "restart" => {
+                // the core loop sees STOP within a second; the service manager starts agentd again
+                crate::server::STOP.store(true, std::sync::atomic::Ordering::SeqCst);
+                "stopping; the service manager starts agentd again".into()
+            }
             "secret" => self.secret_cmd(rest),
             "stage" => format!("{:?}", self.kernel.stage),
             "chat" => self.chat(rest),
@@ -1321,7 +1354,7 @@ impl Core {
                 .map(|t| format!("{} ({:?}) args: {}", t.name, t.tier, t.args.join(", ")))
                 .collect::<Vec<_>>()
                 .join("\n"),
-            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show".into(),
+            "" => "commands: status state stage chat pending press key decline good bad learn power anchor verify notify digest tools phone sim-call sim-sms prio models functions show secret do restart".into(),
             other => format!("unknown command: {other}"),
         }
     }
