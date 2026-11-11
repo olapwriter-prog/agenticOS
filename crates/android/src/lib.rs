@@ -4,6 +4,8 @@
 //!
 //! Waydroid belongs to the user who owns the Wayland display, so every command runs as that user:
 //! `su -l <user> -c "<env> waydroid <args>"`.
+pub mod governor;
+
 use agentos_action::{Action, Tier, Tool};
 use agentos_executor::Connector;
 use std::cell::RefCell;
