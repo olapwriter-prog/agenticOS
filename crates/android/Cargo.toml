@@ -1,0 +1,8 @@
+[package]
+name = "agentos-android"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+agentos-action = { path = "../action" }
+agentos-executor = { path = "../executor" }

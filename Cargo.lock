@@ -96,6 +96,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-android"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+]
+
+[[package]]
 name = "agentos-apps"
 version = "0.1.0"
 dependencies = [
