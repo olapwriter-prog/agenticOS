@@ -6,8 +6,13 @@
 //!   agentos-ui                         open the window (socket: $AGENTD_SOCK or /run/agentd.sock)
 //!   agentos-ui --snap ui.png --scene demo    render headless, with sample data
 //!   agentos-ui --snap ui.png --scene live    render headless, from a running agentd
-use rune::tok::{self, Theme, radius, type_};
-use rune::{AppSpec, Color, Cx, El, ScrollSpec, TextEdit, Tx, col, el, row, text, text_input};
+mod screens;
+mod widgets;
+
+use rune::tok::{self, type_};
+use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, row, text};
+use screens::{home, placeholder, system};
+use widgets::{button, str_of};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -44,14 +49,15 @@ enum Event {
     Reply { asked: String, answer: String },
 }
 
-struct State {
+pub struct State {
+    pub tab: Tab,
     snap: Value,
     error: Option<String>,
-    chat: TextEdit,
+    pub chat: TextEdit,
     /// (what you said, what the agent answered)
-    log: Vec<(String, String)>,
+    pub log: Vec<(String, String)>,
     /// every command sent, newest last (tests read this)
-    sent: Vec<String>,
+    pub sent: Vec<String>,
     link: Option<Sender<String>>,
     inbox: Option<Receiver<Event>>,
 }
@@ -59,6 +65,7 @@ struct State {
 impl State {
     fn new() -> State {
         State {
+            tab: Tab::Home,
             snap: Value::Null,
             error: None,
             chat: TextEdit::new(""),
@@ -69,7 +76,7 @@ impl State {
         }
     }
     /// Send a control command; the answer arrives later through `poll`.
-    fn send(&mut self, line: String) {
+    pub fn send(&mut self, line: String) {
         if let Some(l) = &self.link {
             let _ = l.send(line.clone());
         }
@@ -143,58 +150,15 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
 // ---- look -----------------------------------------------------------------------------------
 
 const H1: rune::tok::TextStyle = rune::tok::TextStyle::new(22.0, 700.0);
-const GOOD: Color = Color {
-    r: 0.25,
-    g: 0.75,
-    b: 0.45,
-    a: 1.0,
-};
-const BAD: Color = Color {
-    r: 0.9,
-    g: 0.35,
-    b: 0.3,
-    a: 1.0,
-};
 
-fn card(key: &str, title: &str, body: El, t: Theme) -> El {
-    col()
-        .key(key)
-        .w_full()
-        .padding(14.0)
-        .gap(8.0)
-        .radius(radius::SM)
-        .fill(t.card)
-        .child(
-            text(title.to_uppercase())
-                .font(type_::SECTION)
-                .color(t.text_secondary),
-        )
-        .child(body)
-}
-
-fn line(s: impl Into<String>, t: Theme) -> El {
-    text(s.into()).font(type_::BODY).color(t.text)
-}
-fn quiet(s: impl Into<String>, t: Theme) -> El {
-    text(s.into()).font(type_::LABEL).color(t.text_secondary)
-}
-
-fn button(key: String, label: &str, fill: Color, ink: Color) -> El {
-    row()
-        .key(key)
-        .h(32.0)
-        .px(14.0)
-        .center()
-        .radius(radius::SM)
-        .fill(fill)
-        .role("button")
-        .label(label)
-        .focusable(true)
-        .child(text(label.to_string()).font(type_::LABEL).color(ink))
-}
-
-fn str_of(v: &Value) -> String {
-    v.as_str().map(String::from).unwrap_or_default()
+/// The bottom tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Home,
+    Phone,
+    Store,
+    Android,
+    System,
 }
 
 fn view(s: &State, _: &mut Cx<State>) -> El {
@@ -216,22 +180,14 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                 .px(10.0)
                 .center()
                 .radius(12.0)
-                .fill(if stage == "Active" {
-                    accent
-                } else {
-                    t.control_off
-                })
+                .fill(if stage == "Active" { accent } else { t.control_off })
                 .child(
-                    text(if stage.is_empty() {
-                        "…".to_string()
-                    } else {
-                        stage.clone()
-                    })
-                    .font(type_::LABEL)
-                    .color(t.text),
+                    text(if stage.is_empty() { "…".to_string() } else { stage.clone() })
+                        .font(type_::LABEL)
+                        .color(t.text),
                 ),
         );
-    let status = quiet(
+    let status = widgets::quiet(
         match &s.error {
             Some(e) => e.clone(),
             None => format!("{}  ·  {}", str_of(&st["status"]), str_of(&st["phone"])),
@@ -242,156 +198,39 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     .w_full()
     .wrap();
 
-    let mut cards = col().key("cards").w_full().gap(12.0);
+    let (key, title) = match s.tab {
+        Tab::Home => ("home", "Home"),
+        Tab::Phone => ("phone", "Phone"),
+        Tab::Store => ("store", "Store"),
+        Tab::Android => ("android", "Android"),
+        Tab::System => ("system", "System"),
+    };
+    let title_el = text(title).key(format!("title-{key}")).font(H1).color(t.text);
 
-    // what is waiting for the human: the approval key, on screen
-    let pending = st["pending"].as_array().cloned().unwrap_or_default();
-    if !pending.is_empty() {
-        let mut list = col().gap(10.0);
-        for p in &pending {
-            let id = p["id"].as_u64().unwrap_or(0);
-            let args: Vec<String> = p["args"]
-                .as_object()
-                .map(|m| {
-                    m.iter()
-                        .map(|(k, v)| format!("{k}: {}", str_of(v)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            list = list.child(
-                row()
-                    .key(format!("pending-{id}"))
-                    .w_full()
-                    .center_y()
-                    .gap(8.0)
-                    // the details give way to the buttons, never the other way round
-                    .child(
-                        col()
-                            .grow(1.0)
-                            .shrink()
-                            .min_w(0.0)
-                            .gap(2.0)
-                            .child(line(str_of(&p["tool"]).replace('_', " "), t).truncate())
-                            .child(quiet(args.join("  ·  "), t).truncate()),
-                    )
-                    .child(
-                        button(format!("decline-{id}"), "Decline", t.control_off, t.text)
-                            .on_press(move |s: &mut State| s.send(format!("decline {id}"))),
-                    )
-                    .child(
-                        button(format!("approve-{id}"), "Approve", accent, t.text)
-                            .on_press(move |s: &mut State| s.send(format!("press {id}"))),
-                    ),
-            );
-        }
-        cards = cards.child(card("waiting", "Waiting for you", list, t));
-    }
+    let body = match s.tab {
+        Tab::Home => home::cards(st, t, accent),
+        Tab::System => system::view(st, t),
+        Tab::Phone | Tab::Store | Tab::Android => placeholder::view(&format!("screen-{key}"), title, t),
+    };
 
-    // what the agent did lately, and how it went
-    let recent = st["recent"].as_array().cloned().unwrap_or_default();
-    let mut acts = col().gap(6.0);
-    if recent.is_empty() {
-        acts = acts.child(quiet("Nothing yet. Ask something below.", t));
-    }
-    for (i, e) in recent.iter().enumerate() {
-        let r = e["reward"].as_f64().unwrap_or(0.0);
-        let dot = el().size(8.0, 8.0).radius(4.0).fill(if r > 0.0 {
-            GOOD
-        } else if r < 0.0 {
-            BAD
-        } else {
-            t.control_off
-        });
-        let tool = str_of(&e["tool"]);
-        acts = acts.child(
-            row()
-                .key(format!("recent-{i}"))
-                .w_full()
-                .center_y()
-                .gap(8.0)
-                .child(dot)
-                .child(line(str_of(&e["prompt"]), t).grow(1.0).shrink().truncate())
-                .child(quiet(
-                    if tool.is_empty() {
-                        "no action".into()
-                    } else {
-                        tool.replace('_', " ")
-                    },
-                    t,
-                )),
+    // the tab bar: five tabs, the one shown in the accent colour
+    let mut bar = row().key("tabs").w_full().gap(6.0);
+    for (tab, label, k) in [
+        (Tab::Home, "Home", "tab-home"),
+        (Tab::Phone, "Phone", "tab-phone"),
+        (Tab::Store, "Store", "tab-store"),
+        (Tab::Android, "Android", "tab-android"),
+        (Tab::System, "System", "tab-system"),
+    ] {
+        let active = s.tab == tab;
+        bar = bar.child(
+            button(k.to_string(), label, if active { accent } else { t.control_off }, t.text)
+                .grow(1.0)
+                .on_press(move |s: &mut State| s.tab = tab),
         );
     }
-    cards = cards.child(card("recent", "Recent", acts, t));
 
-    // the model and the chip
-    let mut model = col().gap(4.0);
-    for m in st["models"].as_array().cloned().unwrap_or_default() {
-        model = model.child(line(str_of(&m), t));
-    }
-    model = model.child(quiet(str_of(&st["prio"]), t).w_full().wrap());
-    cards = cards.child(card("model", "Model and chip", model, t));
-
-    // functions the agent wrote
-    let mut fns = col().gap(4.0);
-    for f in st["functions"].as_array().cloned().unwrap_or_default() {
-        fns = fns.child(line(str_of(&f), t));
-    }
-    cards = cards.child(card("functions", "Functions", fns, t));
-    cards = cards.child(quiet(str_of(&st["learning"]), t).w_full().wrap());
-
-    // chat
-    let mut chat = col().key("chat-log").w_full().gap(6.0);
-    for (i, (q, a)) in s.log.iter().rev().take(3).rev().enumerate() {
-        chat = chat
-            .child(
-                row()
-                    .key(format!("you-{i}"))
-                    .w_full()
-                    .child(el().grow(1.0))
-                    .child(
-                        row()
-                            .px(12.0)
-                            .h(30.0)
-                            .center()
-                            .radius(15.0)
-                            .fill(accent)
-                            .child(line(q.clone(), t)),
-                    ),
-            )
-            .child(
-                quiet(
-                    if a.is_empty() {
-                        "…".into()
-                    } else {
-                        a.clone()
-                    },
-                    t,
-                )
-                .key(format!("agent-{i}"))
-                .w_full()
-                .wrap(),
-            );
-    }
-    let input = text_input(&s.chat, type_::BODY)
-        .key("chat")
-        .single_line()
-        .placeholder("Ask the agent…", t.text_secondary)
-        .w_full()
-        .h(40.0)
-        .px(14.0)
-        .radius(20.0)
-        .fill(t.card)
-        .on_edit(|s: &mut State| &mut s.chat)
-        .on_submit(|s: &mut State, _tx: &mut Tx| {
-            let said = s.chat.text.trim().to_string();
-            if !said.is_empty() {
-                s.log.push((said.clone(), String::new()));
-                s.send(format!("chat {said}"));
-            }
-            s.chat.clear();
-        });
-
-    col()
+    let mut page = col()
         .w_full()
         .h_full()
         .padding(16.0)
@@ -399,16 +238,18 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         .fill(t.bg)
         .child(header)
         .child(status)
+        .child(title_el)
         .child(
-            cards
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .grow(1.0)
-                .min_h(0.0),
-        )
-        .child(chat)
-        .child(input)
+            body.scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .grow(1.0)
+            .min_h(0.0),
+        );
+    if s.tab == Tab::Home {
+        page = page.child(screens::home::chat(s, t, accent));
+    }
+    page.child(bar)
 }
 
 /// What a phone mid-afternoon looks like, for headless renders and tests.
@@ -498,20 +339,27 @@ mod tests {
     }
     #[test]
     fn everything_the_daemon_reports_is_on_screen() {
-        let rt = rt();
-        for key in [
-            "header",
-            "stage",
-            "waiting",
-            "pending-3",
-            "pending-4",
-            "recent",
-            "recent-4",
-            "model",
-            "functions",
-            "chat",
-        ] {
+        let mut rt = rt();
+        for key in ["header", "stage", "waiting", "pending-3", "pending-4", "recent", "recent-4", "chat"] {
             assert!(rt.find(key).is_some(), "{key} missing");
+        }
+        tap(&mut rt, "tab-system");
+        for key in ["model", "functions"] {
+            assert!(rt.find(key).is_some(), "{key} missing");
+        }
+    }
+    #[test]
+    fn each_tab_shows_its_title() {
+        let mut rt = rt();
+        for (tab, title) in [
+            ("tab-phone", "title-phone"),
+            ("tab-store", "title-store"),
+            ("tab-android", "title-android"),
+            ("tab-system", "title-system"),
+            ("tab-home", "title-home"),
+        ] {
+            tap(&mut rt, tab);
+            assert!(rt.find(title).is_some(), "{title} missing after {tab}");
         }
     }
     #[test]
