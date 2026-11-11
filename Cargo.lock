@@ -290,6 +290,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-mcpc"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "agentos-models"
 version = "0.1.0"
 dependencies = [
