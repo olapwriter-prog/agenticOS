@@ -1,0 +1,43 @@
+# agentd on the virtual phone (a Linux VM on a Mac): the real daemon and model, a simulated modem
+# and battery, Android in Waydroid. @USER@, @UID@ and @HOME@ are filled in by provision.sh.
+data_dir = "/var/lib/agentd"
+control_socket = "/run/agentd.sock"
+listen = "127.0.0.1:8765"         # MCP endpoint, inside the VM
+allowed_origins = []
+
+phone = "sim"                     # no modem: calls and texts come from `virtual-phone.sh sms|call`
+real_hardware = false             # no cpufreq or thermal zones in a VM
+demo_connectors = true            # a demo messenger, so sending a message works end to end
+kdf_mib = 64
+commercial_enabled = false
+
+# ---- Android: Waydroid, shown on workspace 2 of the phone's screen ----------------------------
+android = "waydroid"
+android_user = "@USER@"
+android_env = "XDG_RUNTIME_DIR=/run/user/@UID@ WAYLAND_DISPLAY=wayland-1"
+android_sway = true
+android_idle_pause_secs = 60
+# the bridge app's folder, as Waydroid shares it with this machine
+bridge = "spool"
+bridge_dir = "@HOME@/.local/share/waydroid/data/media/0/Android/media/os.agentic.bridge"
+
+# ---- the local LLM ------------------------------------------------------------------------
+llama_server = "/usr/local/bin/agentos-llm"
+model_timeout_secs = 300
+keep_small_loaded = true
+model_wait_secs = 20
+
+# the predictive cache (see docs/PROGRESS.md): the agent decides what stays in memory
+predictive_cache = true
+cache_budget_mb = 512
+cache_warm = true
+
+[[models]]
+name = "qwen3.5-4b"
+role = "small"
+file = "Qwen3.5-4B-Q4_K_M.gguf"
+url = "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+sha256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+port = 8080
+ctx = 4096
+gpu_layers = 0                    # the VM has no GPU for the model

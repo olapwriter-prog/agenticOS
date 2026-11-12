@@ -292,3 +292,17 @@ Behaviour to know:
 - Not yet: training one adapter per domain (the server and manager are ready for named experts;
   the trainer still makes one adapter), and the 4B and 8B models were not measured here (too slow
   in this container).
+
+## A virtual phone on a Mac
+
+- `scripts/mac/virtual-phone.sh up` makes a Lima VM (Ubuntu 24.04 arm64, Apple's Virtualization
+  framework) with a phone-shaped screen. It builds agentd, agentos-llm and agentos-ui inside it,
+  installs agentd as a service with a simulated modem and battery, and boots into sway at
+  390 × 844 points with the Agentic OS screen. `android` adds Waydroid with Google Play (software
+  rendering); `sms`, `call` and `ctl` drive it from the Mac. Files: `os/virtual-phone/`,
+  guide: `docs/VIRTUAL-PHONE.md`.
+- `android = "emulator"` (`crates/android/src/emulator.rs`) is the other way to get Android on a
+  desktop: the Android Emulator with a Play image, driven by adb, with the bridge spool mirrored
+  over adb.
+- Not run on a Mac yet (written in a cloud session): Lima's display window, the binder driver in
+  Ubuntu's cloud kernel, and software rendering need checking there.

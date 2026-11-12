@@ -1,0 +1,13 @@
+[Unit]
+Description=Agentic OS agent (agentd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=AGENTD_PASSPHRASE_FILE=/etc/agentd/passphrase
+ExecStart=/usr/local/bin/agentd run -c /etc/agentd/agentd.toml
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -363,6 +363,27 @@ mod tests {
         assert_eq!(c.models_path(), PathBuf::from("./agentd-data/models"));
     }
     #[test]
+    fn the_virtual_phone_config_parses_once_filled_in() {
+        let t = include_str!("../../../os/virtual-phone/agentd.toml")
+            .replace("@USER@", "asha")
+            .replace("@UID@", "501")
+            .replace("@HOME@", "/home/asha.linux");
+        let c = Config::from_toml(&t).unwrap();
+        assert_eq!(
+            (c.phone.as_str(), c.android.as_str(), c.bridge.as_str()),
+            ("sim", "waydroid", "spool")
+        );
+        assert_eq!(c.android_user, "asha");
+        assert!(c.android_env.contains("/run/user/501"));
+        assert!(c
+            .bridge_dir
+            .unwrap()
+            .ends_with("Android/media/os.agentic.bridge"));
+        assert!(c.predictive_cache && c.cache_budget_mb == 512);
+        assert_eq!(c.models.len(), 1);
+        assert_eq!(c.models[0].gpu_layers, 0);
+    }
+    #[test]
     fn the_shipped_phone_config_parses() {
         let c = Config::from_toml(include_str!("../../../os/postmarketos/agentd.toml")).unwrap();
         assert_eq!(c.phone, "modemmanager");
