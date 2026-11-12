@@ -8,6 +8,7 @@
 #[cfg(test)]
 mod tests;
 pub mod transport;
+pub mod triage;
 
 use agentos_action::{Action, Tier, Tool};
 use agentos_executor::Connector;
@@ -263,6 +264,31 @@ impl Bridge {
             }
         }
         Ok(())
+    }
+
+    /// Delete a conversation from the inbox, and dismiss its notifications in Android.
+    /// Returns how many messages went.
+    pub fn delete_conversation(&mut self, conversation: &str) -> usize {
+        let keys: Vec<String> = self
+            .state
+            .inbox
+            .iter()
+            .filter(|m| m.conversation == conversation && !m.reply_key.is_empty())
+            .map(|m| m.reply_key.clone())
+            .collect();
+        let before = self.state.inbox.len();
+        self.state.inbox.retain(|m| m.conversation != conversation);
+        for (i, k) in keys.iter().enumerate() {
+            let _ = self.transport.send(&Command {
+                v: 1,
+                id: format!("c-dismiss-{}-{i}", before),
+                kind: "dismiss".into(),
+                reply_key: k.clone(),
+                ..Default::default()
+            });
+        }
+        let _ = self.save();
+        before - self.state.inbox.len()
     }
 
     pub fn unread(&self) -> usize {

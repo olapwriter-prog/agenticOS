@@ -112,6 +112,22 @@ pub fn view(s: &State, st: &Value) -> El {
     }
     page = page.child(group("services", "Services", rows));
 
+    // the phone teaching itself
+    page = page.child(group(
+        "learning-lab",
+        "Learning",
+        vec![list_row(
+            "open-lab",
+            tile(&icons::CHIP, VIOLET, 36.0),
+            "Learning lab",
+            "Tests, scores, training and experts",
+            Some(
+                pill("open-lab-go", "Open", SURFACE2, TEXT)
+                    .on_press(|s: &mut State| s.tab = crate::Tab::Lab),
+            ),
+        )],
+    ));
+
     // the Android bridge: what each app may share with Agentic OS
     page = page.child(bridge_group(st));
 

@@ -74,15 +74,49 @@ pub fn view(s: &State, st: &Value) -> El {
         Some(format!("{} unread from Android apps", unread(st))),
     ));
 
-    // filters from what is there: All, SMS, then each app
-    let mut sources: Vec<String> = vec!["All".into(), "SMS".into()];
+    // what the agent suggests: reply (with a draft), delete, pay
+    let triage: Vec<Value> = st["triage"].as_array().cloned().unwrap_or_default();
+    page = page.child(suggestions(&triage));
+
+    // organised by what each conversation is, then by where it came from
+    let group_of = |conv: &str, source: &str| -> String {
+        triage
+            .iter()
+            .find(|t| str_of(&t["conversation"]) == conv && str_of(&t["source"]) == source)
+            .map(|t| str_of(&t["group"]))
+            .unwrap_or_default()
+    };
+    let mut sources: Vec<String> = vec!["All".into()];
+    for g in ["Reply", "Bills", "Updates", "Promotions", "People"] {
+        let n = triage.iter().filter(|t| str_of(&t["group"]) == g).count();
+        if n > 0 {
+            sources.push(format!("group:{g}"));
+        }
+    }
+    sources.push("SMS".into());
     for m in &all {
         if !sources.contains(&m.source) {
             sources.push(m.source.clone());
         }
     }
+    // two rows: what it is (organised by the agent), and where it came from
+    let mut groups = row().key("inbox-groups").gap(8.0);
     let mut chips = row().key("inbox-filters").gap(8.0);
     for src in sources {
+        if let Some(g) = src.strip_prefix("group:") {
+            let on = s.inbox_filter == src;
+            let n = triage.iter().filter(|t| str_of(&t["group"]) == g).count();
+            let pick = src.clone();
+            groups = groups.child(
+                text_chip(
+                    &format!("inbox-group-{}", g.to_lowercase()),
+                    &format!("{g} {n}"),
+                    on,
+                )
+                .on_press(move |s: &mut State| s.inbox_filter = pick.clone()),
+            );
+            continue;
+        }
         let on = s.inbox_filter == src;
         let k = format!("inbox-filter-{}", src.to_lowercase());
         let pick = src.clone();
@@ -90,12 +124,16 @@ pub fn view(s: &State, st: &Value) -> El {
             text_chip(&k, &src, on).on_press(move |s: &mut State| s.inbox_filter = pick.clone()),
         );
     }
-    page = page.child(chips.scroll_x());
+    page = page.child(groups.scroll_x()).child(chips.scroll_x());
 
     // one row per conversation, newest first
     let mut convs: Vec<(String, Msg, usize)> = vec![];
     for m in all.iter().rev() {
-        if s.inbox_filter != "All" && m.source != s.inbox_filter {
+        if let Some(g) = s.inbox_filter.strip_prefix("group:") {
+            if group_of(&m.conv, &m.source) != g {
+                continue;
+            }
+        } else if s.inbox_filter != "All" && m.source != s.inbox_filter {
             continue;
         }
         let key = format!("{}|{}", m.conv, m.source);
@@ -160,7 +198,8 @@ pub fn view(s: &State, st: &Value) -> El {
                                 .gap(8.0)
                                 .center_y()
                                 .child(t(conv.clone(), HEADLINE, TEXT).shrink().truncate())
-                                .child(source_tag(&last.source)),
+                                .child(source_tag(&last.source))
+                                .child(group_tag(&group_of(&last.conv, &last.source))),
                         )
                         .child(t(last.text.clone(), CAPTION, TEXT2).truncate()),
                 )
@@ -337,4 +376,199 @@ fn thread(s: &State, st: &Value, all: &[Msg], conv: &str, source: &str) -> El {
         );
     }
     page
+}
+
+/// A small tag for what a conversation is: Reply, Bills, Updates, Promotions, People.
+fn group_tag(group: &str) -> El {
+    let c = match group {
+        "Reply" => VIOLET,
+        "Bills" => SUN,
+        "Promotions" => CORAL,
+        "Updates" => SKY,
+        "People" => MINT,
+        _ => return el(),
+    };
+    row()
+        .h(20.0)
+        .px(7.0)
+        .center()
+        .self_start()
+        .radius(10.0)
+        .border(1.0, c.alpha(0.5))
+        .child(t(group, rune::tok::TextStyle::new(10.5, 650.0), c))
+}
+
+/// The agent's suggestions: conversations that want a reply (with a draft to send as it is), and
+/// ones that can be deleted (offers, used codes). Each says why; nothing happens until a tap.
+fn suggestions(triage: &[Value]) -> El {
+    let replies: Vec<&Value> = triage
+        .iter()
+        .filter(|t| str_of(&t["suggest"]) == "reply" && !str_of(&t["draft"]).is_empty())
+        .take(3)
+        .collect();
+    let deletes: Vec<&Value> = triage
+        .iter()
+        .filter(|t| str_of(&t["suggest"]) == "delete")
+        .take(3)
+        .collect();
+    let bills: Vec<&Value> = triage
+        .iter()
+        .filter(|t| str_of(&t["suggest"]) == "pay")
+        .take(2)
+        .collect();
+    let mut c = col()
+        .key("inbox-ai")
+        .w_full()
+        .padding(16.0)
+        .gap(12.0)
+        .radius(24.0)
+        .fill(SURFACE)
+        .border(1.0, VIOLET.alpha(0.35))
+        .child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .center_y()
+                .child(icon(&icons::SPARK, 18.0).color(VIOLET))
+                .child(t("Suggested by your agent", HEADLINE, TEXT).grow(1.0))
+                .child(t(
+                    format!("{} · {}", replies.len() + bills.len(), deletes.len()),
+                    CAPTION,
+                    TEXT2,
+                )),
+        );
+    if replies.is_empty() && deletes.is_empty() && bills.is_empty() {
+        return c.child(t("All caught up. Nothing needs you.", BODY, TEXT2));
+    }
+    for (i, r) in replies.iter().enumerate() {
+        let conv = str_of(&r["conversation"]);
+        let source = str_of(&r["source"]);
+        let draft = str_of(&r["draft"]);
+        let line = if source == "SMS" {
+            format!("chat text {conv} {draft}")
+        } else {
+            format!("chat reply on android to {conv} saying {draft}")
+        };
+        let key = format!("{conv}|{source}");
+        c = c.child(
+            col()
+                .key(format!("ai-reply-{i}"))
+                .w_full()
+                .gap(8.0)
+                .padding(12.0)
+                .radius(18.0)
+                .fill(SURFACE2)
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(t(conv.clone(), CALLOUT, TEXT))
+                        .child(source_tag(&source))
+                        .child(el().grow(1.0))
+                        .child(t("Needs a reply", MICRO, VIOLET)),
+                )
+                .child(t(str_of(&r["text"]), CAPTION, TEXT2).w_full().truncate())
+                .child(
+                    row()
+                        .w_full()
+                        .gap(8.0)
+                        .center_y()
+                        .child(
+                            row()
+                                .grow(1.0)
+                                .shrink()
+                                .min_w(0.0)
+                                .h(36.0)
+                                .px(12.0)
+                                .center_y()
+                                .radius(18.0)
+                                .fill(VIOLET.alpha(0.14))
+                                .child(t(format!("“{draft}”"), CALLOUT, VIOLET).truncate()),
+                        )
+                        .child(
+                            pill(
+                                &format!("ai-send-{i}"),
+                                "Send",
+                                ACCENT_FILL,
+                                rune::Color::WHITE,
+                            )
+                            .on_press(move |s: &mut State| s.send(line.clone())),
+                        )
+                        .child(
+                            pill(&format!("ai-open-{i}"), "Edit", SURFACE3, TEXT).on_press(
+                                move |s: &mut State| {
+                                    s.inbox_open = Some(key.clone());
+                                    s.reply = rune::TextEdit::new(&draft);
+                                },
+                            ),
+                        ),
+                ),
+        );
+    }
+    for (i, b) in bills.iter().enumerate() {
+        let key = format!("{}|{}", str_of(&b["conversation"]), str_of(&b["source"]));
+        c = c.child(
+            row()
+                .key(format!("ai-bill-{i}"))
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .padding(12.0)
+                .radius(18.0)
+                .fill(SUN.alpha(0.10))
+                .child(icon(&icons::COIN, 18.0).color(SUN))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .child(
+                            t(
+                                format!("{} · money due", str_of(&b["conversation"])),
+                                CALLOUT,
+                                TEXT,
+                            )
+                            .truncate(),
+                        )
+                        .child(t(str_of(&b["text"]), CAPTION, TEXT2).truncate()),
+                )
+                .child(
+                    pill(&format!("ai-bill-open-{i}"), "Open", SURFACE3, TEXT)
+                        .on_press(move |s: &mut State| s.inbox_open = Some(key.clone())),
+                ),
+        );
+    }
+    for (i, d) in deletes.iter().enumerate() {
+        let key = format!("{}|{}", str_of(&d["conversation"]), str_of(&d["source"]));
+        let k2 = key.clone();
+        c = c.child(
+            row()
+                .key(format!("ai-delete-{i}"))
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .padding(12.0)
+                .radius(18.0)
+                .fill(CORAL.alpha(0.08))
+                .child(icon(&icons::TRASH, 18.0).color(CORAL))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .child(t(str_of(&d["conversation"]), CALLOUT, TEXT).truncate())
+                        .child(t(str_of(&d["reason"]), CAPTION, TEXT2).truncate()),
+                )
+                .child(
+                    pill(&format!("ai-keep-{i}"), "Keep", SURFACE3, TEXT)
+                        .on_press(move |s: &mut State| s.send(format!("inbox keep {k2}"))),
+                )
+                .child(
+                    pill(&format!("ai-del-{i}"), "Delete", CORAL.alpha(0.2), CORAL)
+                        .on_press(move |s: &mut State| s.send(format!("inbox delete {key}"))),
+                ),
+        );
+    }
+    c
 }

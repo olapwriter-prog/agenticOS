@@ -1904,3 +1904,89 @@ fn android_opens_as_itself_and_pauses_when_nothing_needs_it() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_inbox_is_triaged_the_day_is_a_flow_and_the_lab_tests_the_phone() {
+    let (d, r, _tok) = boot("lab");
+    let st = |r: &Running| -> Value {
+        serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap()
+    };
+    // a few requests the phone answers and confirms
+    for q in [
+        "take a photo",
+        "take a picture",
+        "torch on",
+        "torch off",
+        "my photos",
+        "photos",
+    ] {
+        let a = ctl_send(&r.ctl_path, &format!("chat {q}")).unwrap();
+        assert!(!a.starts_with("not done"), "{q}: {a}");
+    }
+    // the day, as a flow
+    let today = &st(&r)["today"];
+    assert!(today["flow"].as_array().unwrap().len() >= 6, "{today}");
+    assert!(today["by_domain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x[0] == "media"));
+    // the lab: a random suite over what was confirmed, kept as history
+    let run = ctl_send(&r.ctl_path, "lab run").unwrap();
+    assert!(
+        run.starts_with("phrases and shortcuts (no model loaded):"),
+        "{run}"
+    );
+    let lab = &st(&r)["lab"];
+    assert_eq!(lab["runs"].as_array().unwrap().len(), 1, "{lab}");
+    assert!(lab["runs"][0]["score"].as_f64().unwrap() > 0.5, "{lab}");
+    assert!(lab["experts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["domain"] == "media"));
+    let second = ctl_send(&r.ctl_path, "lab run").unwrap();
+    assert!(second.contains("since the last run"), "{second}");
+    let ex = ctl_send(&r.ctl_path, "lab experts").unwrap();
+    assert!(ex.contains("media: "), "{ex}");
+    assert!(d.join("learn/experts/router.json").exists());
+    // the inbox: a question from Mum wants a reply with a draft; an offer can go
+    ctl_send(&r.ctl_path, "bridge allow com.whatsapp read on").unwrap();
+    for (conv, text) in [
+        ("Mum", "Running 10 min late?"),
+        ("ShopMart", "Mega SALE 50% off today only"),
+    ] {
+        let ev = json!({"v": 1, "id": format!("e-{conv}"), "kind": "notification", "time_ms": 1731400000000u64,
+            "package": "com.whatsapp", "app": "WhatsApp", "conversation": conv, "sender": conv, "text": text,
+            "reply_key": format!("k-{conv}")}).to_string();
+        ctl_send(&r.ctl_path, &format!("bridge sim {ev}")).unwrap();
+    }
+    let triage = st(&r)["triage"].clone();
+    let find = |c: &str| {
+        triage
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["conversation"] == c)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(find("Mum")["suggest"], json!("reply"));
+    assert_eq!(find("Mum")["draft"], json!("On my way, 10 minutes"));
+    assert_eq!(find("ShopMart")["suggest"], json!("delete"));
+    let del = ctl_send(&r.ctl_path, "inbox delete ShopMart|WhatsApp").unwrap();
+    assert!(del.starts_with("deleted ShopMart"), "{del}");
+    let after = st(&r);
+    assert!(!after["triage"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["conversation"] == "ShopMart"));
+    assert!(!after["inbox"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["conversation"] == "ShopMart"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

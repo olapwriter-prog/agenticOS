@@ -14,7 +14,9 @@ mod screens;
 mod theme;
 
 use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, el};
-use screens::{android, approval, chat, files, home, inbox, phone, setup, store, system};
+use screens::{
+    android, approval, chat, files, home, inbox, lab, phone, setup, store, system, today,
+};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -60,6 +62,8 @@ pub enum Tab {
     Phone,
     Store,
     Files,
+    Today,
+    Lab,
     Android,
     System,
 }
@@ -315,6 +319,9 @@ fn poll(s: &mut State, _t: f64, _tx: &mut Tx) -> bool {
                 if asked.starts_with("do store_")
                     || asked.starts_with("do android_")
                     || asked.starts_with("store")
+                    || asked.starts_with("lab")
+                    || asked.starts_with("learn")
+                    || asked.starts_with("inbox")
                 {
                     s.replies.push((asked.clone(), answer.clone()));
                     if s.replies.len() > 10 {
@@ -358,6 +365,8 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
         Tab::Phone => phone::view(s, st),
         Tab::Store => store::view(s, st),
         Tab::Files => files::view(s, st),
+        Tab::Today => today::view(s, st),
+        Tab::Lab => lab::view(s, st),
         Tab::Android => android::view(s, st),
         Tab::System => system::view(s, st),
     };
@@ -435,7 +444,8 @@ fn demo() -> Value {
         ],
         "messages": [
             {"who": "Ravi", "text": "see you at 6", "at": 3000},
-            {"who": "Mum", "text": "landed safely?", "at": 4000}
+            {"who": "Mum", "text": "landed safely?", "at": 4000},
+            {"who": "ShopMart", "text": "Mega SALE 50% off today only", "at": 2500}
         ],
         "contacts": [
             {"name": "Mum", "number": "+91 98765 43210"},
@@ -473,6 +483,45 @@ fn demo() -> Value {
             {"name": "Invoice-0042.pdf", "from_app": "WhatsApp", "conversation": "Mum", "time_ms": 1731400000000u64, "size": 48213, "mime": "application/pdf"}
         ]},
         "documents": [{"name": "Lease.docx", "size": 90112}, {"name": "Ravi-Sheet.xlsx", "size": 215040}],
+        "triage": [
+            {"conversation": "Mum", "source": "WhatsApp", "text": "Here is the invoice", "group": "Bills", "suggest": "pay", "reason": "Money is due", "draft": "Got it, paying today", "kept": false},
+            {"conversation": "Mum", "source": "SMS", "text": "landed safely?", "group": "Reply", "suggest": "reply", "reason": "A question from someone you know", "draft": "Yes, will do", "kept": false},
+            {"conversation": "Ravi", "source": "SMS", "text": "see you at 6", "group": "People", "suggest": "keep", "reason": "From someone you know", "draft": "", "kept": false},
+            {"conversation": "ShopMart", "source": "SMS", "text": "Mega SALE 50% off today only", "group": "Promotions", "suggest": "delete", "reason": "Looks like an offer or spam", "draft": "", "kept": false}
+        ],
+        "today": {
+            "flow": [
+                {"t_ms": 1, "at": "08:10", "prompt": "weather today", "tool": "weather", "domain": "info", "outcome": "done", "source": "intent"},
+                {"t_ms": 2, "at": "09:42", "prompt": "text Mum running late", "tool": "send_sms", "domain": "messages", "outcome": "approved", "source": "model"},
+                {"t_ms": 3, "at": "11:05", "prompt": "read the lease", "tool": "read_document", "domain": "documents", "outcome": "done", "source": "model"},
+                {"t_ms": 4, "at": "13:20", "prompt": "call Arjun", "tool": "call", "domain": "phone", "outcome": "declined", "source": "model"},
+                {"t_ms": 5, "at": "14:05", "prompt": "torch on", "tool": "flashlight", "domain": "device", "outcome": "done", "source": "shortcut"}
+            ],
+            "by_hour": [0,0,0,0,0,0,0,0,1,1,0,1,0,1,1,0,0,0,0,0,0,0,0,0],
+            "by_domain": [["info", 1], ["messages", 1], ["documents", 1], ["phone", 1], ["device", 1]],
+            "done": 3, "approved": 1, "declined": 1, "failed": 0, "success": 0.8,
+            "week": [9, 14, 6, 11, 17, 12, 5], "without_model": 2, "busiest_hour": 8
+        },
+        "lab": {
+            "model": "qwen3.5-4b (small): running, ready", "has_model": true,
+            "episodes": 412, "labelled": 163, "corrections": 21,
+            "adapter": "/data/learn/adapter-3.gguf", "training": "waiting: not on the charger", "last_train": "adapter-3 kept: 71% vs 64%",
+            "runs": [
+                {"at_ms": 1, "label": "small model", "seed": 1, "n": 38, "score": 0.58, "held_out": 0.66, "variants": 0.49, "router": 0.71, "by_domain": []},
+                {"at_ms": 2, "label": "small model + adapter-1.gguf", "seed": 2, "n": 40, "score": 0.63, "held_out": 0.70, "variants": 0.55, "router": 0.76, "by_domain": []},
+                {"at_ms": 3, "label": "small model + adapter-2.gguf", "seed": 3, "n": 40, "score": 0.66, "held_out": 0.73, "variants": 0.59, "router": 0.80, "by_domain": []},
+                {"at_ms": 4, "label": "small model + adapter-3.gguf", "seed": 4, "n": 40, "score": 0.74, "held_out": 0.80, "variants": 0.68, "router": 0.85, "by_domain": [
+                    {"domain": "messages", "n": 12, "score": 0.83}, {"domain": "phone", "n": 9, "score": 0.89},
+                    {"domain": "info", "n": 8, "score": 0.69}, {"domain": "money", "n": 6, "score": 0.42}, {"domain": "documents", "n": 5, "score": 0.6}
+                ]}
+            ],
+            "delta": 8.0,
+            "experts": [
+                {"domain": "messages", "examples": 52, "ready": true}, {"domain": "phone", "examples": 38, "ready": true},
+                {"domain": "info", "examples": 31, "ready": true}, {"domain": "money", "examples": 6, "ready": false}, {"domain": "documents", "examples": 5, "ready": false}
+            ],
+            "router_domains": 7, "min_expert": 8
+        },
         "dashboard": {"title": "Today", "kind": "dashboard", "cards": [
             {"title": "Battery", "metric": {"value": "76%", "label": "on battery"}, "progress": 0.76, "tone": "ok"},
             {"title": "Waiting for you", "metric": {"value": "2", "label": "to approve"}, "tone": "warn"},
@@ -623,6 +672,14 @@ fn main() {
                 s.snap = demo();
                 s.tab = Tab::Files;
             }),
+            ("today", |s| {
+                s.snap = demo();
+                s.tab = Tab::Today;
+            }),
+            ("lab", |s| {
+                s.snap = demo();
+                s.tab = Tab::Lab;
+            }),
             ("setup", |s| {
                 s.snap = setup_demo(
                     "wifi",
@@ -731,6 +788,8 @@ fn main() {
                     Ok("phone") => Tab::Phone,
                     Ok("inbox") => Tab::Inbox,
                     Ok("files") => Tab::Files,
+                    Ok("today") => Tab::Today,
+                    Ok("lab") => Tab::Lab,
                     Ok("store") => Tab::Store,
                     Ok("android") => Tab::Android,
                     Ok("system") => Tab::System,
@@ -1470,5 +1529,67 @@ mod tests {
         assert!(rt.find("play-card").is_some());
         tap(&mut rt, "play-setup");
         assert_eq!(rt.state.sent.last().unwrap(), "chat set up play store");
+    }
+
+    #[test]
+    fn the_inbox_suggests_replies_with_drafts_and_what_to_delete() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-inbox");
+        assert!(rt.find("inbox-ai").is_some());
+        assert!(rt.find("inbox-group-reply").is_some(), "organised by group");
+        assert!(rt.find("inbox-group-promotions").is_some());
+        tap(&mut rt, "ai-send-0");
+        assert_eq!(rt.state.sent.last().unwrap(), "chat text Mum Yes, will do");
+        tap(&mut rt, "ai-del-0");
+        assert_eq!(rt.state.sent.last().unwrap(), "inbox delete ShopMart|SMS");
+        tap(&mut rt, "ai-keep-0");
+        assert_eq!(rt.state.sent.last().unwrap(), "inbox keep ShopMart|SMS");
+        tap(&mut rt, "inbox-group-promotions");
+        assert!(rt.find("inbox-row-0").is_some());
+        assert!(
+            rt.find("inbox-row-1").is_none(),
+            "only the promotion is listed"
+        );
+    }
+
+    #[test]
+    fn today_shows_the_flow_and_the_numbers() {
+        let mut rt = rt();
+        tap(&mut rt, "go-today");
+        for k in [
+            "title-today",
+            "today-actions",
+            "today-success",
+            "flow-0",
+            "flow-4",
+            "hour",
+            "domain-0",
+            "week",
+        ] {
+            assert!(rt.find(k).is_some(), "{k} missing");
+        }
+    }
+
+    #[test]
+    fn the_lab_runs_tests_trains_and_shows_progress_and_experts() {
+        let mut rt = rt();
+        tap(&mut rt, "go-lab");
+        for k in [
+            "title-lab",
+            "lab-model",
+            "lab-history",
+            "lab-run-3",
+            "lab-domain-0",
+            "expert-0",
+            "expert-4",
+        ] {
+            assert!(rt.find(k).is_some(), "{k} missing");
+        }
+        tap(&mut rt, "lab-run");
+        assert_eq!(rt.state.sent.last().unwrap(), "lab run");
+        tap(&mut rt, "lab-train");
+        assert_eq!(rt.state.sent.last().unwrap(), "learn train");
+        tap(&mut rt, "lab-experts");
+        assert_eq!(rt.state.sent.last().unwrap(), "lab experts");
     }
 }

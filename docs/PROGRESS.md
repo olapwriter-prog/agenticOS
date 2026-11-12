@@ -231,3 +231,26 @@ Behaviour to know:
   when it wakes. Set `android_idle_pause_secs = 0` to keep it running.
 - Verify on the device: `show-full-ui` detached with `setsid -f`, and `container freeze/unfreeze`
   as root.
+
+## Inbox triage, the day as a flow, and the learning lab
+
+- **Inbox triage** (`crates/bridge/src/triage.rs`): each conversation's newest message gets a group
+  (Reply, Bills, Updates, Promotions, People), a suggestion (reply with a ready draft, pay, delete,
+  keep) and the reason. The inbox shows "Suggested by your agent" (Send a draft, Edit, Keep,
+  Delete) and is organised by group and by source. `inbox delete|keep <person>|<source>`;
+  deleting an Android conversation dismisses its notifications. Rules, so it is instant and private;
+  nothing is sent or deleted without a tap.
+- **Today** (`crates/learn/src/day.rs`): the day as a flow (what was asked, the tool, how it ended),
+  actions, success rate, approvals, what ran without the model, by hour, by kind, and the last 7 days.
+- **Learning lab** (`crates/learn/src/lab.rs`, `lab run`, `lab experts`):
+  - a random test suite drawn per run from the requests the owner confirmed, plus reworded variants
+    (politeness, a dropped word, a typo, case), scored 1 for the exact action and 0.5 for the right
+    tool, per domain, kept as history in `lab.json` with the change since the previous run;
+  - the model under test is the small model with its current adapter, or the phrase table and
+    learned shortcuts when no model is loaded;
+  - experts: a dense 8B model cannot be upcycled into a true mixture of experts on a phone, so the
+    lab builds a mixture of adapters: per-domain training data (`learn/experts/<domain>/sft.jsonl`,
+    from 8 confirmed requests) and a naive Bayes router learned from the same requests
+    (`router.json`), whose accuracy is part of every run.
+  - Not yet: training one adapter per domain overnight (the trainer still trains one adapter on
+    everything) and switching adapters per request in the model server.

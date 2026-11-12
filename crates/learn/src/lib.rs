@@ -16,6 +16,9 @@
 //!     retrained model is only used if it does better.
 //!
 //! Learning never changes what needs approval: that stays with the executor.
+pub mod day;
+pub mod lab;
+
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -363,9 +366,21 @@ impl Learner {
             .collect()
     }
 
+    /// Every request with a human-confirmed answer, as (prompt, action), newest last: what the
+    /// lab tests on and the router learns from.
+    pub fn confirmed(&self) -> Vec<(String, String)> {
+        self.episodes
+            .iter()
+            .filter_map(|e| Self::target(e).map(|t| (e.prompt.clone(), t.to_string())))
+            .collect()
+    }
+
     /// How many episodes have a human-confirmed answer (what training can use).
     pub fn labelled(&self) -> usize {
-        self.episodes.iter().filter(|e| Self::target(e).is_some()).count()
+        self.episodes
+            .iter()
+            .filter(|e| Self::target(e).is_some())
+            .count()
     }
 
     pub fn stats(&self) -> String {

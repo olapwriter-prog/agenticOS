@@ -170,6 +170,9 @@ pub struct Core {
     mcp_status: Vec<(String, String, usize)>,
     /// Episodes and rewards: what the human approved, declined and corrected.
     learner: Learner,
+    /// Inbox conversations ("person|source") the owner deleted or kept, so triage stops asking.
+    inbox_hidden: std::collections::HashSet<String>,
+    inbox_kept: std::collections::HashSet<String>,
     /// What kind of request is this? Answers regular requests without the LLM (crate::qa).
     classifier: agentos_understand::Classifier,
     /// The phrase table, to tell an intent from a request the model must answer.
@@ -644,6 +647,8 @@ impl Core {
             prio_error,
             functions,
             learner: Learner::open(dir.join("experience.jsonl"))?,
+            inbox_hidden: std::collections::HashSet::new(),
+            inbox_kept: std::collections::HashSet::new(),
             classifier: crate::qa::classifier(&[]),
             intents: intents_with_android(default_intents(), android_on),
             grammar: grammar_copy,
@@ -1660,7 +1665,287 @@ impl Core {
             "inbox": self.inbox_json(),
             "bridge": self.bridge_json(),
             "documents": self.documents_json(),
+            "triage": self.triage_json(),
+            "today": self.today_json(),
+            "lab": self.lab_json(),
         })
+    }
+
+    /// The inbox's conversations, newest message each: "person|source" -> (text, at_ms, source).
+    fn conversations(&self) -> Vec<(String, String, String, u64)> {
+        let mut out: Vec<(String, String, String, u64)> = Vec::new();
+        let mut put = |conv: String, source: String, text: String, at: u64| {
+            if let Some(c) = out.iter_mut().find(|c| c.0 == conv && c.1 == source) {
+                if at >= c.3 {
+                    c.2 = text;
+                    c.3 = at;
+                }
+            } else {
+                out.push((conv, source, text, at));
+            }
+        };
+        for m in &self.messages_log {
+            put(
+                str_of(&m["who"]),
+                "SMS".into(),
+                str_of(&m["text"]),
+                m["at"].as_u64().unwrap_or(0),
+            );
+        }
+        if let Some(b) = &self.bridge {
+            for m in &b.borrow().state.inbox {
+                put(
+                    m.conversation.clone(),
+                    m.app.clone(),
+                    m.text.clone(),
+                    m.time_ms,
+                );
+            }
+        }
+        out.retain(|c| !self.inbox_hidden.contains(&format!("{}|{}", c.0, c.1)));
+        out.sort_by(|a, b| b.3.cmp(&a.3));
+        out
+    }
+
+    /// What the agent suggests for each conversation: reply (with a draft), pay, delete or keep.
+    fn triage_json(&self) -> Value {
+        let contacts: Vec<String> = self
+            .phone
+            .borrow()
+            .contacts
+            .list
+            .iter()
+            .map(|c| c.name.to_lowercase())
+            .collect();
+        let v: Vec<Value> = self
+            .conversations()
+            .into_iter()
+            .take(40)
+            .map(|(conv, source, text, at)| {
+                let key = format!("{conv}|{source}");
+                let known = contacts.contains(&conv.to_lowercase()) || source != "SMS";
+                let t = agentos_bridge::triage::triage(&text, known);
+                let kept = self.inbox_kept.contains(&key);
+                json!({"conversation": conv, "source": source, "text": text, "at": at,
+                       "group": t.group, "suggest": if kept { "keep".to_string() } else { t.suggest },
+                       "reason": t.reason, "draft": t.draft, "kept": kept})
+            })
+            .collect();
+        json!(v)
+    }
+
+    /// inbox delete <person>|<source> | inbox keep <person>|<source>
+    fn inbox_cmd(&mut self, rest: &str) -> String {
+        let rest = rest.trim();
+        let (sub, key) = rest.split_once(' ').unwrap_or((rest, ""));
+        let key = key.trim().to_string();
+        let Some((conv, source)) = key.split_once('|') else {
+            return "usage: inbox delete|keep <person>|<source>".into();
+        };
+        match sub {
+            "delete" => {
+                let mut n = 0;
+                if source != "SMS" {
+                    if let Some(b) = &self.bridge {
+                        n = b.borrow_mut().delete_conversation(conv);
+                    }
+                }
+                self.inbox_hidden.insert(key.clone());
+                let _ = self
+                    .kernel
+                    .record(&format!("inbox: deleted a conversation on {source}"));
+                format!(
+                    "deleted {conv} on {source}{}",
+                    if n > 0 {
+                        format!(" ({n} messages)")
+                    } else {
+                        String::new()
+                    }
+                )
+            }
+            "keep" => {
+                self.inbox_kept.insert(key.clone());
+                format!("kept {conv} on {source}")
+            }
+            _ => "usage: inbox delete|keep <person>|<source>".into(),
+        }
+    }
+
+    /// Today as a flow, and its numbers.
+    fn today_json(&self) -> Value {
+        let now = self.clock.now_ms();
+        let d = agentos_learn::day::day_report(
+            &self.learner.episodes,
+            now,
+            self.cfg.utc_offset_minutes,
+        );
+        serde_json::to_value(&d).unwrap_or(Value::Null)
+    }
+
+    /// The learning lab: what was learned, how the model scores over time, the experts.
+    fn lab_json(&self) -> Value {
+        let h = agentos_learn::lab::History::load(&self.cfg.data_dir.join("lab.json"));
+        let ex = agentos_learn::lab::experts(&self.learner, LAB_MIN_EXPERT);
+        let router = agentos_learn::lab::Router::train(&self.learner.confirmed());
+        let fixes = self
+            .learner
+            .episodes
+            .iter()
+            .filter(|e| e.corrected_to.is_some())
+            .count();
+        let runs: Vec<&agentos_learn::lab::Run> = h
+            .runs
+            .iter()
+            .rev()
+            .take(12)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        json!({
+            "model": self.models.report().lines().next().unwrap_or("no model").to_string(),
+            "has_model": self.small_url.is_some(),
+            "episodes": self.learner.episodes.len(),
+            "labelled": self.learner.labelled(),
+            "corrections": fixes,
+            "adapter": self.trainer.active().map(|p| p.display().to_string()),
+            "training": self.learn_status().lines().next().unwrap_or("").to_string(),
+            "last_train": self.trainer.last.clone(),
+            "runs": runs,
+            "delta": h.delta(),
+            "experts": ex,
+            "router_domains": router.domains(),
+            "min_expert": LAB_MIN_EXPERT,
+        })
+    }
+
+    /// The phone's answer to a request without the model: a learned shortcut, else the phrases.
+    fn answer_without_model(&self, prompt: &str) -> String {
+        if let Some(a) = self.learner.shortcut(prompt) {
+            return a;
+        }
+        match default_intents().resolve(prompt) {
+            Some(a) => {
+                let args: serde_json::Map<String, Value> =
+                    a.args.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+                json!({"tool": a.tool, "args": args}).to_string()
+            }
+            None => String::new(),
+        }
+    }
+
+    /// lab run | lab experts
+    fn lab_cmd(&mut self, rest: &str) -> String {
+        use agentos_learn::lab;
+        match rest.trim() {
+            "run" | "" => {
+                let now = self.clock.now_ms();
+                let seed = now ^ 0x9E37_79B9_7F4A_7C15;
+                let cases = lab::random_suite(&self.learner, seed, LAB_SUITE);
+                if cases.is_empty() {
+                    return "nothing to test yet: approve, decline or correct a few answers first"
+                        .into();
+                }
+                let router = lab::Router::train(&self.learner.confirmed());
+                let adapter = self
+                    .trainer
+                    .active()
+                    .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()));
+                let (label, run) = if let Some(url) = self.small_url.clone() {
+                    let mut host = LlamaHost {
+                        small_url: url.clone(),
+                        large_url: url,
+                        grammar: self.grammar.clone(),
+                        max_tokens: 128,
+                        timeout: Duration::from_secs(self.cfg.model_timeout_secs),
+                        system: Some(self.system.clone()),
+                    };
+                    let label = match &adapter {
+                        Some(a) => format!("small model + {a}"),
+                        None => "small model".into(),
+                    };
+                    let run = lab::run_suite(
+                        &cases,
+                        &router,
+                        &mut |p| host.complete(agentos_router::Brain::LocalSmall, p),
+                        &label,
+                        seed,
+                        now,
+                    );
+                    (label, run)
+                } else {
+                    let label = "phrases and shortcuts (no model loaded)".to_string();
+                    let run = lab::run_suite(
+                        &cases,
+                        &router,
+                        &mut |p| self.answer_without_model(p),
+                        &label,
+                        seed,
+                        now,
+                    );
+                    (label, run)
+                };
+                let path = self.cfg.data_dir.join("lab.json");
+                let mut h = lab::History::load(&path);
+                h.push(run.clone());
+                let _ = h.save(&path);
+                let _ = self.kernel.record(&format!(
+                    "lab: tested {label} on {} requests: {:.0}%",
+                    run.n,
+                    run.score * 100.0
+                ));
+                format!(
+                    "{label}: {:.0}% on {} requests ({:.0}% as said, {:.0}% reworded); router {:.0}%{}",
+                    run.score * 100.0,
+                    run.n,
+                    run.held_out * 100.0,
+                    run.variants * 100.0,
+                    run.router * 100.0,
+                    h.delta().map_or(String::new(), |d| format!("; {d:+.0} points since the last run"))
+                )
+            }
+            "experts" => {
+                let dir = self.cfg.data_dir.join("learn").join("experts");
+                let ex = lab::experts(&self.learner, LAB_MIN_EXPERT);
+                let mut lines = Vec::new();
+                for e in &ex {
+                    if !e.ready {
+                        lines.push(format!(
+                            "{}: {} examples (needs {})",
+                            e.domain, e.examples, LAB_MIN_EXPERT
+                        ));
+                        continue;
+                    }
+                    let rows = lab::expert_dataset(&self.learner, &self.system, &e.domain);
+                    let d = dir.join(&e.domain);
+                    let text: String = rows.iter().map(|r| format!("{r}\n")).collect();
+                    let ok = std::fs::create_dir_all(&d)
+                        .and_then(|_| std::fs::write(d.join("sft.jsonl"), text))
+                        .is_ok();
+                    lines.push(format!(
+                        "{}: {} examples {}",
+                        e.domain,
+                        e.examples,
+                        if ok { "exported" } else { "(could not write)" }
+                    ));
+                }
+                let router = lab::Router::train(&self.learner.confirmed());
+                if let Ok(t) = serde_json::to_string(&router) {
+                    let _ = std::fs::create_dir_all(&dir)
+                        .and_then(|_| std::fs::write(dir.join("router.json"), t));
+                }
+                if lines.is_empty() {
+                    return "no experts yet: nothing confirmed".into();
+                }
+                format!(
+                    "{}\nrouter over {} domains saved to {}",
+                    lines.join("\n"),
+                    router.domains(),
+                    dir.display()
+                )
+            }
+            _ => "usage: lab run | lab experts".into(),
+        }
     }
 
     /// The documents on this phone (the documents folder itself, not what Android sent), by name.
@@ -2342,6 +2627,8 @@ impl Core {
             "chat" => self.chat(rest),
             "state" => self.ui_state().to_string(),
             "bridge" => self.bridge_cmd(rest),
+            "inbox" => self.inbox_cmd(rest),
+            "lab" => self.lab_cmd(rest),
             "screen" => self.screen.as_ref().map_or("no screen yet".into(), |s| s.to_string()),
             "pending" => {
                 let p = self.gateway.pending();
@@ -2987,6 +3274,14 @@ last: {}
     pub fn tier_of(&self, tool: &str) -> Option<Tier> {
         self.engine.registry.tier_of(tool)
     }
+}
+
+/// Requests in one random test run, and confirmed requests a domain needs for its own adapter.
+const LAB_SUITE: usize = 20;
+const LAB_MIN_EXPERT: usize = 8;
+
+fn str_of(v: &Value) -> String {
+    v.as_str().map(String::from).unwrap_or_default()
 }
 
 /// Marks an analysis sent back for a second look (never a real answer: it holds a NUL).

@@ -117,6 +117,21 @@ pub fn view(s: &State, st: &Value) -> El {
         go = go.child(quick_tile(k, ic, label, c).on_press(move |s: &mut State| s.tab = tab));
     }
     page = page.child(go);
+    // the day, and the lab where the phone learns
+    let mut more = row().key("go-more").w_full().gap(10.0);
+    for (k, ic, label, c, tab) in [
+        ("go-today", &icons::STEPS, "Today", SKY, crate::Tab::Today),
+        (
+            "go-lab",
+            &icons::CHIP,
+            "Learning lab",
+            VIOLET,
+            crate::Tab::Lab,
+        ),
+    ] {
+        more = more.child(quick_tile(k, ic, label, c).on_press(move |s: &mut State| s.tab = tab));
+    }
+    page = page.child(more);
 
     // what needs the human
     if !pending.is_empty() {
