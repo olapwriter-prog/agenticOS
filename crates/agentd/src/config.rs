@@ -148,6 +148,13 @@ pub struct Config {
     /// An OpenAI-style chat endpoint that takes images, to say what is in a photo. None: the
     /// photo is described from its pixels only.
     pub vision_url: Option<String>,
+    /// The Android bridge: "none", "sim" (in-memory, for tests and `agentctl bridge sim`) or
+    /// "spool" (bridge_dir is shared with the Android side).
+    pub bridge: String,
+    /// The spool folder for bridge = "spool".
+    pub bridge_dir: Option<PathBuf>,
+    /// How often the bridge's events are read, in seconds.
+    pub bridge_poll_secs: u64,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -264,6 +271,9 @@ impl Default for Config {
             camera: "sim".into(),
             camera_command: "gst-launch-1.0 -q libcamerasrc num-buffers=1 ! videoconvert ! jpegenc ! filesink location={path}".into(),
             vision_url: None,
+            bridge: "sim".into(),
+            bridge_dir: None,
+            bridge_poll_secs: 2,
         }
     }
 }

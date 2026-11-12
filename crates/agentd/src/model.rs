@@ -23,6 +23,14 @@ pub fn describe(tool: &str) -> &'static str {
         "list_calls" => "recent and missed calls",
         "send_sms" => "send a text message (SMS) to a person or number",
         "read_messages" => "read the latest text messages",
+        "android_inbox" => {
+            "messages that arrived from Android apps (WhatsApp, Telegram...), by conversation"
+        }
+        "android_messages_from" => "read the messages from one conversation in an Android app",
+        "android_reply" => "reply to a conversation in an Android app (Medium tier)",
+        "android_files" => "files that arrived from Android apps",
+        "android_share" => "send a document to an Android app (High tier, needs the approval key)",
+        "android_bridge_status" => "whether the Android bridge is connected and what it may do",
         "all_messages" => "every text message (for analysis)",
         "call_log" => "every call (for analysis)",
         "messages_from" => "read text messages from one person",
@@ -148,6 +156,22 @@ pub fn default_intents() -> IntentTable {
     t.add("take a picture", "camera_take");
     t.add("edit photo {photo} {edit}", "photo_edit");
     t.add("show photo {photo}", "photo_show");
+    // the Android bridge: messages from apps, replies, files (before the generic SMS phrases)
+    t.add("android inbox", "android_inbox");
+    t.add("android messages", "android_inbox");
+    t.add("whatsapp messages", "android_inbox");
+    t.add(
+        "android messages from {conversation}",
+        "android_messages_from",
+    );
+    t.add(
+        "reply on android to {conversation} saying {text}",
+        "android_reply",
+    );
+    t.add("received files", "android_files");
+    t.add("files from android", "android_files");
+    t.add("share {name} to android app {app}", "android_share");
+    t.add("bridge status", "android_bridge_status");
     t.add("my photos", "photo_list");
     t.add("photos", "photo_list");
     t.add("add {title} to my calendar on {day}", "add_event");

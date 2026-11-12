@@ -9,6 +9,7 @@ agentos-services = { path = "../services" }
 agentos-android = { path = "../android" }
 agentos-catalog = { path = "../catalog" }
 agentos-vision = { path = "../vision" }
+agentos-bridge = { path = "../bridge" }
 agentos-skills = { path = "../skills" }
 agentos-ledger = { path = "../ledger" }
 agentos-hal = { path = "../hal" }

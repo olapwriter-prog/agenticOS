@@ -37,6 +37,7 @@ dependencies = [
  "agentos-android",
  "agentos-apps",
  "agentos-brain",
+ "agentos-bridge",
  "agentos-catalog",
  "agentos-commercial",
  "agentos-connectors",
@@ -130,6 +131,17 @@ dependencies = [
  "agentos-hal",
  "agentos-router",
  "agentos-store",
+]
+
+[[package]]
+name = "agentos-bridge"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+ "agentos-screen",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

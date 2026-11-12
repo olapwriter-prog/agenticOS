@@ -190,3 +190,12 @@ Behaviour to know:
 - Saying `run skill` again after a key approval runs the earlier steps again (duplicates are possible).
 - The UI's Approve button opens the PIN sheet when a PIN is set, and sends the press directly otherwise.
 - The UI's snapshot renders headless with `--snap`; the release build with LTO is slow (several minutes).
+
+
+## Android bridge (plan v3, Part A)
+
+- Done in the daemon: `crates/bridge` (spool and simulator transports, inbox, permissions, received files,
+  six tools), wired into `agentd` with `bridge = "sim" | "spool" | "none"`, the `bridge` control command,
+  inbox and bridge fields in the UI state, a dashboard card, and phrases. Two end-to-end tests.
+- Device tasks still open: build and install the companion app (`android/bridge-app`, Part B), grant
+  notification access on the device, and run the two flows with a real WhatsApp.

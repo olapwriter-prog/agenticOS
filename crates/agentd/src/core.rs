@@ -148,6 +148,9 @@ pub struct Core {
     android_blocked: agentos_android::Blocked,
     android_policy: agentos_android::governor::Policy,
     android_last_check_ms: u64,
+    /// The Android bridge, if configured: events in, commands out.
+    bridge: Option<agentos_bridge::SharedBridge>,
+    bridge_last_ms: u64,
     /// The last time the governor closed the sandbox: (reason, at ms).
     android_last_stop: Option<(String, u64)>,
     /// The app list, read at most every 30 seconds: (read at ms, apps).
@@ -385,6 +388,36 @@ impl Core {
                 vision_url: cfg.vision_url.clone(),
             }));
         }
+        // the Android bridge: events and commands move through a spool folder (or the simulator)
+        let bridge: Option<agentos_bridge::SharedBridge> = match cfg.bridge.as_str() {
+            "none" => None,
+            "sim" => {
+                let t = agentos_bridge::Sim::new(dir.join("run").join("bridge-sim"))
+                    .map_err(|e| format!("bridge: {e}"))?;
+                Some(Rc::new(RefCell::new(agentos_bridge::Bridge::load(
+                    Box::new(t),
+                    &dir,
+                ))))
+            }
+            "spool" => {
+                let Some(root) = cfg.bridge_dir.clone() else {
+                    return Err("bridge = \"spool\" needs bridge_dir".to_string().into());
+                };
+                let t = agentos_bridge::Spool::new(root).map_err(|e| format!("bridge: {e}"))?;
+                Some(Rc::new(RefCell::new(agentos_bridge::Bridge::load(
+                    Box::new(t),
+                    &dir,
+                ))))
+            }
+            other => {
+                return Err(
+                    format!("bridge = {other:?}: use \"none\", \"sim\" or \"spool\"").into(),
+                )
+            }
+        };
+        if let Some(b) = &bridge {
+            connectors.push(Box::new(agentos_bridge::BridgeTools(b.clone())));
+        }
         let android_on = android.is_some();
         let setup_path = dir.join("setup.json");
         let android_policy = agentos_android::governor::Policy {
@@ -580,6 +613,8 @@ impl Core {
             android_blocked,
             android_policy,
             android_last_check_ms: now,
+            bridge,
+            bridge_last_ms: now,
             android_last_stop: None,
             android_apps: None,
             mcp_providers: std::collections::HashMap::new(),
@@ -1613,7 +1648,118 @@ impl Core {
             "store": {"installed": agentos_catalog::store::installed(&self.cfg.data_dir)},
             "android": self.android_state(),
             "memory": self.memory_state(),
+            "inbox": self.inbox_json(),
+            "bridge": self.bridge_json(),
         })
+    }
+
+    /// The newest 30 messages, newest first.
+    fn inbox_json(&self) -> Value {
+        match &self.bridge {
+            None => json!([]),
+            Some(b) => {
+                let b = b.borrow();
+                let v: Vec<Value> = b
+                    .state
+                    .inbox
+                    .iter()
+                    .rev()
+                    .take(30)
+                    .map(|m| {
+                        json!({"id": m.id, "time_ms": m.time_ms, "app": m.app, "package": m.package,
+                               "conversation": m.conversation, "sender": m.sender, "text": m.text,
+                               "files": m.files, "read": m.read, "replied": m.replied})
+                    })
+                    .collect();
+                json!(v)
+            }
+        }
+    }
+
+    /// Whether the bridge is up, what is unread, the owner's rules and the newest files.
+    fn bridge_json(&self) -> Value {
+        match &self.bridge {
+            None => json!({"up": false, "unread": 0, "apps": [], "received": []}),
+            Some(b) => {
+                let b = b.borrow();
+                json!({
+                    "up": b.transport.up(),
+                    "unread": b.unread(),
+                    "apps": b.state.rules,
+                    "received": b.state.received.iter().rev().take(20).cloned().collect::<Vec<_>>(),
+                })
+            }
+        }
+    }
+
+    /// Reads the bridge's events into the inbox, at most every bridge_poll_secs.
+    fn bridge_tick(&mut self, now_ms: u64) {
+        let Some(b) = self.bridge.clone() else { return };
+        if now_ms.saturating_sub(self.bridge_last_ms) < self.cfg.bridge_poll_secs * 1000 {
+            return;
+        }
+        self.bridge_last_ms = now_ms;
+        let lines = b.borrow_mut().pump(now_ms);
+        for l in lines {
+            let _ = self.kernel.record(&l);
+        }
+    }
+
+    /// bridge status | bridge allow <package> <read|reply|files> <on|off> | bridge sim <json>
+    fn bridge_cmd(&mut self, rest: &str) -> String {
+        let Some(b) = self.bridge.clone() else {
+            return "no Android bridge (bridge = \"none\")".into();
+        };
+        let rest = rest.trim();
+        let (sub, args) = rest.split_once(' ').unwrap_or((rest, ""));
+        match sub {
+            "status" => {
+                let call = agentos_bridge::BridgeTools(b.clone()).call(&agentos_action::Action {
+                    tool: "android_bridge_status".into(),
+                    args: vec![],
+                });
+                call.unwrap_or_else(|e| e)
+            }
+            "allow" => {
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                let [pkg, what, onoff] = parts[..] else {
+                    return "usage: bridge allow <package> <read|reply|files> <on|off>".into();
+                };
+                let on = match onoff {
+                    "on" => true,
+                    "off" => false,
+                    _ => return "usage: bridge allow <package> <read|reply|files> <on|off>".into(),
+                };
+                let res = b.borrow_mut().set_rule(pkg, what, on);
+                match res {
+                    Ok(()) => {
+                        let _ = b.borrow().save();
+                        let _ = self.kernel.record(&format!(
+                            "bridge rule: {pkg} {what} {}",
+                            if on { "on" } else { "off" }
+                        ));
+                        "ok".into()
+                    }
+                    Err(e) => e,
+                }
+            }
+            "sim" => {
+                let e: agentos_bridge::Event = match serde_json::from_str(args) {
+                    Ok(e) => e,
+                    Err(e) => return format!("not an event: {e}"),
+                };
+                if !b.borrow_mut().transport.inject(e) {
+                    return "only with bridge = \"sim\"".into();
+                }
+                let now = self.clock.now_ms();
+                let lines = b.borrow_mut().pump(now);
+                for l in &lines {
+                    let _ = self.kernel.record(l);
+                }
+                "ok".into()
+            }
+            _ => "usage: bridge status | bridge allow <package> <read|reply|files> <on|off> | bridge sim <json>".into(),
+        }
     }
 
     /// The control channel: the approval key and operator commands.
@@ -1737,6 +1883,20 @@ impl Core {
                     .image(img)
                     .button("Photos", "photos"),
             );
+        }
+        if let Some(b) = &self.bridge {
+            let b = b.borrow();
+            let unread = b.unread();
+            let last = b.state.inbox.iter().rev().find(|m| !m.read);
+            let mut card = Card::new("Android messages").metric(unread.to_string(), "unread", "");
+            if let Some(m) = last {
+                card = card.line(format!(
+                    "{}: {}",
+                    m.sender,
+                    m.text.chars().take(40).collect::<String>()
+                ));
+            }
+            ui = ui.card(card.button("Open", "android inbox"));
         }
         serde_json::to_value(&ui).unwrap_or(Value::Null)
     }
@@ -2141,6 +2301,7 @@ impl Core {
             "stage" => format!("{:?}", self.kernel.stage),
             "chat" => self.chat(rest),
             "state" => self.ui_state().to_string(),
+            "bridge" => self.bridge_cmd(rest),
             "screen" => self.screen.as_ref().map_or("no screen yet".into(), |s| s.to_string()),
             "pending" => {
                 let p = self.gateway.pending();
@@ -2541,6 +2702,7 @@ impl Core {
 
     pub fn tick(&mut self) {
         let now_ms = self.clock.now_ms();
+        self.bridge_tick(now_ms);
         if self.android.is_some()
             && now_ms.saturating_sub(self.android_last_check_ms)
                 >= self.cfg.android_check_secs * 1000

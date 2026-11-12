@@ -430,6 +430,10 @@ pub struct Docs {
 impl Docs {
     fn files(&self) -> Vec<PathBuf> {
         let mut v: Vec<PathBuf> = std::fs::read_dir(&self.dir).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect()).unwrap_or_default();
+        // one level down: the files that came from Android apps
+        if let Ok(rd) = std::fs::read_dir(self.dir.join("android")) {
+            v.extend(rd.flatten().map(|e| e.path()).filter(|p| p.is_file()));
+        }
         v.sort();
         v
     }
