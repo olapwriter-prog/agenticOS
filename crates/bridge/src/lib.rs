@@ -127,6 +127,10 @@ pub trait Transport {
     /// Copy a host file into the spool so Android can read it; returns its `rel`.
     fn offer_file(&mut self, from: &Path, name: &str) -> Result<String, String>;
     fn up(&self) -> bool;
+    /// Commands Android has not picked up yet (a paused Android picks up nothing).
+    fn waiting_commands(&self) -> usize {
+        0
+    }
     /// How many commands were sent (the simulator counts; the spool does not need to).
     fn sent_count(&self) -> usize {
         0
@@ -545,7 +549,10 @@ impl Connector for BridgeTools {
         let mut b = self.0.borrow_mut();
         match a.tool.as_str() {
             "android_inbox" => {
-                let mut ui = Ui::new("Android messages").kind("inbox").layout("board").accent("coral");
+                let mut ui = Ui::new("Android messages")
+                    .kind("inbox")
+                    .layout("board")
+                    .accent("coral");
                 let mut seen: Vec<String> = Vec::new();
                 for m in b.state.inbox.iter().rev() {
                     if seen.contains(&m.conversation) || seen.len() >= 12 {
@@ -568,7 +575,11 @@ impl Connector for BridgeTools {
                         .map(|x| x.text.chars().take(80).collect())
                         .collect();
                     let last = lines.last().cloned().unwrap_or_default();
-                    let value = if unread > 0 { format!("{unread} new") } else { String::new() };
+                    let value = if unread > 0 {
+                        format!("{unread} new")
+                    } else {
+                        String::new()
+                    };
                     // one row per conversation: tapping it opens the thread
                     ui = ui.card(
                         Card::new(m.conversation.clone())

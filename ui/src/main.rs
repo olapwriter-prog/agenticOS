@@ -450,6 +450,9 @@ fn demo() -> Value {
         "android": {
             "mode": "sim",
             "running": true,
+            "paused": false,
+            "showing": false,
+            "pause_after_secs": 60,
             "apps": [
                 {"name": "Notes", "package": "org.example.notes"},
                 {"name": "WhatsApp", "package": "com.whatsapp"},
@@ -679,6 +682,18 @@ fn main() {
             }),
             ("android", |s| {
                 s.snap = demo();
+                s.tab = Tab::Android;
+            }),
+            ("android-paused", |s| {
+                s.snap = demo();
+                s.snap["android"]["paused"] = json!(true);
+                s.snap["android"]["last_stop"] = Value::Null;
+                s.tab = Tab::Android;
+            }),
+            ("android-showing", |s| {
+                s.snap = demo();
+                s.snap["android"]["showing"] = json!(true);
+                s.snap["android"]["last_stop"] = Value::Null;
                 s.tab = Tab::Android;
             }),
             ("system", |s| {
@@ -1030,18 +1045,46 @@ mod tests {
     }
 
     #[test]
-    fn the_sandbox_shows_its_apps_its_memory_and_why_it_closed() {
+    fn android_is_opened_as_itself_not_redrawn() {
         let mut rt = rt();
         tap(&mut rt, "tab-android");
         assert!(rt.find("memory-bar").is_some());
         assert!(rt.find("android-banner").is_some());
-        tap(&mut rt, "app-com.whatsapp");
-        assert_eq!(
-            rt.state.sent.last().unwrap(),
-            "do android_open {\"app\":\"com.whatsapp\"}"
+        assert!(
+            rt.find("app-com.whatsapp").is_none(),
+            "no copy of Android's app grid"
         );
+        tap(&mut rt, "android-open");
+        assert_eq!(rt.state.sent.last().unwrap(), "do android_show {}");
+        tap(&mut rt, "android-pause");
+        assert_eq!(rt.state.sent.last().unwrap(), "do android_pause {}");
         tap(&mut rt, "close-all");
         assert_eq!(rt.state.sent.last().unwrap(), "do android_close_all {}");
+    }
+
+    #[test]
+    fn a_paused_android_offers_resume_and_says_why() {
+        let mut s = State::new();
+        let mut d = demo();
+        d["android"]["paused"] = json!(true);
+        s.snap = d;
+        s.tab = Tab::Android;
+        let mut rt = rt_of(s);
+        assert!(rt.find("android-pause").is_none());
+        tap(&mut rt, "android-resume");
+        assert_eq!(rt.state.sent.last().unwrap(), "do android_resume {}");
+    }
+
+    #[test]
+    fn on_screen_android_offers_the_way_back() {
+        let mut s = State::new();
+        let mut d = demo();
+        d["android"]["showing"] = json!(true);
+        s.snap = d;
+        s.tab = Tab::Android;
+        let mut rt = rt_of(s);
+        tap(&mut rt, "android-back");
+        assert_eq!(rt.state.sent.last().unwrap(), "do android_hide {}");
     }
 
     #[test]

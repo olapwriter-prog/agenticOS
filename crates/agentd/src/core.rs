@@ -148,6 +148,10 @@ pub struct Core {
     android_blocked: agentos_android::Blocked,
     android_policy: agentos_android::governor::Policy,
     android_last_check_ms: u64,
+    /// What needs Android: uses counted by its tools, and whether its screen is showing.
+    android_activity: agentos_android::Activity,
+    android_uses_seen: u64,
+    android_last_use_ms: u64,
     /// The Android bridge, if configured: events in, commands out.
     bridge: Option<agentos_bridge::SharedBridge>,
     bridge_last_ms: u64,
@@ -341,6 +345,7 @@ impl Core {
         let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
         // the Android sandbox, if configured: its tools come before the functions, as the others
         let android_blocked: agentos_android::Blocked = Rc::new(RefCell::new(None));
+        let android_activity = agentos_android::Activity::default();
         let android: Option<agentos_android::Shared> = match cfg.android.as_str() {
             "none" => None,
             "sim" => Some(Rc::new(RefCell::new(
@@ -430,6 +435,7 @@ impl Core {
                 sandbox: sb.clone(),
                 apks: dir.join("apks"),
                 blocked: android_blocked.clone(),
+                activity: android_activity.clone(),
             }));
         }
         connectors.push(Box::new(FunctionTools(functions.clone())));
@@ -613,6 +619,9 @@ impl Core {
             android_blocked,
             android_policy,
             android_last_check_ms: now,
+            android_activity,
+            android_uses_seen: 0,
+            android_last_use_ms: now,
             bridge,
             bridge_last_ms: now,
             android_last_stop: None,
@@ -1827,7 +1836,11 @@ impl Core {
             .android_last_stop
             .as_ref()
             .map(|(r, at)| json!({"reason": r, "at_ms": at}));
-        json!({"mode": self.cfg.android, "running": running, "apps": apps, "last_stop": last})
+        let paused = running && sb.borrow_mut().paused();
+        json!({"mode": self.cfg.android, "running": running, "paused": paused,
+               "showing": self.android_activity.showing.get(),
+               "pause_after_secs": self.cfg.android_idle_pause_secs,
+               "apps": apps, "last_stop": last})
     }
 
     /// The dashboard, generated from what the phone knows now, as a screen document like any
@@ -2722,8 +2735,46 @@ impl Core {
         let running = sb.borrow_mut().running();
         if let (true, Some(r)) = (running, reason) {
             let _ = sb.borrow_mut().stop_all();
+            self.android_activity.showing.set(false);
             let _ = self.kernel.record(&format!("android sandbox closed: {r}"));
             self.android_last_stop = Some((r.to_string(), now));
+            return;
+        }
+        if !running {
+            return;
+        }
+        // a use since the last check: Android was needed now
+        let uses = self.android_activity.uses.get();
+        if uses != self.android_uses_seen {
+            self.android_uses_seen = uses;
+            self.android_last_use_ms = now;
+        }
+        let paused = sb.borrow_mut().paused();
+        // a reply or a share waits for Android: wake it to deliver
+        let waiting = self
+            .bridge
+            .as_ref()
+            .map_or(0, |b| b.borrow().transport.waiting_commands());
+        if paused && waiting > 0 {
+            if sb.borrow_mut().resume().is_ok() {
+                self.android_last_use_ms = now;
+                let _ = self
+                    .kernel
+                    .record("android sandbox resumed: the bridge has work for it");
+            }
+            return;
+        }
+        // nothing needs it and its screen is not showing: pause it
+        let idle_ms = self.cfg.android_idle_pause_secs * 1000;
+        if !paused
+            && idle_ms > 0
+            && !self.android_activity.showing.get()
+            && now.saturating_sub(self.android_last_use_ms) >= idle_ms
+            && sb.borrow_mut().pause().is_ok()
+        {
+            let _ = self
+                .kernel
+                .record("android sandbox paused: nothing needs it");
         }
     }
 

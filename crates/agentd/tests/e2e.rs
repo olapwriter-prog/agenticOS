@@ -1843,3 +1843,64 @@ fn the_state_lists_the_documents_on_the_phone() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn android_opens_as_itself_and_pauses_when_nothing_needs_it() {
+    let d = dir("android-pause");
+    let proc_root = d.join("proc");
+    std::fs::create_dir_all(proc_root.join("pressure")).unwrap();
+    std::fs::write(proc_root.join("meminfo"), "MemAvailable: 2097152 kB\n").unwrap();
+    std::fs::write(
+        proc_root.join("pressure/memory"),
+        "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+    )
+    .unwrap();
+    let c = Config {
+        android: "sim".into(),
+        proc_root,
+        android_check_secs: 1,
+        android_idle_pause_secs: 2,
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let state = |r: &Running| -> Value {
+        serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap()
+    };
+    // open Android: its own screen, not redrawn by Agentic OS
+    let opened = ctl_send(&r.ctl_path, "chat open android").unwrap();
+    assert!(opened.contains("Android is open"), "{opened}");
+    let st = state(&r);
+    assert_eq!(st["android"]["running"], json!(true));
+    assert_eq!(st["android"]["showing"], json!(true));
+    // while its screen shows, it is never paused
+    std::thread::sleep(std::time::Duration::from_millis(3500));
+    assert_eq!(state(&r)["android"]["paused"], json!(false));
+    // back to Agentic OS: with nothing needing it, it pauses
+    let back = ctl_send(&r.ctl_path, "chat back to agentic os").unwrap();
+    assert!(back.contains("Back to Agentic OS"), "{back}");
+    let mut paused = false;
+    for _ in 0..25 {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        if state(&r)["android"]["paused"] == json!(true) {
+            paused = true;
+            break;
+        }
+    }
+    assert!(paused, "Android was not paused: {}", state(&r)["android"]);
+    let ledger = std::fs::read_to_string(d.join("ledger.log")).unwrap_or_default();
+    assert!(
+        ledger.contains("android sandbox paused: nothing needs it"),
+        "{ledger}"
+    );
+    // the agent needs an Android app: the sandbox wakes for it
+    let open = ctl_send(
+        &r.ctl_path,
+        r#"do android_open {"app":"org.example.notes"}"#,
+    )
+    .unwrap();
+    assert!(open.contains("opened"), "{open}");
+    assert_eq!(state(&r)["android"]["paused"], json!(false));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

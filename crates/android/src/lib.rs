@@ -37,6 +37,24 @@ pub trait Sandbox {
     fn play_page(&mut self, _package: &str) -> Result<(), String> {
         Err("this sandbox cannot open the store page".into())
     }
+    /// Show Android's own full screen (its launcher, its apps), drawn by Android itself.
+    fn show(&mut self) -> Result<(), String> {
+        Err("this sandbox has no screen to show".into())
+    }
+    /// Back to Agentic OS: the Android window goes away; Android keeps running until paused.
+    fn hide(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// Freeze the sandbox: its apps keep their state but use no CPU.
+    fn pause(&mut self) -> Result<(), String> {
+        Err("this sandbox cannot pause".into())
+    }
+    fn resume(&mut self) -> Result<(), String> {
+        Err("this sandbox cannot pause".into())
+    }
+    fn paused(&mut self) -> bool {
+        false
+    }
     /// Download and initialise the Google Play system image.
     fn init_gapps(&mut self) -> Result<String, String> {
         Err("not supported by this sandbox".into())
@@ -89,6 +107,12 @@ pub fn parse_app_list(text: &str) -> Vec<App> {
     apps
 }
 
+/// Parse `waydroid status`: the container is paused when its line says FROZEN.
+pub fn container_frozen(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.starts_with("Container:") && l.contains("FROZEN"))
+}
+
 /// Parse `waydroid status`: the session is up when its line says RUNNING.
 pub fn session_running(text: &str) -> bool {
     text.lines()
@@ -96,6 +120,42 @@ pub fn session_running(text: &str) -> bool {
 }
 
 impl Sandbox for Waydroid {
+    fn show(&mut self) -> Result<(), String> {
+        // Android's own full UI, in its own window; detached, because it starts the session and
+        // stays up (verify on the device)
+        let cmd = format!(
+            "{} setsid -f waydroid show-full-ui >/dev/null 2>&1",
+            self.env
+        );
+        let user = self.user.clone();
+        self.runner.run("su", &["-l", &user, "-c", &cmd])?;
+        if self.sway {
+            let _ = self.waydroid_sway("workspace 2");
+        }
+        Ok(())
+    }
+    fn hide(&mut self) -> Result<(), String> {
+        if self.sway {
+            let _ = self.waydroid_sway("workspace 1");
+        }
+        Ok(())
+    }
+    fn pause(&mut self) -> Result<(), String> {
+        // the container belongs to root
+        self.runner
+            .run("waydroid", &["container", "freeze"])
+            .map(|_| ())
+    }
+    fn resume(&mut self) -> Result<(), String> {
+        self.runner
+            .run("waydroid", &["container", "unfreeze"])
+            .map(|_| ())
+    }
+    fn paused(&mut self) -> bool {
+        self.waydroid("status")
+            .map(|s| container_frozen(&s))
+            .unwrap_or(false)
+    }
     fn init_gapps(&mut self) -> Result<String, String> {
         // verify on the device: the image is chosen when the sandbox is initialised
         self.runner
@@ -176,6 +236,9 @@ pub struct SimSandbox {
     pub stops: u32,
     /// the Google Play image is installed
     pub gapps: bool,
+    /// Android's own screen is showing
+    pub shown: bool,
+    pub frozen: bool,
 }
 
 impl Sandbox for SimSandbox {
@@ -207,12 +270,41 @@ impl Sandbox for SimSandbox {
     }
     fn stop_all(&mut self) -> Result<(), String> {
         self.open.clear();
+        self.shown = false;
+        self.frozen = false;
         self.stops += 1;
         Ok(())
     }
     fn play_page(&mut self, package: &str) -> Result<(), String> {
         self.installed.push(package.to_string());
         Ok(())
+    }
+    fn show(&mut self) -> Result<(), String> {
+        self.frozen = false;
+        self.shown = true;
+        if !self.open.iter().any(|p| p == "android") {
+            self.open.push("android".into());
+        }
+        Ok(())
+    }
+    fn hide(&mut self) -> Result<(), String> {
+        self.shown = false;
+        Ok(())
+    }
+    fn pause(&mut self) -> Result<(), String> {
+        if self.open.is_empty() {
+            return Err("Android is not running".into());
+        }
+        self.shown = false;
+        self.frozen = true;
+        Ok(())
+    }
+    fn resume(&mut self) -> Result<(), String> {
+        self.frozen = false;
+        Ok(())
+    }
+    fn paused(&mut self) -> bool {
+        self.frozen
     }
     fn init_gapps(&mut self) -> Result<String, String> {
         self.gapps = true;
@@ -241,7 +333,17 @@ pub struct AndroidTools {
     pub sandbox: Shared,
     pub apks: PathBuf,
     pub blocked: Blocked,
+    pub activity: Activity,
 }
+
+/// What the daemon needs to know to pause Android when nothing needs it: a count of uses (each
+/// tool that needs Android adds one), and whether Android's screen is showing.
+#[derive(Default)]
+pub struct ActivityState {
+    pub uses: std::cell::Cell<u64>,
+    pub showing: std::cell::Cell<bool>,
+}
+pub type Activity = Rc<ActivityState>;
 
 /// Runs the programs on this machine.
 pub struct System;
@@ -308,6 +410,26 @@ impl Connector for AndroidTools {
                 tier: Tier::High,
             },
             Tool {
+                name: "android_show",
+                args: &[],
+                tier: Tier::Low,
+            },
+            Tool {
+                name: "android_hide",
+                args: &[],
+                tier: Tier::Low,
+            },
+            Tool {
+                name: "android_pause",
+                args: &[],
+                tier: Tier::Low,
+            },
+            Tool {
+                name: "android_resume",
+                args: &[],
+                tier: Tier::Low,
+            },
+            Tool {
                 name: "android_play_setup",
                 args: &[],
                 tier: Tier::High,
@@ -326,7 +448,36 @@ impl Connector for AndroidTools {
     }
     fn call(&mut self, a: &Action) -> Result<String, String> {
         let mut sb = self.sandbox.borrow_mut();
+        let needs_android = !matches!(
+            a.tool.as_str(),
+            "android_status" | "android_pause" | "android_hide" | "android_close_all"
+        );
+        if needs_android {
+            self.activity.uses.set(self.activity.uses.get() + 1);
+            if sb.paused() {
+                sb.resume()?;
+            }
+        }
         match a.tool.as_str() {
+            "android_show" => {
+                if let Some(reason) = self.blocked.borrow().clone() {
+                    return Err(format!("not now: {reason}"));
+                }
+                sb.show()?;
+                self.activity.showing.set(true);
+                Ok("Android is open, full screen. Its own launcher and apps, as Android draws them.".into())
+            }
+            "android_hide" => {
+                sb.hide()?;
+                self.activity.showing.set(false);
+                Ok("Back to Agentic OS. Android pauses when nothing needs it.".into())
+            }
+            "android_pause" => {
+                sb.pause()?;
+                self.activity.showing.set(false);
+                Ok("Android paused: its apps keep their state and use no CPU.".into())
+            }
+            "android_resume" => Ok("Android resumed.".into()),
             "android_play_setup" => {
                 let init = sb.init_gapps()?;
                 let id = sb.gsf_id().ok();
@@ -362,6 +513,7 @@ impl Connector for AndroidTools {
             "android_status" => {
                 let available = sb.available();
                 let running = sb.running();
+                let paused = running && sb.paused();
                 let n = if running { sb.apps()?.len() } else { 0 };
                 Ok(format!(
                     "Android sandbox: {}, {}, {n} apps",
@@ -370,7 +522,13 @@ impl Connector for AndroidTools {
                     } else {
                         "not installed"
                     },
-                    if running { "running" } else { "not running" }
+                    if paused {
+                        "paused"
+                    } else if running {
+                        "running"
+                    } else {
+                        "not running"
+                    }
                 ))
             }
             "android_apps" => {
@@ -641,6 +799,7 @@ mod play_tests {
             sandbox: Rc::new(RefCell::new(Box::new(SimSandbox::default()))),
             apks: PathBuf::from("/tmp"),
             blocked: Rc::new(RefCell::new(None)),
+            activity: Activity::default(),
         };
         let a = Action {
             tool: "android_play_setup".into(),
@@ -657,5 +816,56 @@ mod play_tests {
             .call(&st)
             .unwrap()
             .starts_with("Play Store: installed"));
+    }
+
+    #[test]
+    fn waydroid_shows_its_own_ui_and_freezes_as_root() {
+        let (mut w, calls) = waydroid("Session:\tRUNNING\nContainer:\tFROZEN\n");
+        w.sway = true;
+        w.show().unwrap();
+        w.pause().unwrap();
+        w.resume().unwrap();
+        assert!(w.paused());
+        let c = calls.borrow();
+        assert!(c[0].contains("setsid -f waydroid show-full-ui"), "{}", c[0]);
+        assert!(c[1].contains("swaymsg workspace 2"), "{}", c[1]);
+        assert_eq!(c[2], "waydroid container freeze");
+        assert_eq!(c[3], "waydroid container unfreeze");
+        assert!(container_frozen("Container:\tFROZEN"));
+        assert!(!container_frozen("Container:\tRUNNING"));
+    }
+
+    #[test]
+    fn a_tool_that_needs_android_wakes_it_and_counts_a_use() {
+        let sb: Shared = Rc::new(RefCell::new(Box::new(SimSandbox::default())));
+        let activity = Activity::default();
+        let mut tools = AndroidTools {
+            sandbox: sb.clone(),
+            apks: PathBuf::from("/tmp"),
+            blocked: Rc::new(RefCell::new(None)),
+            activity: activity.clone(),
+        };
+        let call = |t: &mut AndroidTools, tool: &str| {
+            t.call(&Action {
+                tool: tool.into(),
+                args: vec![],
+            })
+        };
+        call(&mut tools, "android_show").unwrap();
+        assert!(activity.showing.get());
+        call(&mut tools, "android_pause").unwrap();
+        assert!(sb.borrow_mut().paused());
+        assert!(!activity.showing.get());
+        let before = activity.uses.get();
+        // status does not need Android: it neither wakes it nor counts
+        call(&mut tools, "android_status").unwrap();
+        assert!(sb.borrow_mut().paused());
+        assert_eq!(activity.uses.get(), before);
+        call(&mut tools, "android_apps").unwrap();
+        assert!(
+            !sb.borrow_mut().paused(),
+            "a tool that needs Android wakes it"
+        );
+        assert_eq!(activity.uses.get(), before + 1);
     }
 }

@@ -148,6 +148,9 @@ pub struct Config {
     /// An OpenAI-style chat endpoint that takes images, to say what is in a photo. None: the
     /// photo is described from its pixels only.
     pub vision_url: Option<String>,
+    /// Pause (freeze) the Android sandbox after this many seconds with nothing needing it and
+    /// its screen not showing. 0 never pauses.
+    pub android_idle_pause_secs: u64,
     /// The Android bridge: "none", "sim" (in-memory, for tests and `agentctl bridge sim`) or
     /// "spool" (bridge_dir is shared with the Android side).
     pub bridge: String,
@@ -271,6 +274,7 @@ impl Default for Config {
             camera: "sim".into(),
             camera_command: "gst-launch-1.0 -q libcamerasrc num-buffers=1 ! videoconvert ! jpegenc ! filesink location={path}".into(),
             vision_url: None,
+            android_idle_pause_secs: 60,
             bridge: "sim".into(),
             bridge_dir: None,
             bridge_poll_secs: 2,

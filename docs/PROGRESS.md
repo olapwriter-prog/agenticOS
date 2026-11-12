@@ -217,3 +217,17 @@ Behaviour to know:
   (the client draws everything in its default face).
 - Snapshot scenes: chat-poster, chat-board, chat-steps, chat-thread, chat-voice, chat-reader, inbox,
   inbox-thread, files.
+
+## Android opens as itself, and pauses when nothing needs it
+
+- Agentic OS does not redraw Android. "Open Android" (`android_show`) starts the sandbox and shows
+  Android's own full screen (`waydroid show-full-ui`, on sway workspace 2): its launcher, apps and
+  Play Store, as Android draws them. "Back to Agentic OS" (`android_hide`) returns to workspace 1.
+- When Android's screen is not showing and no tool has needed it for `android_idle_pause_secs`
+  (default 60), the daemon pauses it (`waydroid container freeze`): apps keep their state and use no
+  CPU. Any tool that needs Android wakes it first (`container unfreeze`), and so does a reply or a
+  share waiting in the bridge's spool. Pauses and wakes are written to the ledger.
+- Trade-off: a paused Android receives nothing, so WhatsApp and other apps deliver their messages
+  when it wakes. Set `android_idle_pause_secs = 0` to keep it running.
+- Verify on the device: `show-full-ui` detached with `setsid -f`, and `container freeze/unfreeze`
+  as root.

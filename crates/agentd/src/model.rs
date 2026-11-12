@@ -31,6 +31,10 @@ pub fn describe(tool: &str) -> &'static str {
         "android_files" => "files that arrived from Android apps",
         "android_share" => "send a document to an Android app (High tier, needs the approval key)",
         "android_bridge_status" => "whether the Android bridge is connected and what it may do",
+        "android_show" => "open Android's own full screen in the sandbox (its launcher and apps)",
+        "android_hide" => "go back from Android to Agentic OS; Android pauses when nothing needs it",
+        "android_pause" => "pause the Android sandbox now (apps keep their state, use no CPU)",
+        "android_resume" => "resume the paused Android sandbox",
         "android_play_setup" => "install the Google Play image in the Android sandbox (High tier, needs the approval key)",
         "android_device_id" => "the device id to register with Google so Play sign-in works",
         "android_play_status" => "whether the Play Store is installed, and the device id",
@@ -175,6 +179,12 @@ pub fn default_intents() -> IntentTable {
     t.add("files from android", "android_files");
     t.add("share {name} to android app {app}", "android_share");
     t.add("bridge status", "android_bridge_status");
+    t.add("open android", "android_show");
+    t.add("show android", "android_show");
+    t.add("back to agentic os", "android_hide");
+    t.add("close android", "android_hide");
+    t.add("pause android", "android_pause");
+    t.add("resume android", "android_resume");
     t.add("set up play store", "android_play_setup");
     t.add("android device id", "android_device_id");
     t.add("play store status", "android_play_status");

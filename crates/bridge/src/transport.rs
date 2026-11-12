@@ -90,6 +90,16 @@ impl Transport for Spool {
     fn up(&self) -> bool {
         self.root.join("out").is_dir()
     }
+
+    fn waiting_commands(&self) -> usize {
+        std::fs::read_dir(self.root.join("in"))
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+                    .count()
+            })
+            .unwrap_or(0)
+    }
 }
 
 /// The simulator. Events are injected by `agentctl bridge sim`; commands are recorded for tests.

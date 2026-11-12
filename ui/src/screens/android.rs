@@ -5,19 +5,24 @@ use crate::icons;
 use crate::theme::*;
 use rune::tok::TextStyle;
 use rune::{El, col, el, icon, row};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub fn view(_s: &State, st: &Value) -> El {
     let android = &st["android"];
     let mode = str_of(&android["mode"]);
     let running = android["running"].as_bool() == Some(true);
-    let apps = android["apps"].as_array().cloned().unwrap_or_default();
-    let status = if mode == "none" || mode.is_empty() {
-        "Not set up"
+    let paused = android["paused"].as_bool() == Some(true);
+    let showing = android["showing"].as_bool() == Some(true);
+    let after = android["pause_after_secs"].as_u64().unwrap_or(60);
+    let set_up = !(mode == "none" || mode.is_empty());
+    let (status, dot) = if !set_up {
+        ("Not set up", DIM)
+    } else if paused {
+        ("Paused", SUN)
     } else if running {
-        "Running"
+        ("Running", GOOD)
     } else {
-        "Stopped"
+        ("Stopped", DIM)
     };
     let mut page = col().key("android").w_full().gap(18.0).child(
         row()
@@ -26,20 +31,105 @@ pub fn view(_s: &State, st: &Value) -> El {
             .child(page_title("title-android", "Android", None).grow(1.0))
             .child(
                 row()
+                    .key("android-status")
                     .h(28.0)
                     .px(12.0)
                     .gap(6.0)
                     .center_y()
                     .radius(14.0)
                     .fill(SURFACE2)
-                    .child(
-                        el().size(7.0, 7.0)
-                            .radius(3.5)
-                            .fill(if running { GOOD } else { DIM }),
-                    )
+                    .child(el().size(7.0, 7.0).radius(3.5).fill(dot))
                     .child(t(status, CAPTION, MUTED)),
             ),
     );
+
+    if !set_up {
+        return page.child(
+            card("android-none")
+                .py(24.0)
+                .items_center()
+                .gap(8.0)
+                .child(tile(&icons::ANDROID, DIM, 44.0))
+                .child(
+                    t(
+                        "The Android sandbox is not set up on this phone",
+                        BODY,
+                        MUTED,
+                    )
+                    .wrap(),
+                ),
+        );
+    }
+
+    // Android is not redrawn here: this opens Android's own screen, as Android draws it
+    let line = if showing {
+        "Android is on screen. Come back here any time; it keeps your apps as they were."
+            .to_string()
+    } else if paused {
+        "Paused: nothing needs Android, so it uses no CPU. Your apps keep their state and wake when you open it or the agent needs it.".to_string()
+    } else if running {
+        format!("Running in the background. It pauses after {after} s if nothing needs it.")
+    } else {
+        "Starts the sandbox and shows Android's own launcher, apps and Play Store.".to_string()
+    };
+    let mut launch = col()
+        .key("android-launch")
+        .w_full()
+        .padding(20.0)
+        .gap(14.0)
+        .radius(32.0)
+        .fill(MINT)
+        .child(t("ANDROID 15 · SANDBOX", LABEL, MINT_ON.alpha(0.85)))
+        .child(t(
+            if showing { "On screen" } else { "Open Android" },
+            TextStyle::new(34.0, 700.0),
+            MINT_ON,
+        ))
+        .child(t(line, BODY, MINT_ON.alpha(0.9)).w_full().wrap())
+        .child(
+            row()
+                .key("android-open")
+                .w_full()
+                .h(52.0)
+                .center()
+                .radius(26.0)
+                .fill(MINT_ON)
+                .role("button")
+                .label("Open Android")
+                .press_scale(0.97)
+                .child(t(
+                    if paused {
+                        "Resume and open"
+                    } else {
+                        "Open Android"
+                    },
+                    HEADLINE,
+                    MINT,
+                ))
+                .on_press(|s: &mut State| s.send("do android_show {}".into())),
+        );
+    if running {
+        let mut actions = row().w_full().gap(10.0).flex_wrap();
+        if showing {
+            actions = actions.child(
+                field_action("android-back", "Back to Agentic OS", MINT_ON)
+                    .on_press(|s: &mut State| s.send("do android_hide {}".into())),
+            );
+        }
+        actions = actions.child(if paused {
+            field_action("android-resume", "Resume", MINT_ON)
+                .on_press(|s: &mut State| s.send("do android_resume {}".into()))
+        } else {
+            field_action("android-pause", "Pause now", MINT_ON)
+                .on_press(|s: &mut State| s.send("do android_pause {}".into()))
+        });
+        actions = actions.child(
+            field_action("close-all", "Stop", MINT_ON)
+                .on_press(|s: &mut State| s.send("do android_close_all {}".into())),
+        );
+        launch = launch.child(actions);
+    }
+    page = page.child(launch);
 
     page = page.child(play_card(st));
 
@@ -86,7 +176,7 @@ pub fn view(_s: &State, st: &Value) -> El {
     let frac = (mib as f32 / 4096.0).clamp(0.0, 1.0);
     let gb = mib as f32 / 1024.0;
     let low = mib < 1024;
-    page = page.child(
+    page.child(
         card("memory")
             .child(
                 row()
@@ -117,88 +207,7 @@ pub fn view(_s: &State, st: &Value) -> El {
                 CAPTION,
                 DIM,
             )),
-    );
-
-    // the apps, four to a row
-    if mode == "none" || mode.is_empty() {
-        page = page.child(
-            card("android-apps")
-                .py(24.0)
-                .items_center()
-                .gap(8.0)
-                .child(tile(&icons::APPS, DIM, 44.0))
-                .child(t(
-                    "The Android sandbox is not set up on this phone",
-                    BODY,
-                    MUTED,
-                )),
-        );
-        return page;
-    }
-    let mut grid = col().key("android-apps").w_full().gap(18.0);
-    if apps.is_empty() {
-        grid = grid.child(card("android-empty").py(24.0).items_center().child(t(
-            if running {
-                "No apps in the sandbox yet"
-            } else {
-                "Open an app to start the sandbox"
-            },
-            BODY,
-            MUTED,
-        )));
-    }
-    for chunk in apps.chunks(4) {
-        let mut r = row().w_full().gap(10.0);
-        for a in chunk {
-            let package = str_of(&a["package"]);
-            let name = str_of(&a["name"]);
-            let short = name.rsplit('.').next().unwrap_or(&name).to_string();
-            let label = pretty_id(&short);
-            let p = package.clone();
-            r = r.child(
-                col()
-                    .key(format!("app-{package}"))
-                    .w(76.0)
-                    .gap(8.0)
-                    .items_center()
-                    .role("button")
-                    .label(&label)
-                    .press_scale(0.93)
-                    .child(
-                        row()
-                            .size(62.0, 62.0)
-                            .center()
-                            .radius(18.0)
-                            .linear_gradient(
-                                135.0,
-                                [
-                                    (0.0, hue_of(&package)),
-                                    (1.0, hue_of(&package).mix(ACCENT2, 0.4)),
-                                ],
-                            )
-                            .child(t(
-                                initials(&label),
-                                TextStyle::new(22.0, 700.0),
-                                rune::Color::WHITE,
-                            )),
-                    )
-                    .child(t(label, CAPTION, TEXT).truncate())
-                    .on_press(move |s: &mut State| {
-                        s.send(format!("do android_open {}", json!({"app": p})))
-                    }),
-            );
-        }
-        grid = grid.child(r);
-    }
-    page = page.child(grid);
-    if running {
-        page = page.child(
-            secondary("close-all", "Close all apps")
-                .w_full()
-                .on_press(|s: &mut State| s.send("do android_close_all {}".into())),
-        );
-    }
-    page
+    )
 }
 
 /// Google Play and the bridge: set up the store (High tier: it waits for the PIN), ask its
