@@ -490,7 +490,7 @@ impl Connector for Docs {
                 let q = get("question");
                 let parts = pick(&d, &q, self.budget);
                 let total: usize = d.parts.iter().map(|p| tokens_of(&p.text)).sum();
-                let mut ui = Ui::new(f.file_name().unwrap().to_string_lossy().to_string()).subtitle(format!("{} · {} parts · {}", d.kind, d.parts.len(), if q.is_empty() { format!("from the start, {total} tokens in all") } else { format!("the parts about: {q}") }));
+                let mut ui = Ui::new(f.file_name().unwrap().to_string_lossy().to_string()).layout("reader").accent("lime").subtitle(format!("{} · {} parts · {}", d.kind, d.parts.len(), if q.is_empty() { format!("from the start, {total} tokens in all") } else { format!("the parts about: {q}") }));
                 for p in parts {
                     let mut c = Card::new(&p.title);
                     for l in p.text.lines().filter(|l| !l.trim().is_empty()) {

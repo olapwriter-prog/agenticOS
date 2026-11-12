@@ -202,7 +202,9 @@ impl Apps {
         let num = |x: &Value| x.as_f64().map(|f| format!("{f:.0}")).unwrap_or("?".into());
         let mut ui = Ui::new(format!("Weather in {name}"))
             .subtitle(country)
-            .kind("weather");
+            .kind("weather")
+            .layout("poster")
+            .accent("sky");
         ui = ui.card(
             Card::new(wmo(c["weather_code"].as_i64().unwrap_or(-1)))
                 .metric(
@@ -313,7 +315,7 @@ impl Apps {
                 .map(|x| format!("{x:.0}"))
                 .unwrap_or("?".into())
         };
-        Ok(Ui::new(format!("Air in {name}")).kind("air").card(
+        Ok(Ui::new(format!("Air in {name}")).kind("air").accent("mint").card(
             Card::new(label)
                 .metric(format!("{aqi:.0}"), "US AQI", "")
                 .progress((aqi / 300.0) as f32)

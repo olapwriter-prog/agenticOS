@@ -545,7 +545,7 @@ impl Connector for BridgeTools {
         let mut b = self.0.borrow_mut();
         match a.tool.as_str() {
             "android_inbox" => {
-                let mut ui = Ui::new("Android messages").kind("inbox");
+                let mut ui = Ui::new("Android messages").kind("inbox").layout("board").accent("coral");
                 let mut seen: Vec<String> = Vec::new();
                 for m in b.state.inbox.iter().rev() {
                     if seen.contains(&m.conversation) || seen.len() >= 12 {
@@ -567,20 +567,24 @@ impl Connector for BridgeTools {
                         .take(2)
                         .map(|x| x.text.chars().take(80).collect())
                         .collect();
-                    let mut c = Card::new(m.conversation.clone()).subtitle(m.app.clone());
-                    if unread > 0 {
-                        c = c.badge(format!("{unread} unread"));
-                    }
-                    for l in lines.into_iter().rev() {
-                        c = c.line(l);
-                    }
-                    c = c
-                        .button("Open", format!("android messages from {}", m.conversation))
-                        .button(
-                            "Reply",
-                            format!("reply on android to {} saying ", m.conversation),
-                        );
-                    ui = ui.card(c);
+                    let last = lines.last().cloned().unwrap_or_default();
+                    let value = if unread > 0 { format!("{unread} new") } else { String::new() };
+                    // one row per conversation: tapping it opens the thread
+                    ui = ui.card(
+                        Card::new(m.conversation.clone())
+                            .source(m.app.clone())
+                            .item(
+                                m.conversation.clone(),
+                                last,
+                                value,
+                                "message",
+                                format!("android messages from {}", m.conversation),
+                            )
+                            .button(
+                                "Reply",
+                                format!("reply on android to {} saying ", m.conversation),
+                            ),
+                    );
                 }
                 if seen.is_empty() {
                     ui = ui.card(

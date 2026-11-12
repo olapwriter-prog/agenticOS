@@ -41,6 +41,49 @@ pub struct Chart {
     pub unit: String,
 }
 
+/// One step of the agent's work: "done", "run", "wait" (for the owner) or "fail".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Step {
+    pub label: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub detail: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub state: String,
+}
+
+/// A small grid: column names and rows of text.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Table {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+/// One line of a list: tapping it says `say` back to the agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Item {
+    pub title: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub subtitle: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub value: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub icon: String,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub say: String,
+}
+
+/// One column of a comparison. `best` marks the choice the answer recommends.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Choice {
+    pub title: String,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub lines: Vec<String>,
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub value: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub best: bool,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Card {
     pub title: String,
@@ -66,6 +109,19 @@ pub struct Card {
     /// a picture on the phone, by path
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub image: String,
+    /// the agent's work, one line per step
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub steps: Vec<Step>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub table: Option<Table>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub items: Vec<Item>,
+    /// options side by side
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub compare: Vec<Choice>,
+    /// where it came from: "SMS", "WhatsApp", "Connector"
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -80,6 +136,12 @@ pub struct Ui {
     pub cards: Vec<Card>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub actions: Vec<Button>,
+    /// which chat view draws this by default: "poster", "board", "steps", "thread" or "reader"
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub layout: String,
+    /// the colour of its field: sky, mint, sun, coral, violet or lime
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub accent: String,
 }
 
 impl Ui {
@@ -95,6 +157,14 @@ impl Ui {
     }
     pub fn kind(mut self, k: &str) -> Ui {
         self.kind = k.to_string();
+        self
+    }
+    pub fn layout(mut self, l: &str) -> Ui {
+        self.layout = l.to_string();
+        self
+    }
+    pub fn accent(mut self, a: &str) -> Ui {
+        self.accent = a.to_string();
         self
     }
     pub fn card(mut self, c: Card) -> Ui {
@@ -123,7 +193,49 @@ impl Ui {
             if !c.subtitle.is_empty() {
                 head.push_str(&format!(": {}", c.subtitle));
             }
+            if !c.source.is_empty() {
+                head.push_str(&format!(" (from {})", c.source));
+            }
             out.push(head);
+            for s in &c.steps {
+                let mut l = format!("    [{}] {}", if s.state.is_empty() { "step" } else { &s.state }, s.label);
+                if !s.detail.is_empty() {
+                    l.push_str(&format!(" - {}", s.detail));
+                }
+                out.push(l);
+            }
+            if let Some(t) = &c.table {
+                out.push(format!("    {}", t.columns.join(" | ")));
+                for r in &t.rows {
+                    out.push(format!("    {}", r.join(" | ")));
+                }
+            }
+            for i in &c.items {
+                let mut l = format!("    {}", i.title);
+                if !i.subtitle.is_empty() {
+                    l.push_str(&format!(" ({})", i.subtitle));
+                }
+                if !i.value.is_empty() {
+                    l.push_str(&format!(": {}", i.value));
+                }
+                if !i.say.is_empty() {
+                    l.push_str(&format!(" -> say \"{}\"", i.say));
+                }
+                out.push(l);
+            }
+            for ch in &c.compare {
+                let mut l = format!("    option {}", ch.title);
+                if !ch.value.is_empty() {
+                    l.push_str(&format!(": {}", ch.value));
+                }
+                if ch.best {
+                    l.push_str(" (best)");
+                }
+                out.push(l);
+                for x in &ch.lines {
+                    out.push(format!("      {x}"));
+                }
+            }
             if let Some(m) = &c.metric {
                 let mut l = format!("    {}", m.value);
                 if !m.label.is_empty() {
@@ -232,5 +344,100 @@ impl Card {
             say: say.into(),
         });
         self
+    }
+    pub fn step(mut self, label: impl Into<String>, detail: impl Into<String>, state: &str) -> Card {
+        self.steps.push(Step {
+            label: label.into(),
+            detail: detail.into(),
+            state: state.to_string(),
+        });
+        self
+    }
+    pub fn table(mut self, columns: Vec<String>, rows: Vec<Vec<String>>) -> Card {
+        self.table = Some(Table { columns, rows });
+        self
+    }
+    pub fn item(
+        mut self,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        value: impl Into<String>,
+        icon: impl Into<String>,
+        say: impl Into<String>,
+    ) -> Card {
+        self.items.push(Item {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            value: value.into(),
+            icon: icon.into(),
+            say: say.into(),
+        });
+        self
+    }
+    pub fn option(mut self, title: impl Into<String>, lines: Vec<String>, value: impl Into<String>, best: bool) -> Card {
+        self.compare.push(Choice {
+            title: title.into(),
+            lines,
+            value: value.into(),
+            best,
+        });
+        self
+    }
+    pub fn source(mut self, s: impl Into<String>) -> Card {
+        self.source = s.into();
+        self
+    }
+}
+
+#[cfg(test)]
+mod d3_tests {
+    use super::*;
+
+    fn rich() -> Ui {
+        Ui::new("Trip")
+            .kind("steps")
+            .layout("steps")
+            .accent("sky")
+            .card(
+                Card::new("Plan")
+                    .source("Connector")
+                    .step("Find flights", "3 found", "done")
+                    .step("Share with Ravi", "waits for your PIN", "wait")
+                    .table(
+                        vec!["Flight".into(), "Price".into()],
+                        vec![vec!["6E-204".into(), "₹4,120".into()], vec!["AI-505".into(), "₹3,980".into()]],
+                    )
+                    .item("Hotel Lotus", "2 km", "₹2,400", "bed", "book hotel lotus")
+                    .option("Train", vec!["8 h".into()], "₹900", false)
+                    .option("Flight", vec!["1 h".into()], "₹3,980", true),
+            )
+    }
+
+    #[test]
+    fn the_new_pieces_survive_a_round_trip() {
+        let ui = rich();
+        let text = ui.to_reply();
+        let (back, _) = Ui::from_reply(&text).unwrap();
+        assert_eq!(back, ui);
+        assert_eq!(back.layout, "steps");
+        assert_eq!(back.accent, "sky");
+        assert!(back.cards[0].steps[1].state == "wait");
+        assert!(back.cards[0].compare[1].best);
+    }
+
+    #[test]
+    fn the_text_form_names_every_step_cell_and_item() {
+        let t = rich().text();
+        for s in ["Find flights", "Share with Ravi", "waits for your PIN", "6E-204", "₹3,980", "Hotel Lotus", "(from Connector)", "option Flight", "(best)"] {
+            assert!(t.contains(s), "missing {s} in:\n{t}");
+        }
+    }
+
+    #[test]
+    fn an_old_document_without_the_new_fields_still_reads() {
+        let old = r#"{"ui":{"title":"Weather","cards":[{"title":"Now"}]},"text":"Weather"}"#;
+        let (ui, _) = Ui::from_reply(old).unwrap();
+        assert!(ui.layout.is_empty() && ui.accent.is_empty());
+        assert!(ui.cards[0].steps.is_empty() && ui.cards[0].table.is_none());
     }
 }
