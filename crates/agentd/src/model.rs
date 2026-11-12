@@ -31,6 +31,9 @@ pub fn describe(tool: &str) -> &'static str {
         "android_files" => "files that arrived from Android apps",
         "android_share" => "send a document to an Android app (High tier, needs the approval key)",
         "android_bridge_status" => "whether the Android bridge is connected and what it may do",
+        "android_play_setup" => "install the Google Play image in the Android sandbox (High tier, needs the approval key)",
+        "android_device_id" => "the device id to register with Google so Play sign-in works",
+        "android_play_status" => "whether the Play Store is installed, and the device id",
         "all_messages" => "every text message (for analysis)",
         "call_log" => "every call (for analysis)",
         "messages_from" => "read text messages from one person",
@@ -172,6 +175,9 @@ pub fn default_intents() -> IntentTable {
     t.add("files from android", "android_files");
     t.add("share {name} to android app {app}", "android_share");
     t.add("bridge status", "android_bridge_status");
+    t.add("set up play store", "android_play_setup");
+    t.add("android device id", "android_device_id");
+    t.add("play store status", "android_play_status");
     t.add("my photos", "photo_list");
     t.add("photos", "photo_list");
     t.add("add {title} to my calendar on {day}", "add_event");

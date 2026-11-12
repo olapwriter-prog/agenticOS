@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 agentos-action = { path = "../action" }
 agentos-executor = { path = "../executor" }
+agentos-screen = { path = "../screen" }

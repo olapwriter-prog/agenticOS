@@ -37,6 +37,18 @@ pub trait Sandbox {
     fn play_page(&mut self, _package: &str) -> Result<(), String> {
         Err("this sandbox cannot open the store page".into())
     }
+    /// Download and initialise the Google Play system image.
+    fn init_gapps(&mut self) -> Result<String, String> {
+        Err("not supported by this sandbox".into())
+    }
+    /// The device's Google Services Framework id, which the owner registers with Google once.
+    fn gsf_id(&mut self) -> Result<String, String> {
+        Err("not supported by this sandbox".into())
+    }
+    /// Is the Play Store package present?
+    fn has_play(&mut self) -> Result<bool, String> {
+        Ok(self.apps()?.iter().any(|a| a.package == PLAY_PACKAGE))
+    }
 }
 
 /// Waydroid through its command line.
@@ -84,6 +96,25 @@ pub fn session_running(text: &str) -> bool {
 }
 
 impl Sandbox for Waydroid {
+    fn init_gapps(&mut self) -> Result<String, String> {
+        // verify on the device: the image is chosen when the sandbox is initialised
+        self.runner
+            .run("waydroid", &["init", "-s", "GAPPS", "-f"])
+            .map(|s| s.trim().to_string())
+    }
+    fn gsf_id(&mut self) -> Result<String, String> {
+        let out = self
+            .runner
+            .run("waydroid", &["shell", "--", "sh", "-c", GSF_ID_CMD])?;
+        let digits: String = out.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return Err(
+                "Google services have not started yet; open the Play Store once and try again"
+                    .into(),
+            );
+        }
+        Ok(digits)
+    }
     fn available(&mut self) -> bool {
         self.waydroid("status").is_ok()
     }
@@ -131,12 +162,20 @@ impl Waydroid {
     }
 }
 
+/// The Play Store's package name.
+pub const PLAY_PACKAGE: &str = "com.android.vending";
+
+/// The shell line that reads the device id from Google Services' database (run as root).
+pub const GSF_ID_CMD: &str = "ANDROID_RUNTIME_ROOT=/apex/com.android.runtime ANDROID_DATA=/data ANDROID_TZDATA_ROOT=/apex/com.android.tzdata ANDROID_I18N_ROOT=/apex/com.android.i18n sqlite3 /data/data/com.google.android.gsf/databases/gservices.db \"select value from main where name = 'android_id';\"";
+
 /// A sandbox in memory, for tests and for `android = "sim"`.
 #[derive(Default)]
 pub struct SimSandbox {
     pub installed: Vec<String>,
     pub open: Vec<String>,
     pub stops: u32,
+    /// the Google Play image is installed
+    pub gapps: bool,
 }
 
 impl Sandbox for SimSandbox {
@@ -174,6 +213,19 @@ impl Sandbox for SimSandbox {
     fn play_page(&mut self, package: &str) -> Result<(), String> {
         self.installed.push(package.to_string());
         Ok(())
+    }
+    fn init_gapps(&mut self) -> Result<String, String> {
+        self.gapps = true;
+        if !self.installed.iter().any(|p| p == PLAY_PACKAGE) {
+            self.installed.push(PLAY_PACKAGE.to_string());
+        }
+        Ok("sim: Google Play image ready".into())
+    }
+    fn gsf_id(&mut self) -> Result<String, String> {
+        Ok("3712345678901234567".into())
+    }
+    fn has_play(&mut self) -> Result<bool, String> {
+        Ok(self.gapps)
     }
 }
 
@@ -255,11 +307,58 @@ impl Connector for AndroidTools {
                 args: &["apk"],
                 tier: Tier::High,
             },
+            Tool {
+                name: "android_play_setup",
+                args: &[],
+                tier: Tier::High,
+            },
+            Tool {
+                name: "android_device_id",
+                args: &[],
+                tier: Tier::Low,
+            },
+            Tool {
+                name: "android_play_status",
+                args: &[],
+                tier: Tier::Low,
+            },
         ]
     }
     fn call(&mut self, a: &Action) -> Result<String, String> {
         let mut sb = self.sandbox.borrow_mut();
         match a.tool.as_str() {
+            "android_play_setup" => {
+                let init = sb.init_gapps()?;
+                let id = sb.gsf_id().ok();
+                let mut ui = agentos_screen::Ui::new("Google Play is set up").kind("setup");
+                ui = ui.card(
+                    agentos_screen::Card::new("1. Image installed")
+                        .subtitle(init)
+                        .tone("ok"),
+                );
+                let mut two = agentos_screen::Card::new("2. Register this device with Google")
+                    .subtitle("Open google.com/android/uncertified and enter the device id")
+                    .tone("warn");
+                if let Some(id) = &id {
+                    two = two.line(format!("Device id: {id}"));
+                }
+                ui = ui.card(two);
+                ui = ui.card(
+                    agentos_screen::Card::new("3. Open the Play Store and sign in")
+                        .subtitle("Sign-in can take minutes to hours after registering")
+                        .button("Open Play Store", "open android app Play Store"),
+                );
+                Ok(ui.to_reply())
+            }
+            "android_device_id" => sb.gsf_id(),
+            "android_play_status" => {
+                let has = sb.has_play()?;
+                let id = sb.gsf_id().unwrap_or_else(|_| "unknown".into());
+                Ok(format!(
+                    "Play Store: {}; device id: {id}",
+                    if has { "installed" } else { "missing" }
+                ))
+            }
             "android_status" => {
                 let available = sb.available();
                 let running = sb.running();
@@ -478,5 +577,85 @@ mod tests {
         assert!(!apk_allowed("/var/lib/agentd/apks/a.zip", apks));
         assert!(!apk_allowed("/etc/a.apk", apks));
         assert!(!apk_allowed("/var/lib/agentd/apks/../../etc/a.apk", apks));
+    }
+}
+
+#[cfg(test)]
+mod play_tests {
+    use super::*;
+
+    struct Answer {
+        calls: Rc<RefCell<Vec<String>>>,
+        out: String,
+    }
+    impl Runner for Answer {
+        fn run(&mut self, prog: &str, args: &[&str]) -> Result<String, String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("{prog} {}", args.join(" ")));
+            Ok(self.out.clone())
+        }
+    }
+
+    fn waydroid(out: &str) -> (Waydroid, Rc<RefCell<Vec<String>>>) {
+        let calls = Rc::new(RefCell::new(vec![]));
+        let w = Waydroid {
+            runner: Box::new(Answer {
+                calls: calls.clone(),
+                out: out.into(),
+            }),
+            user: "user".into(),
+            env: String::new(),
+            sway: false,
+        };
+        (w, calls)
+    }
+
+    #[test]
+    fn the_device_id_is_read_as_root_and_trimmed() {
+        let (mut w, calls) = waydroid("  3712345678901234567\n");
+        assert_eq!(w.gsf_id().unwrap(), "3712345678901234567");
+        let line = calls.borrow()[0].clone();
+        assert_eq!(line, format!("waydroid shell -- sh -c {GSF_ID_CMD}"));
+    }
+
+    #[test]
+    fn an_empty_device_id_says_to_open_the_store_first() {
+        let (mut w, _) = waydroid("");
+        let err = w.gsf_id().unwrap_err();
+        assert!(err.contains("open the Play Store once"), "{err}");
+    }
+
+    #[test]
+    fn the_image_init_runs_as_root_with_the_gapps_flavour() {
+        let (mut w, calls) = waydroid("ok");
+        w.init_gapps().unwrap();
+        assert_eq!(calls.borrow()[0], "waydroid init -s GAPPS -f");
+    }
+
+    #[test]
+    fn setup_in_the_simulator_leaves_the_store_present() {
+        let mut sb = SimSandbox::default();
+        assert_eq!(sb.has_play(), Ok(false));
+        let mut tools = AndroidTools {
+            sandbox: Rc::new(RefCell::new(Box::new(SimSandbox::default()))),
+            apks: PathBuf::from("/tmp"),
+            blocked: Rc::new(RefCell::new(None)),
+        };
+        let a = Action {
+            tool: "android_play_setup".into(),
+            args: vec![],
+        };
+        let reply = tools.call(&a).unwrap();
+        assert!(reply.contains("Google Play is set up"), "{reply}");
+        assert_eq!(tools.sandbox.borrow_mut().has_play(), Ok(true));
+        let st = Action {
+            tool: "android_play_status".into(),
+            args: vec![],
+        };
+        assert!(tools
+            .call(&st)
+            .unwrap()
+            .starts_with("Play Store: installed"));
     }
 }

@@ -107,6 +107,7 @@ version = "0.1.0"
 dependencies = [
  "agentos-action",
  "agentos-executor",
+ "agentos-screen",
 ]
 
 [[package]]
