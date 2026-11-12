@@ -3,6 +3,7 @@ pub mod analyst;
 pub mod analyst_mcp;
 pub mod anchors;
 pub mod button;
+pub mod cache;
 pub mod coder;
 pub mod config;
 pub mod core;

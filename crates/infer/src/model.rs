@@ -134,6 +134,12 @@ pub struct Mark {
     ssm: Vec<Vec<f32>>,
 }
 
+impl crate::cache::Weigh for Snapshot {
+    fn bytes(&self) -> usize {
+        Snapshot::bytes(self)
+    }
+}
+
 impl Snapshot {
     pub fn bytes(&self) -> usize {
         self.k

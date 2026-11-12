@@ -17,7 +17,11 @@ pub const KEY_VOLUMEDOWN: u16 = 114;
 pub type Event = (u16, u16, i32, u64);
 
 /// Size of `struct input_event` on this machine (24 bytes on 64-bit, 16 on 32-bit).
+#[cfg(target_os = "linux")]
 const EVENT_SIZE: usize = std::mem::size_of::<libc::input_event>();
+/// Elsewhere (a Mac running the virtual phone) there is no evdev; the layout is the 64-bit one.
+#[cfg(not(target_os = "linux"))]
+const EVENT_SIZE: usize = 24;
 
 /// Decode whole `struct input_event`s from a read; a partial tail is ignored.
 pub fn parse(buf: &[u8]) -> Vec<Event> {
@@ -113,7 +117,7 @@ pub fn spawn(device: PathBuf, code: u16, hold_ms: u64, on_hold: impl Fn() + Send
     });
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

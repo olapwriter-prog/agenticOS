@@ -522,6 +522,18 @@ fn demo() -> Value {
             ],
             "router_domains": 7, "min_expert": 8
         },
+        "cache": {
+            "enabled": true, "budget_mb": 512, "hit_rate": 0.86, "saved_s": 412.0, "warmed": 14, "warm_used": 11, "warming": false, "error": null,
+            "server": {"budget_bytes": 429916160, "used_bytes": 197132288, "adapter": "", "adapters": ["messages", "phone"],
+                "entries": [
+                    {"id": 1, "adapter": "", "label": "system", "tokens": 1840, "bytes": 125829120, "hits": 63, "idle": 0, "priority": 0.94, "warmed": true},
+                    {"id": 4, "adapter": "messages", "label": "messages", "tokens": 1840, "bytes": 71303168, "hits": 9, "idle": 3, "priority": 0.41, "warmed": true}
+                ], "stats": {"hits": 72, "misses": 12}},
+            "plan": {"budget_bytes": 429916160, "warm": [], "android_wake": false, "model_soon": 0.92,
+                "next": [["messages", 0.48], ["phone", 0.21], ["info", 0.14]],
+                "reasons": ["Budget 409 MB: on battery.", "Warming the messages expert: next request 48% likely messages."]},
+            "log": ["cache: dropped 1 state(s), budget 409 MB", "cache: warmed the messages expert: 1840 tokens, 68 MB, 6.2 s"]
+        },
         "dashboard": {"title": "Today", "kind": "dashboard", "cards": [
             {"title": "Battery", "metric": {"value": "76%", "label": "on battery"}, "progress": 0.76, "tone": "ok"},
             {"title": "Waiting for you", "metric": {"value": "2", "label": "to approve"}, "tone": "warn"},
@@ -824,7 +836,7 @@ mod tests {
         let mut rt = Runtime::new(
             s,
             view,
-            (390.0, 1600.0),
+            (390.0, 3200.0),
             Env {
                 system_dark: true,
                 scale: 2.0,
@@ -1591,5 +1603,20 @@ mod tests {
         assert_eq!(rt.state.sent.last().unwrap(), "learn train");
         tap(&mut rt, "lab-experts");
         assert_eq!(rt.state.sent.last().unwrap(), "lab experts");
+    }
+
+    #[test]
+    fn the_lab_shows_the_predictive_cache_and_its_reasons() {
+        let mut rt = rt();
+        tap(&mut rt, "go-lab");
+        for k in ["lab-cache", "cache-hit", "cache-mem", "cache-bar", "cache-entry-0", "cache-entry-1", "cache-why-0"] {
+            assert!(rt.find(k).is_some(), "{k} missing");
+        }
+        tap(&mut rt, "cache-toggle");
+        assert_eq!(rt.state.sent.last().unwrap(), "cache off");
+        tap(&mut rt, "cache-now");
+        assert_eq!(rt.state.sent.last().unwrap(), "cache now");
+        tap(&mut rt, "cache-clear");
+        assert_eq!(rt.state.sent.last().unwrap(), "cache clear");
     }
 }

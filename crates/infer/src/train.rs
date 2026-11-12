@@ -1623,4 +1623,41 @@ mod tests {
         ad.fits(&m).unwrap();
         assert_eq!(ad.pairs[&(1, Target::Q)].output, 2 * 4 * 8);
     }
+
+    /// A state restored from the prompt cache continues exactly like reading everything again,
+    /// for plain attention and for the recurrent (DeltaNet) layers of Qwen3.5.
+    #[test]
+    fn a_cached_prefix_state_continues_exactly() {
+        use crate::cache::PrefixCache;
+        for arch in ["qwen3", "qwen35"] {
+            let m = tiny(arch, 2);
+            let prefix: Vec<u32> = (0..9).map(|i| (i * 5 % 23) as u32).collect();
+            let rest: Vec<u32> = vec![3, 7, 11];
+            let mut full = m.new_state();
+            let mut all = prefix.clone();
+            all.extend(&rest);
+            let want = m.forward(&mut full, &all).unwrap();
+
+            let mut st = m.new_state();
+            m.forward(&mut st, &prefix).unwrap();
+            let mut cache = PrefixCache::new(64 << 20);
+            let id = cache
+                .insert("", prefix.clone(), "system", st.snapshot(), 10.0, true)
+                .unwrap();
+            // something else runs in the live state meanwhile
+            let mut live = m.new_state();
+            m.forward(&mut live, &[1, 2, 3, 4]).unwrap();
+            let (hit, n) = cache.best("", &all).unwrap();
+            assert_eq!((hit, n), (id, prefix.len()));
+            live.restore(cache.hit(id).unwrap());
+            let got = m.forward(&mut live, &rest).unwrap();
+            let worst = want
+                .iter()
+                .zip(&got)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f32, f32::max);
+            assert!(worst < 1e-3, "{arch}: restored state differs by {worst}");
+            assert_eq!(cache.stats.warm_used, 1);
+        }
+    }
 }

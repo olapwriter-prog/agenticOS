@@ -117,8 +117,17 @@ pub struct Config {
     pub mcp_servers: Vec<McpServer>,
     /// Sign-in providers for `oauth begin` and `oauth finish` ([[oauth_providers]]).
     pub oauth_providers: Vec<OauthProvider>,
-    /// The Android sandbox: "none", "sim" (in memory) or "waydroid".
+    /// The Android sandbox: "none", "sim" (in memory), "waydroid" (Linux) or "emulator" (the
+    /// Android Emulator with a Google Play image: a Mac or any desktop).
     pub android: String,
+    /// android = "emulator": the Android SDK (default: $ANDROID_HOME, else ~/Library/Android/sdk).
+    pub android_sdk: Option<PathBuf>,
+    /// android = "emulator": the virtual device made by scripts/mac/setup.sh.
+    pub android_avd: String,
+    /// android = "emulator": adb's name for it.
+    pub android_serial: String,
+    /// android = "emulator": show its window (false runs it headless).
+    pub android_window: bool,
     /// The user who owns the Wayland session; Waydroid runs as this user.
     pub android_user: String,
     /// The environment for Waydroid's commands.
@@ -151,6 +160,15 @@ pub struct Config {
     /// Pause (freeze) the Android sandbox after this many seconds with nothing needing it and
     /// its screen not showing. 0 never pauses.
     pub android_idle_pause_secs: u64,
+    /// The predictive cache: the model server keeps prompt states it is likely to need, managed
+    /// by agentd from the owner's routine (and empties itself under memory pressure).
+    pub predictive_cache: bool,
+    /// The most the cache may use, MiB, on the charger; less on battery.
+    pub cache_budget_mb: u64,
+    /// Read prompts ahead of time when a request is predicted (else only manage what is there).
+    pub cache_warm: bool,
+    /// How often the cache manager looks, seconds.
+    pub cache_tick_secs: u64,
     /// The Android bridge: "none", "sim" (in-memory, for tests and `agentctl bridge sim`) or
     /// "spool" (bridge_dir is shared with the Android side).
     pub bridge: String,
@@ -260,6 +278,10 @@ impl Default for Config {
             mcp_servers: Vec::new(),
             oauth_providers: Vec::new(),
             android: "none".into(),
+            android_sdk: None,
+            android_avd: "AgenticPhone".into(),
+            android_serial: "emulator-5554".into(),
+            android_window: true,
             android_user: "user".into(),
             android_env: "XDG_RUNTIME_DIR=/run/user/10000 WAYLAND_DISPLAY=wayland-1".into(),
             android_min_free_mib: 1024,
@@ -275,6 +297,10 @@ impl Default for Config {
             camera_command: "gst-launch-1.0 -q libcamerasrc num-buffers=1 ! videoconvert ! jpegenc ! filesink location={path}".into(),
             vision_url: None,
             android_idle_pause_secs: 60,
+            predictive_cache: true,
+            cache_budget_mb: 512,
+            cache_warm: true,
+            cache_tick_secs: 60,
             bridge: "sim".into(),
             bridge_dir: None,
             bridge_poll_secs: 2,

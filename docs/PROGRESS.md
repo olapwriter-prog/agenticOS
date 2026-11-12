@@ -254,3 +254,41 @@ Behaviour to know:
     (`router.json`), whose accuracy is part of every run.
   - Not yet: training one adapter per domain overnight (the trainer still trains one adapter on
     everything) and switching adapters per request in the model server.
+
+## The predictive cache, managed by the agent
+
+- **What it is**: the model server keeps the model's state after the system prompt and tool list
+  (one per expert adapter) so a request reads only its own words. Measured on the 0.8B model in a
+  4-thread container: a cold 2,484-token prompt took 441 s to read; with the prefix cached, the
+  next request read 15 tokens in 3.0 s. A state warmed ahead of time (396 s, in the background)
+  served the next request in 4.1 s. That state took 48 MB.
+- **The cache** (`crates/infer/src/cache.rs`): many prefix states per adapter within a byte budget
+  and an entry cap. Eviction by value per MB: the manager's priority first, then recency and past
+  hits, scaled by what rebuilding would cost. Shrinking the budget evicts at once.
+- **The server** (`agentos-llm`): `GET /cache`, `POST /cache/policy` (budget, priorities, drop,
+  clear), `POST /cache/warm` (read a system prompt ahead, for an adapter, without switching the
+  adapter in use), `--cache-mb`, `--adapters DIR` (named experts, `<name>.lora` or
+  `<name>/adapter.lora`) and an `adapter` field on requests: per-request expert switching that
+  keeps every expert's cached state.
+- **The manager** (`crates/learn/src/predict.rs`, `crates/agentd/src/cache.rs`):
+  - learns the routine from the episodes with a two-week half-life: per hour, how likely a model
+    request is and which kind; which kind follows which; when Android is used;
+  - each `cache_tick_secs`, it sets the budget from power and memory (100% on the charger, 80% on
+    battery, 60% under 50%, 35% under 30%, none under 15%; at most a quarter of free memory; empty
+    under 300 MB free), gives each state a priority from the predictions, drops orphaned and stale
+    states, warms the system prompt when a model request is likely within the hour, and warms the
+    most likely expert;
+  - warming happens only on the charger or above 40% battery, and runs on a thread;
+  - it learns from its own record (`learn/cache.json`): a kind whose warm-ups go unused (under 30%
+    after five) needs 60% confidence instead of 35%;
+  - it wakes Android ahead of the hour it is usually used in;
+  - it only prepares: nothing is sent or done on the owner's behalf.
+- **The owner**: `cache status|on|off|now|plan|clear`. The Learning lab has a Predictive cache card
+  with hit rate, seconds saved, memory use, warm-ups used, one bar segment per kept state, the
+  manager's reasons, and Turn off, Decide now and Free the memory.
+- **Fixed on the way**: episodes were stamped with the daemon's uptime clock, so Today, the week and
+  the routine restarted with every boot. They are now in wall time. Episodes logged before this fix
+  read as 1970 and simply age out.
+- Not yet: training one adapter per domain (the server and manager are ready for named experts;
+  the trainer still makes one adapter), and the 4B and 8B models were not measured here (too slow
+  in this container).

@@ -306,7 +306,170 @@ pub fn view(s: &State, st: &Value) -> El {
                 )),
         );
     }
-    page.child(section("Experts")).child(ex)
+    page.child(section("Experts"))
+        .child(ex)
+        .child(section("Predictive cache"))
+        .child(cache_card(st))
+}
+
+fn mb(v: &Value) -> u64 {
+    v.as_u64().unwrap_or(0) >> 20
+}
+
+/// The predictive cache: what the model server keeps in memory, why, and whether it pays off.
+fn cache_card(st: &Value) -> El {
+    let c = &st["cache"];
+    let on = c["enabled"].as_bool() == Some(true);
+    let server = &c["server"];
+    let (used, budget) = (mb(&server["used_bytes"]), mb(&server["budget_bytes"]));
+    let mut card = card("lab-cache").gap(12.0).child(
+        row()
+            .w_full()
+            .gap(10.0)
+            .center_y()
+            .child(tile(&icons::CHIP, if on { SKY } else { TEXT3 }, 34.0))
+            .child(
+                col()
+                    .grow(1.0)
+                    .shrink()
+                    .min_w(0.0)
+                    .gap(2.0)
+                    .child(t(
+                        if on { "On: the agent keeps what you'll need next" } else { "Off" },
+                        CALLOUT,
+                        TEXT,
+                    ))
+                    .child(t(
+                        "Reads your system prompt and likely experts ahead, drops what you stopped using, shrinks on low battery or memory.",
+                        CAPTION,
+                        TEXT2,
+                    ).w_full().wrap()),
+            )
+            .child(
+                action("cache-toggle", if on { "Turn off" } else { "Turn on" }, false).on_press(
+                    move |s: &mut State| s.send(if on { "cache off" } else { "cache on" }.into()),
+                ),
+            ),
+    );
+    // the numbers
+    let stat = |key: &str, label: &str, value: String, col_: rune::Color| {
+        col()
+            .key(key)
+            .grow(1.0)
+            .w_frac(0.25)
+            .min_w(0.0)
+            .gap(2.0)
+            .child(t(value, TextStyle::new(20.0, 700.0), col_))
+            .child(t(label, MICRO, TEXT2))
+    };
+    card = card.child(
+        row()
+            .w_full()
+            .gap(8.0)
+            .child(stat("cache-hit", "hit rate", pct(&c["hit_rate"]), MINT))
+            .child(stat(
+                "cache-saved",
+                "saved",
+                format!("{:.0} s", c["saved_s"].as_f64().unwrap_or(0.0)),
+                SKY,
+            ))
+            .child(stat(
+                "cache-mem",
+                "memory",
+                format!("{used}/{budget} MB"),
+                VIOLET,
+            ))
+            .child(stat(
+                "cache-warm",
+                "warm-ups used",
+                format!("{}/{}", c["warm_used"].as_u64().unwrap_or(0), c["warmed"].as_u64().unwrap_or(0)),
+                SUN,
+            )),
+    );
+    // the memory bar: one segment per kept state
+    let entries = server["entries"].as_array().cloned().unwrap_or_default();
+    let cap = budget.max(1) as f32;
+    let mut bar = row().key("cache-bar").w_full().h(10.0).radius(5.0).fill(SURFACE3).gap(2.0);
+    for e in &entries {
+        let c_ = if e["adapter"].as_str().unwrap_or("").is_empty() { SKY } else { VIOLET };
+        bar = bar.child(el().h_full().w_frac((mb(&e["bytes"]) as f32 / cap).min(1.0)).radius(5.0).fill(c_));
+    }
+    card = card.child(bar);
+    for (i, e) in entries.iter().enumerate() {
+        let p = e["priority"].as_f64().unwrap_or(0.0);
+        card = card.child(
+            row()
+                .key(format!("cache-entry-{i}"))
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .child(el().size(8.0, 8.0).radius(4.0).fill(if p >= 0.5 { MINT } else if p >= 0.2 { SUN } else { CORAL }))
+                .child(
+                    t(
+                        format!(
+                            "{} · {} tokens · {} MB",
+                            str_of(&e["label"]),
+                            e["tokens"].as_u64().unwrap_or(0),
+                            mb(&e["bytes"])
+                        ),
+                        CAPTION,
+                        TEXT,
+                    )
+                    .grow(1.0)
+                    .shrink()
+                    .min_w(0.0)
+                    .truncate(),
+                )
+                .child(t(
+                    format!("{} hits · keep {:.0}%", e["hits"].as_u64().unwrap_or(0), p * 100.0),
+                    MICRO,
+                    TEXT2,
+                )),
+        );
+    }
+    if entries.is_empty() {
+        card = card.child(t(
+            c["error"].as_str().unwrap_or("Nothing kept right now."),
+            CAPTION,
+            TEXT2,
+        ).w_full().wrap());
+    }
+    // why: the manager's reasons, then what it did lately
+    let mut why = col().key("cache-why").w_full().gap(6.0);
+    let mut lines: Vec<String> = c["plan"]["reasons"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    lines.extend(c["log"].as_array().into_iter().flatten().take(3).filter_map(|v| v.as_str().map(String::from)));
+    for (i, l) in lines.iter().take(6).enumerate() {
+        why = why.child(
+            row()
+                .key(format!("cache-why-{i}"))
+                .w_full()
+                .gap(8.0)
+                .items_start()
+                .child(icon(&icons::SPARK, 12.0).color(VIOLET).mt(3.0))
+                .child(t(l.clone(), CAPTION, TEXT2).grow(1.0).shrink().min_w(0.0).wrap()),
+        );
+    }
+    if let Some(next) = c["plan"]["next"].as_array().filter(|n| !n.is_empty()) {
+        let s = next
+            .iter()
+            .take(3)
+            .map(|p| format!("{} {:.0}%", str_of(&p[0]), p[1].as_f64().unwrap_or(0.0) * 100.0))
+            .collect::<Vec<_>>()
+            .join(" · ");
+        why = why.child(t(format!("Next request: {s}"), CAPTION, TEXT).w_full().wrap());
+    }
+    card.child(why).child(
+        row()
+            .w_full()
+            .gap(8.0)
+            .child(action("cache-now", "Decide now", false).on_press(|s: &mut State| s.send("cache now".into())))
+            .child(action("cache-clear", "Free the memory", false).on_press(|s: &mut State| s.send("cache clear".into()))),
+    )
 }
 
 fn stat(v: &Value, label: &str) -> El {

@@ -43,6 +43,7 @@ agentos-skillpack = { path = "../skillpack" }
 agentos-docs = { path = "../docs" }
 agentos-apps = { path = "../apps" }
 agentos-learn = { path = "../learn" }
+ureq = { version = "2", features = ["json"] }
 agentos-understand = { path = "../understand" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

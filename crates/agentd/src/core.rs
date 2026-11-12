@@ -1,6 +1,7 @@
 //! The core: everything that is not `Send` (connectors, executor, kernel) lives here and is driven
 //! from one thread. Listeners elsewhere send it commands over a channel.
 use crate::anchors;
+use crate::cache::CacheMgr;
 use crate::config::Config;
 use crate::model::{default_intents, Local};
 use crate::secrets::Secrets;
@@ -173,6 +174,10 @@ pub struct Core {
     /// Inbox conversations ("person|source") the owner deleted or kept, so triage stops asking.
     inbox_hidden: std::collections::HashSet<String>,
     inbox_kept: std::collections::HashSet<String>,
+    /// the predictive cache: when the manager last looked, what it decided and saw, its record
+    cache: CacheMgr,
+    /// wall-clock ms when the daemon's clock read 0: what the learner's times are measured from
+    boot_wall_ms: u64,
     /// What kind of request is this? Answers regular requests without the LLM (crate::qa).
     classifier: agentos_understand::Classifier,
     /// The phrase table, to tell an intent from a request the model must answer.
@@ -364,10 +369,29 @@ impl Core {
                 sway: cfg.android_sway,
             })
                 as Box<dyn agentos_android::Sandbox>))),
+            "emulator" => {
+                let sdk = cfg.android_sdk.clone().unwrap_or_else(|| {
+                    std::env::var_os("ANDROID_HOME")
+                        .map(PathBuf::from)
+                        .unwrap_or_else(|| {
+                            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                                .join("Library/Android/sdk")
+                        })
+                });
+                Some(Rc::new(RefCell::new(Box::new(agentos_android::Emulator {
+                    runner: Box::new(agentos_android::System),
+                    sdk,
+                    avd: cfg.android_avd.clone(),
+                    serial: cfg.android_serial.clone(),
+                    window: cfg.android_window,
+                })
+                    as Box<dyn agentos_android::Sandbox>)))
+            }
             other => {
-                return Err(
-                    format!("android = {other:?}: use \"none\", \"sim\" or \"waydroid\"").into(),
+                return Err(format!(
+                    "android = {other:?}: use \"none\", \"sim\", \"waydroid\" or \"emulator\""
                 )
+                .into())
             }
         };
         // the shipped catalogue, then the one `store refresh` saved (which overrides it)
@@ -546,13 +570,33 @@ impl Core {
         if cfg.real_hardware {
             prio.evict();
         }
-        let models = Supervisor::new(
+        let mut models = Supervisor::new(
             cfg.llama_server.clone(),
             cfg.models_path(),
             dir.join("logs"),
             cfg.models.clone(),
             prio.threads(),
         );
+        // only agentos-llm has the prompt cache and named experts
+        if cfg
+            .llama_server
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("agentos-llm"))
+        {
+            let experts = dir.join("learn").join("experts");
+            let _ = std::fs::create_dir_all(&experts);
+            let mb = if cfg.predictive_cache {
+                cfg.cache_budget_mb
+            } else {
+                0
+            };
+            models.server_args = vec![
+                "--cache-mb".into(),
+                mb.to_string(),
+                "--adapters".into(),
+                experts.display().to_string(),
+            ];
+        }
 
         // 5. The thinking engine and its model.
         let commercial_on = cfg.commercial_enabled && secrets.commercial_key.is_some();
@@ -602,6 +646,11 @@ impl Core {
             vip: Default::default(),
         });
         let now = clock.now_ms();
+        let boot_wall_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+            .saturating_sub(clock.now_ms());
         let mut core = Core {
             cfg,
             clock,
@@ -649,6 +698,8 @@ impl Core {
             learner: Learner::open(dir.join("experience.jsonl"))?,
             inbox_hidden: std::collections::HashSet::new(),
             inbox_kept: std::collections::HashSet::new(),
+            cache: CacheMgr::open(&dir.join("learn")),
+            boot_wall_ms,
             classifier: crate::qa::classifier(&[]),
             intents: intents_with_android(default_intents(), android_on),
             grammar: grammar_copy,
@@ -679,6 +730,12 @@ impl Core {
     /// Today, in days since 1970, at the configured UTC offset.
     fn local_day(&self) -> i64 {
         (self.wall_secs() as i64 + self.cfg.utc_offset_minutes as i64 * 60).div_euclid(86_400)
+    }
+
+    /// A daemon-clock time as wall-clock ms: episodes are kept in wall time so the day, the
+    /// week and the routine survive restarts.
+    fn wall_of(&self, clock_ms: u64) -> u64 {
+        self.boot_wall_ms + clock_ms
     }
 
     fn wall_secs(&self) -> u64 {
@@ -883,7 +940,7 @@ impl Core {
     fn chat_inner(&mut self, text: &str) -> String {
         let now = self.clock.now_ms();
         if let Some(good) = feedback_of(text) {
-            let said = self.learner.feedback(good, now);
+            let said = self.learner.feedback(good, self.wall_of(now));
             self.retrain();
             return match said {
                 Some(p) if good => format!("noted: {p:?} was right"),
@@ -957,7 +1014,7 @@ impl Core {
             Outcome::Run(a) | Outcome::NeedsApproval(a) => self.act(text, a, source, now),
             Outcome::Blocked(why) => format!("blocked: {why}"),
             Outcome::GaveUp => {
-                let ep = self.learner.begin(now, text, "", source);
+                let ep = self.learner.begin(self.wall_of(now), text, "", source);
                 self.learner.gave_up(ep);
                 "I could not turn that into something I am allowed to do.".into()
             }
@@ -1008,12 +1065,12 @@ impl Core {
         let answer = crate::qa::answer(&label, text, &data)?;
         let now = self.clock.now_ms();
         let ep = self.learner.begin(
-            now,
+            self.wall_of(now),
             text,
             &json!({"tool": label, "args": {}}).to_string(),
             "classifier",
         );
-        self.learner.ran(ep, now, true);
+        self.learner.ran(ep, self.wall_of(now), true);
         Some(format!("answer: {answer}"))
     }
 
@@ -1264,14 +1321,17 @@ impl Core {
     }
 
     fn act(&mut self, prompt: &str, a: agentos_action::Action, source: &str, now: u64) -> String {
-        let ep = self
-            .learner
-            .begin(now, prompt, &crate::model::action_json(&a), source);
+        let ep = self.learner.begin(
+            self.wall_of(now),
+            prompt,
+            &crate::model::action_json(&a),
+            source,
+        );
         let (ok, text) = self.call_tool(&a.tool, &a.args);
         match approval_id(&text) {
             Some(q) if !ok => self.learner.waiting(ep, q),
             _ => {
-                self.learner.ran(ep, now, ok);
+                self.learner.ran(ep, self.wall_of(now), ok);
                 // a working action right after "that was wrong" is a correction: learn it
                 self.retrain();
             }
@@ -1668,6 +1728,7 @@ impl Core {
             "triage": self.triage_json(),
             "today": self.today_json(),
             "lab": self.lab_json(),
+            "cache": self.cache_json(),
         })
     }
 
@@ -1773,13 +1834,218 @@ impl Core {
 
     /// Today as a flow, and its numbers.
     fn today_json(&self) -> Value {
-        let now = self.clock.now_ms();
+        let now = self.wall_of(self.clock.now_ms());
         let d = agentos_learn::day::day_report(
             &self.learner.episodes,
             now,
             self.cfg.utc_offset_minutes,
         );
         serde_json::to_value(&d).unwrap_or(Value::Null)
+    }
+
+    /// The predictive cache: every `cache_tick_secs`, learn the routine from the episodes, read
+    /// what the model server holds, and tell it what to keep, drop and read ahead. Warm-ups run
+    /// on a thread; Android is woken ahead when it is usually needed this hour.
+    fn cache_tick(&mut self, now: u64) {
+        let at = self.wall_of(now);
+        for line in self.cache.poll_warm(at) {
+            let _ = self.kernel.record(&line);
+        }
+        if self.cache.last_ms != 0
+            && now.saturating_sub(self.cache.last_ms) < self.cfg.cache_tick_secs * 1000
+        {
+            return;
+        }
+        self.cache.last_ms = now.max(1);
+        let enabled = self.cache.enabled.unwrap_or(self.cfg.predictive_cache);
+        let url = self.small_url.clone();
+        let quick = Duration::from_millis(1500);
+        match url.as_deref().map(|u| crate::cache::get(u, quick)) {
+            Some(Ok(v)) => {
+                self.cache.server = Some(v);
+                self.cache.error = None;
+            }
+            Some(Err(e)) => {
+                self.cache.server = None;
+                self.cache.error = Some(format!(
+                    "the model server has no cache to manage (not running, or llama-server): {e}"
+                ));
+            }
+            None => {
+                self.cache.server = None;
+                self.cache.error = Some("no local model configured".into());
+            }
+        }
+        let server = self.cache.server.clone().unwrap_or(Value::Null);
+        let cached = crate::cache::entries(&server);
+        let experts = crate::cache::experts(&server);
+        // episodes are in wall time
+        let wall = self.wall_of(now);
+        self.cache.credit(&self.learner.episodes, &experts, wall);
+
+        let offset = self.cfg.utc_offset_minutes;
+        let pred = agentos_learn::predict::Predictor::learn(&self.learner.episodes, wall, offset);
+        let local_min = (wall as i64 + offset as i64 * 60_000).div_euclid(60_000);
+        let hour = local_min.div_euclid(60).rem_euclid(24) as usize;
+        let prev = self
+            .learner
+            .episodes
+            .last()
+            .filter(|e| wall.saturating_sub(e.t_ms) <= 3_600_000)
+            .map(agentos_learn::predict::kind_of);
+        let power = agentos_learn::predict::Power {
+            battery: self.power.level_percent(),
+            charging: self.power.on_charger(),
+            mem_free_mb: crate::cache::mem_free_mb(&self.cfg.proc_root),
+        };
+        let settings = agentos_learn::predict::Settings {
+            enabled,
+            budget_mb: self.cfg.cache_budget_mb,
+            warm: self.cfg.cache_warm,
+        };
+        let plan = agentos_learn::predict::plan(
+            &pred,
+            hour,
+            prev.as_deref(),
+            &cached,
+            &experts,
+            power,
+            &settings,
+            &self.cache.record,
+        );
+        if let (Some(u), true) = (url.as_deref(), self.cache.server.is_some()) {
+            let body = json!({
+                "budget_bytes": plan.budget_bytes,
+                "priorities": plan.priorities.iter().map(|(id, p)| json!({"id": id, "priority": p})).collect::<Vec<_>>(),
+                "drop": plan.drop,
+            });
+            match crate::cache::post(u, "/cache/policy", &body, quick) {
+                Ok(v) => self.cache.server = Some(v),
+                Err(e) => self.cache.error = Some(format!("policy not applied: {e}")),
+            }
+            if !plan.drop.is_empty() {
+                let line = format!(
+                    "cache: dropped {} state(s), budget {} MB",
+                    plan.drop.len(),
+                    plan.budget_bytes >> 20
+                );
+                self.cache.note(now, line.clone());
+                let _ = self.kernel.record(&line);
+            }
+            if !plan.warm.is_empty() && !self.cache.warming() {
+                let system = self.system.clone();
+                let slow = Duration::from_secs(self.cfg.model_timeout_secs.max(30));
+                self.cache.start_warm(u, &system, plan.warm.clone(), slow);
+            }
+        }
+        // Android, ahead of the hour it is usually used in
+        let slot = local_min.div_euclid(60);
+        if enabled && plan.android_wake && self.cache.woke_android != Some(slot) {
+            if let Some(sb) = self.android.clone() {
+                let paused = {
+                    let mut b = sb.borrow_mut();
+                    b.running() && b.paused()
+                };
+                if paused && sb.borrow_mut().resume().is_ok() {
+                    self.cache.woke_android = Some(slot);
+                    self.android_last_use_ms = now;
+                    let line =
+                        "cache: Android resumed ahead: it is usually used this hour".to_string();
+                    self.cache.note(now, line.clone());
+                    let _ = self.kernel.record(&line);
+                }
+            }
+        }
+        self.cache.plan = Some(plan);
+    }
+
+    /// The predictive cache for the lab screen.
+    fn cache_json(&self) -> Value {
+        let server = self.cache.server.clone().unwrap_or(Value::Null);
+        let st = &server["stats"];
+        let (hits, misses) = (
+            st["hits"].as_u64().unwrap_or(0),
+            st["misses"].as_u64().unwrap_or(0),
+        );
+        let rec = &self.cache.record;
+        let warmed: u32 = rec.warmed.values().sum();
+        let used: u32 = rec.used.values().sum();
+        json!({
+            "enabled": self.cache.enabled.unwrap_or(self.cfg.predictive_cache),
+            "budget_mb": self.cfg.cache_budget_mb,
+            "server": server,
+            "error": self.cache.error,
+            "plan": self.cache.plan,
+            "hit_rate": if hits + misses > 0 { hits as f64 / (hits + misses) as f64 } else { 0.0 },
+            "saved_s": st["saved_ms"].as_f64().unwrap_or(0.0) / 1000.0,
+            "warmed": warmed,
+            "warm_used": used,
+            "record": rec,
+            "warming": self.cache.warming(),
+            "log": self.cache.log.iter().rev().take(8).map(|(_, l)| l.clone()).collect::<Vec<_>>(),
+        })
+    }
+
+    /// `cache status|on|off|now|clear|plan`
+    fn cache_cmd(&mut self, rest: &str) -> String {
+        let now = self.clock.now_ms();
+        match rest.trim() {
+            "" | "status" => {
+                let j = self.cache_json();
+                let used = j["server"]["used_bytes"].as_u64().unwrap_or(0) >> 20;
+                let budget = j["server"]["budget_bytes"].as_u64().unwrap_or(0) >> 20;
+                let n = j["server"]["entries"].as_array().map_or(0, |a| a.len());
+                format!(
+                    "predictive cache {}: {n} state(s), {used} of {budget} MB; hit rate {:.0}%; {:.1} s saved; warm-ups used {} of {}{}",
+                    if j["enabled"].as_bool() == Some(true) { "on" } else { "off" },
+                    j["hit_rate"].as_f64().unwrap_or(0.0) * 100.0,
+                    j["saved_s"].as_f64().unwrap_or(0.0),
+                    j["warm_used"],
+                    j["warmed"],
+                    self.cache.error.as_ref().map(|e| format!("\n{e}")).unwrap_or_default()
+                )
+            }
+            "on" | "off" => {
+                self.cache.enabled = Some(rest.trim() == "on");
+                self.cache.last_ms = 0;
+                self.cache_tick(now);
+                let _ = self
+                    .kernel
+                    .record(&format!("cache: turned {}", rest.trim()));
+                format!("predictive cache {}", rest.trim())
+            }
+            "now" => {
+                self.cache.last_ms = 0;
+                self.cache_tick(now);
+                self.cache
+                    .plan
+                    .as_ref()
+                    .map(|p| p.reasons.join("\n"))
+                    .unwrap_or_default()
+            }
+            "plan" => self
+                .cache
+                .plan
+                .as_ref()
+                .map(|p| p.reasons.join("\n"))
+                .unwrap_or_else(|| "no plan yet".into()),
+            "clear" => match self.small_url.clone() {
+                Some(u) => match crate::cache::post(
+                    &u,
+                    "/cache/policy",
+                    &json!({"clear": true}),
+                    Duration::from_millis(1500),
+                ) {
+                    Ok(v) => {
+                        self.cache.server = Some(v);
+                        "cache cleared".into()
+                    }
+                    Err(e) => format!("could not clear: {e}"),
+                },
+                None => "no local model".into(),
+            },
+            _ => "usage: cache status|on|off|now|plan|clear".into(),
+        }
     }
 
     /// The learning lab: what was learned, how the model scores over time, the experts.
@@ -1839,7 +2105,7 @@ impl Core {
         use agentos_learn::lab;
         match rest.trim() {
             "run" | "" => {
-                let now = self.clock.now_ms();
+                let now = self.wall_of(self.clock.now_ms());
                 let seed = now ^ 0x9E37_79B9_7F4A_7C15;
                 let cases = lab::random_suite(&self.learner, seed, LAB_SUITE);
                 if cases.is_empty() {
@@ -2020,6 +2286,22 @@ impl Core {
             return;
         }
         self.bridge_last_ms = now_ms;
+        // the emulator shares no folder with this machine: mirror the spool over adb first
+        if let (Some(sb), Some(dir)) = (self.android.clone(), self.cfg.bridge_dir.clone()) {
+            if self.cfg.bridge == "spool" && self.cfg.android == "emulator" {
+                match sb.borrow_mut().sync_bridge(&dir) {
+                    Ok((down, up)) if down + up > 0 => {
+                        let _ = self.kernel.record(&format!(
+                            "bridge: {down} from the virtual phone, {up} to it"
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = self.kernel.record(&format!("bridge: sync failed: {e}"));
+                    }
+                }
+            }
+        }
         let lines = b.borrow_mut().pump(now_ms);
         for l in lines {
             let _ = self.kernel.record(&l);
@@ -2439,7 +2721,7 @@ impl Core {
             self.pin_failures = 0;
         }
         if self.gateway.press_key(id) {
-            self.learner.approved(id, self.clock.now_ms());
+            self.learner.approved(id, self.wall_of(self.clock.now_ms()));
             self.retrain();
             format!("approved #{id}; ask again within 10 minutes")
         } else {
@@ -2629,6 +2911,7 @@ impl Core {
             "bridge" => self.bridge_cmd(rest),
             "inbox" => self.inbox_cmd(rest),
             "lab" => self.lab_cmd(rest),
+            "cache" => self.cache_cmd(rest),
             "screen" => self.screen.as_ref().map_or("no screen yet".into(), |s| s.to_string()),
             "pending" => {
                 let p = self.gateway.pending();
@@ -2667,7 +2950,7 @@ impl Core {
                         let id = p[0].id;
                         let what = p[0].action.tool.to_string();
                         if self.gateway.press_key(id) {
-                            self.learner.approved(id, self.clock.now_ms());
+                            self.learner.approved(id, self.wall_of(self.clock.now_ms()));
                             self.retrain();
                             let _ = self.kernel.record(&format!("approved #{id} {what} with the approval key"));
                             format!("approved #{id} {what}")
@@ -3112,6 +3395,7 @@ impl Core {
         }
         self.train_tick();
         self.sync_models();
+        self.cache_tick(now);
         self.prio.set_mode(self.baseline_mode());
         self.prio.tick();
     }

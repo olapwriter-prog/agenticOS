@@ -18,6 +18,7 @@
 //! Learning never changes what needs approval: that stays with the executor.
 pub mod day;
 pub mod lab;
+pub mod predict;
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

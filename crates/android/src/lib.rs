@@ -4,7 +4,9 @@
 //!
 //! Waydroid belongs to the user who owns the Wayland display, so every command runs as that user:
 //! `su -l <user> -c "<env> waydroid <args>"`.
+pub mod emulator;
 pub mod governor;
+pub use emulator::Emulator;
 
 use agentos_action::{Action, Tier, Tool};
 use agentos_executor::Connector;
@@ -62,6 +64,11 @@ pub trait Sandbox {
     /// The device's Google Services Framework id, which the owner registers with Google once.
     fn gsf_id(&mut self) -> Result<String, String> {
         Err("not supported by this sandbox".into())
+    }
+    /// Copy the bridge's spool between Android and `local` when they do not share a folder
+    /// (the emulator). Returns (from Android, to Android).
+    fn sync_bridge(&mut self, _local: &std::path::Path) -> Result<(usize, usize), String> {
+        Ok((0, 0))
     }
     /// Is the Play Store package present?
     fn has_play(&mut self) -> Result<bool, String> {

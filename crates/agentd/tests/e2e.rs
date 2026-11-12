@@ -1990,3 +1990,136 @@ fn the_inbox_is_triaged_the_day_is_a_flow_and_the_lab_tests_the_phone() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// A fake agentos-llm cache: answers GET /cache, POST /cache/policy and /cache/warm, and keeps
+/// every request it saw.
+fn fake_cache_server(seen: Arc<std::sync::Mutex<Vec<(String, Value)>>>) -> String {
+    use std::io::{BufRead, Read};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        let mut entries: Vec<Value> = vec![];
+        let mut budget = 512u64 << 20;
+        for stream in listener.incoming().flatten() {
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let mut len = 0usize;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; len];
+            let _ = reader.read_exact(&mut body);
+            let req: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            seen.lock().unwrap().push((path.clone(), req.clone()));
+            let mut warmed = Value::Null;
+            match path.as_str() {
+                "/cache/policy" => {
+                    if let Some(b) = req["budget_bytes"].as_u64() {
+                        budget = b;
+                    }
+                    let drop: Vec<u64> = req["drop"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|v| v.as_u64())
+                        .collect();
+                    entries.retain(|e| !drop.contains(&e["id"].as_u64().unwrap()));
+                }
+                "/cache/warm" => {
+                    let id = entries.len() as u64 + 1;
+                    entries.push(json!({"id": id, "adapter": req["adapter"], "label": req["label"], "tokens": 1800, "bytes": 100u64 << 20, "hits": 0, "idle": 0, "priority": 0.5, "warmed": true}));
+                    warmed = json!({"tokens": 1800, "bytes": 100u64 << 20, "ms": 4000.0, "reused": 0, "already": false, "kept": true});
+                }
+                _ => {}
+            }
+            let used: u64 = entries.iter().map(|e| e["bytes"].as_u64().unwrap()).sum();
+            let out = json!({"budget_bytes": budget, "used_bytes": used, "adapter": "", "adapters": [],
+                "entries": entries, "stats": {"hits": 3, "misses": 1, "saved_ms": 12000.0}, "warmed": warmed}).to_string();
+            let mut s = stream;
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{out}", out.len());
+        }
+    });
+    url
+}
+
+#[test]
+fn the_predictive_cache_learns_the_routine_warms_ahead_and_obeys_the_owner() {
+    let d = dir("cache");
+    std::fs::create_dir_all(&d).unwrap();
+    // five days of model requests at this hour: the manager should expect one now
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let mut log = String::new();
+    for day in 1..=5u64 {
+        let t = now - day * 86_400_000 + 5 * 60_000;
+        let ep = json!({"e": "ep", "id": day, "t_ms": t, "prompt": "text mum", "action": "{\"tool\":\"send_sms\",\"args\":{}}",
+            "source": "model", "reward": 1.0, "signals": [], "corrected_to": null});
+        log.push_str(&format!("{ep}\n"));
+    }
+    std::fs::write(d.join("experience.jsonl"), log).unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(vec![]));
+    let url = fake_cache_server(seen.clone());
+    let c = Config {
+        small_url: Some(url),
+        cache_budget_mb: 512,
+        ..cfg(&d)
+    };
+    let s = secrets::open_or_create(&d, "pw", 1).unwrap();
+    let r = start(c, s, Arc::new(ScaledClock::new(1))).unwrap();
+    let why = ctl_send(&r.ctl_path, "cache now").unwrap();
+    assert!(why.contains("Warming the system prompt"), "{why}");
+    // the warm-up runs on a thread; the next ticks collect it
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut status = String::new();
+    while std::time::Instant::now() < until {
+        status = ctl_send(&r.ctl_path, "cache status").unwrap();
+        if status.contains("1 state(s)") && status.contains("of 1") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(
+        status.starts_with("predictive cache on: 1 state(s)"),
+        "{status}"
+    );
+    assert!(status.contains("hit rate 75%"), "{status}");
+    {
+        let seen = seen.lock().unwrap();
+        let policy = seen.iter().find(|(p, _)| p == "/cache/policy").unwrap();
+        assert!(policy.1["budget_bytes"].as_u64().unwrap() > 0);
+        let warm = seen.iter().find(|(p, _)| p == "/cache/warm").unwrap();
+        assert_eq!(warm.1["messages"][0]["role"], "system");
+        assert_eq!(warm.1["adapter"], "");
+    }
+    // the lab sees it
+    let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    assert_eq!(st["cache"]["enabled"], true);
+    assert!(st["cache"]["plan"]["reasons"].as_array().unwrap().len() >= 2);
+    // off: everything is dropped and the budget is zero
+    assert_eq!(
+        ctl_send(&r.ctl_path, "cache off").unwrap(),
+        "predictive cache off"
+    );
+    let last = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(p, _)| p == "/cache/policy")
+        .cloned()
+        .unwrap();
+    assert_eq!(last.1["budget_bytes"], 0);
+    assert_eq!(last.1["drop"], json!([1]));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

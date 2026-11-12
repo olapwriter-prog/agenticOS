@@ -1,14 +1,18 @@
 //! Generation: prompt in, text out, with the grammar enforced, and a long shared prefix (agentd's
-//! system prompt and tool list) processed once and reused from a snapshot.
+//! system prompt and tool list) processed once and reused from a snapshot. Snapshots live in a
+//! budgeted cache (`cache::PrefixCache`), one per prefix and adapter, so switching adapters
+//! (experts) does not throw the others away, and prefixes can be warmed before they are asked for.
 //!
 //! With a draft model (`Engine::set_draft`): speculative decoding. The small model proposes a few
 //! tokens, the big one checks them all in one batch (a batch costs it little more than one token:
 //! each weight is decoded once per batch). Accepted tokens are kept, the first wrong one is
 //! replaced by the big model's own choice, and the text is exactly what the big model alone would
 //! have produced (greedy: identical; sampling: the same distribution).
+use crate::cache::PrefixCache;
 use crate::grammar::{Grammar, Matcher};
 use crate::model::{Arch, Mark, Model, Snapshot, State};
 use crate::tokenizer::Tokenizer;
+use std::collections::HashMap;
 use std::time::Instant;
 
 pub struct Engine {
@@ -17,8 +21,11 @@ pub struct Engine {
     state: State,
     /// The tokens `state` currently holds.
     held: Vec<u32>,
-    /// A snapshot after a shared prefix, and that prefix.
-    snap: Option<(Vec<u32>, Snapshot)>,
+    /// States after shared prefixes, per adapter, within a memory budget.
+    pub cache: PrefixCache<Snapshot>,
+    /// The adapter in use ("" = none) and the others kept ready to swap in.
+    adapter_tag: String,
+    adapters: HashMap<String, crate::train::Adapter>,
     seed: u64,
     draft: Option<Draft>,
     /// drafted tokens per round
@@ -37,7 +44,12 @@ impl Draft {
     /// Bring the draft to hold exactly `tokens`, from a `mark` taken when it held `mark_len`
     /// tokens (the rewind point: at most one round back).
     fn sync(&mut self, tokens: &[u32], mark: Option<(&Mark, usize)>) -> Result<(), String> {
-        let common = self.held.iter().zip(tokens).take_while(|(a, b)| a == b).count();
+        let common = self
+            .held
+            .iter()
+            .zip(tokens)
+            .take_while(|(a, b)| a == b)
+            .count();
         let start = if common < self.held.len() || self.logits.is_empty() {
             // rewind: to the mark if there is one this side of the difference, else start over
             match mark {
@@ -97,6 +109,23 @@ pub struct Timings {
     pub accepted: usize,
 }
 
+/// Default memory for cached prompt states: enough for a system prompt on a 4B model.
+pub const DEFAULT_CACHE_BYTES: usize = 512 << 20;
+
+/// What warming a prefix did.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Warmed {
+    pub tokens: usize,
+    pub bytes: usize,
+    pub ms: f64,
+    /// tokens that were already there (held or cached)
+    pub reused: usize,
+    /// it was cached already: nothing done
+    pub already: bool,
+    /// false when it did not fit the budget
+    pub kept: bool,
+}
+
 /// One chat message.
 pub struct Msg {
     pub role: String,
@@ -116,7 +145,9 @@ impl Engine {
             tok,
             state,
             held: vec![],
-            snap: None,
+            cache: PrefixCache::new(DEFAULT_CACHE_BYTES),
+            adapter_tag: String::new(),
+            adapters: HashMap::new(),
             seed,
             draft: None,
             draft_n: 5,
@@ -127,14 +158,22 @@ impl Engine {
     /// checked on the token tables, and on encoding a sentence.
     pub fn set_draft(&mut self, draft: Model, draft_tok: &Tokenizer) -> Result<(), String> {
         if draft.cfg.n_vocab != self.model.cfg.n_vocab {
-            return Err(format!("draft vocabulary has {} tokens, the model's {}", draft.cfg.n_vocab, self.model.cfg.n_vocab));
+            return Err(format!(
+                "draft vocabulary has {} tokens, the model's {}",
+                draft.cfg.n_vocab, self.model.cfg.n_vocab
+            ));
         }
         let probe = "Call Mum at 9pm; text Ravi \"I'm late\" {\"tool\":\"call\"} 12345 émoji 😀";
         if draft_tok.encode(probe) != self.tok.encode(probe) {
             return Err("the draft model tokenizes differently from the model".into());
         }
         let state = draft.new_state();
-        self.draft = Some(Draft { model: draft, state, held: vec![], logits: vec![] });
+        self.draft = Some(Draft {
+            model: draft,
+            state,
+            held: vec![],
+            logits: vec![],
+        });
         Ok(())
     }
 
@@ -143,12 +182,140 @@ impl Engine {
         self.draft.is_some()
     }
 
-    /// Load or remove a LoRA adapter. Cached state was computed without it, so it is dropped.
+    /// Load or remove a LoRA adapter (unnamed: replaces whatever is in use). States cached
+    /// with a previous unnamed adapter are dropped; those of the base model are kept.
     pub fn set_adapter(&mut self, ad: Option<crate::train::Adapter>) {
+        let tag = if ad.is_some() { "adapter" } else { "" };
+        if self.adapter_tag == "adapter" || tag == "adapter" {
+            self.cache.drop_adapter("adapter");
+        }
         self.model.adapter = ad;
+        self.adapter_tag = tag.to_string();
         self.held.clear();
-        self.snap = None;
         self.state.reset();
+    }
+
+    /// Keep a named adapter (an expert) ready to swap in by `use_adapter`. Replacing one drops
+    /// the states cached with the old version.
+    pub fn add_adapter(&mut self, name: &str, ad: crate::train::Adapter) {
+        self.cache.drop_adapter(name);
+        if self.adapter_tag == name {
+            self.model.adapter = Some(ad);
+            self.held.clear();
+            self.state.reset();
+        } else {
+            self.adapters.insert(name.to_string(), ad);
+        }
+    }
+
+    /// The names of the adapters this engine can switch to ("" is always the base model).
+    pub fn adapter_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.adapters.keys().cloned().collect();
+        if !self.adapter_tag.is_empty() {
+            v.push(self.adapter_tag.clone());
+        }
+        v.sort();
+        v
+    }
+
+    pub fn adapter(&self) -> &str {
+        &self.adapter_tag
+    }
+
+    /// Switch to a named adapter ("" = the base model) for the next requests. Cached states of
+    /// every adapter stay; only the live state starts over. Unknown names are an error.
+    pub fn use_adapter(&mut self, name: &str) -> Result<(), String> {
+        if name == self.adapter_tag {
+            return Ok(());
+        }
+        if !name.is_empty() && !self.adapters.contains_key(name) {
+            return Err(format!("no adapter named {name}"));
+        }
+        if let Some(cur) = self.model.adapter.take() {
+            self.adapters.insert(self.adapter_tag.clone(), cur);
+        }
+        self.model.adapter = if name.is_empty() {
+            None
+        } else {
+            self.adapters.remove(name)
+        };
+        self.adapter_tag = name.to_string();
+        self.held.clear();
+        self.state.reset();
+        Ok(())
+    }
+
+    /// Read a prompt's shared part ahead of time and keep the state, so the request that
+    /// follows starts after it. The shared part is everything before the last user turn (the
+    /// whole prompt when there is none).
+    pub fn warm(&mut self, prompt: &str, label: &str) -> Result<Warmed, String> {
+        let toks = self.tok.encode(prompt);
+        let b = self.boundary(&toks);
+        let pre: Vec<u32> = if b > 0 { toks[..b].to_vec() } else { toks };
+        if pre.is_empty() {
+            return Err("empty prompt".into());
+        }
+        if self.cache.contains(&self.adapter_tag, &pre) {
+            return Ok(Warmed {
+                tokens: pre.len(),
+                already: true,
+                ..Default::default()
+            });
+        }
+        let t0 = Instant::now();
+        let mut reused = 0;
+        if !self.held.is_empty() && pre.starts_with(&self.held) {
+            reused = self.held.len();
+        } else if let Some((id, n)) = self.cache.best(&self.adapter_tag, &pre) {
+            if let Some(s) = self.cache.hit(id) {
+                self.state.restore(s);
+                reused = n;
+            }
+        }
+        if reused == 0 {
+            self.state.reset();
+        }
+        self.held.truncate(reused);
+        const BATCH: usize = 64;
+        let mut at = reused;
+        while at < pre.len() {
+            let end = (at + BATCH).min(pre.len());
+            if self.state.pos + (end - at) > self.model.cfg.ctx {
+                return Err("context full".into());
+            }
+            self.model.forward(&mut self.state, &pre[at..end])?;
+            self.held.extend_from_slice(&pre[at..end]);
+            at = end;
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        let snap = self.state.snapshot();
+        let bytes = snap.bytes();
+        let tag = self.adapter_tag.clone();
+        let kept = self
+            .cache
+            .insert(&tag, pre.clone(), label, snap, ms, true)
+            .is_some();
+        Ok(Warmed {
+            tokens: pre.len(),
+            bytes,
+            ms,
+            reused,
+            already: false,
+            kept,
+        })
+    }
+
+    /// Where the last user turn starts: everything before it is the shared part.
+    fn boundary(&self, prompt: &[u32]) -> usize {
+        let im_start = self.tok.id("<|im_start|>");
+        im_start
+            .and_then(|s| {
+                (0..prompt.len()).rev().find(|&i| {
+                    prompt[i] == s
+                        && self.tok.decode(&prompt[i + 1..(i + 2).min(prompt.len())]) == "user"
+                })
+            })
+            .unwrap_or(0)
     }
 
     /// ChatML, as Qwen models expect. With thinking off, Qwen3/3.5 get an empty think block so
@@ -178,16 +345,10 @@ impl Engine {
     /// Bring the state to hold exactly `prompt`'s tokens, reusing what it can. Returns how many
     /// prompt tokens were reused, and the logits after the last one.
     fn prefill(&mut self, prompt: &[u32]) -> Result<(usize, Vec<f32>), String> {
-        // where the last user turn starts: everything before it is the shared part to snapshot
-        let im_start = self.tok.id("<|im_start|>");
-        let boundary = im_start
-            .and_then(|s| {
-                (0..prompt.len()).rev().find(|&i| {
-                    prompt[i] == s
-                        && self.tok.decode(&prompt[i + 1..(i + 2).min(prompt.len())]) == "user"
-                })
-            })
-            .unwrap_or(0);
+        let t0 = Instant::now();
+        self.cache.tick();
+        // where the last user turn starts: everything before it is the shared part to keep
+        let boundary = self.boundary(prompt);
         let starts_with = |a: &[u32], b: &[u32]| a.len() >= b.len() && a[..b.len()] == *b;
         let mut reused = 0;
         if !self.held.is_empty()
@@ -195,15 +356,21 @@ impl Engine {
             && self.held.len() < prompt.len()
         {
             reused = self.held.len();
-        } else if let Some((pre, snap)) = &self.snap {
-            if starts_with(prompt, pre) && pre.len() < prompt.len() {
-                self.state.restore(snap);
-                reused = pre.len();
+        }
+        // a cached state that covers more than what is held wins
+        if let Some((id, n)) = self.cache.best(&self.adapter_tag, prompt) {
+            if n > reused {
+                if let Some(s) = self.cache.hit(id) {
+                    self.state.restore(s);
+                    reused = n;
+                }
             } else {
-                self.state.reset();
+                // the live state already holds it (it was just warmed or used): still a use of
+                // that entry, so it stays valued and its warm-up counts as used
+                let _ = self.cache.hit(id);
             }
-        } else {
-            self.state.reset();
+        } else if boundary > 0 && reused < boundary {
+            self.cache.miss();
         }
         if reused == 0 {
             self.state.reset();
@@ -212,8 +379,9 @@ impl Engine {
         const BATCH: usize = 64;
         let mut logits = Vec::new();
         let mut at = reused;
+        let from = reused;
         while at < prompt.len() {
-            // stop at the boundary once, to take the snapshot there
+            // stop at the boundary once, to keep the state there
             let mut end = (at + BATCH).min(prompt.len());
             if boundary > at && boundary < end {
                 end = boundary;
@@ -223,12 +391,26 @@ impl Engine {
             at = end;
             if at == boundary
                 && boundary > 0
-                && self
-                    .snap
-                    .as_ref()
-                    .is_none_or(|(p, _)| p[..] != prompt[..boundary])
+                && !self.cache.contains(&self.adapter_tag, &prompt[..boundary])
             {
-                self.snap = Some((prompt[..boundary].to_vec(), self.state.snapshot()));
+                // what reading the whole prefix costs, from what this part took
+                let spent = t0.elapsed().as_secs_f64() * 1000.0;
+                let build_ms = spent * boundary as f64 / (boundary - from).max(1) as f64;
+                let label = if self.adapter_tag.is_empty() {
+                    "system".to_string()
+                } else {
+                    self.adapter_tag.clone()
+                };
+                let tag = self.adapter_tag.clone();
+                let snap = self.state.snapshot();
+                self.cache.insert(
+                    &tag,
+                    prompt[..boundary].to_vec(),
+                    &label,
+                    snap,
+                    build_ms,
+                    false,
+                );
             }
         }
         if logits.is_empty() {
@@ -255,7 +437,14 @@ impl Engine {
         let t1 = Instant::now();
         let mut out: Vec<u32> = Vec::new();
         if self.draft.is_some() {
-            let r = self.generate_speculative(req, &prompt, logits, matcher.as_mut(), &mut out, &mut timings);
+            let r = self.generate_speculative(
+                req,
+                &prompt,
+                logits,
+                matcher.as_mut(),
+                &mut out,
+                &mut timings,
+            );
             timings.predicted_n = out.len();
             timings.predicted_ms = t1.elapsed().as_secs_f64() * 1000.0;
             return r.map(|()| (self.tok.decode(&out), timings));
@@ -311,7 +500,10 @@ impl Engine {
                 let model_mark = recurrent.then(|| self.state.mark());
                 let pos_before = self.state.pos;
                 // 1. the draft proposes up to draft_n tokens, each allowed by the grammar
-                let n = self.draft_n.min(req.max_tokens - out.len()).min(ctx.saturating_sub(pos_before + 2));
+                let n = self
+                    .draft_n
+                    .min(req.max_tokens - out.len())
+                    .min(ctx.saturating_sub(pos_before + 2));
                 let mut m_draft = matcher.as_deref().cloned();
                 let mut drafted: Vec<u32> = Vec::with_capacity(n);
                 let mut q_dists: Vec<Vec<(u32, f32)>> = Vec::with_capacity(n);
@@ -337,7 +529,11 @@ impl Engine {
                 }
                 timings.drafted += drafted.len();
                 // 2. the model checks them all in one batch: logits after each drafted token
-                let all = if drafted.is_empty() { vec![] } else { self.model.forward_all(&mut self.state, &drafted)? };
+                let all = if drafted.is_empty() {
+                    vec![]
+                } else {
+                    self.model.forward_all(&mut self.state, &drafted)?
+                };
                 let nv = self.model.cfg.n_vocab;
                 // 3. accept while the model agrees; the first disagreement is replaced
                 let mut accepted = 0;
@@ -370,7 +566,13 @@ impl Engine {
                         // the residual p − q, as speculative sampling prescribes (greedy: p's top)
                         let mut res: Vec<(u32, f32)> = p
                             .iter()
-                            .map(|(t, x)| (*t, (x - q.iter().find(|(u, _)| u == t).map_or(0.0, |(_, y)| *y)).max(0.0)))
+                            .map(|(t, x)| {
+                                (
+                                    *t,
+                                    (x - q.iter().find(|(u, _)| u == t).map_or(0.0, |(_, y)| *y))
+                                        .max(0.0),
+                                )
+                            })
                             .collect();
                         let total: f32 = res.iter().map(|(_, x)| x).sum();
                         if total <= 0.0 {
@@ -499,7 +701,9 @@ impl Engine {
         match m {
             None => {
                 let nth = k.min(order.len() - 1);
-                order.select_nth_unstable_by(nth, |a, b| logits[*b as usize].total_cmp(&logits[*a as usize]));
+                order.select_nth_unstable_by(nth, |a, b| {
+                    logits[*b as usize].total_cmp(&logits[*a as usize])
+                });
                 order.truncate(k);
                 cands = order.iter().map(|&t| (t, logits[t as usize])).collect();
             }
