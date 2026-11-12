@@ -80,8 +80,14 @@ fn gradcheck(m: &Model, tok: &Tokenizer) {
     println!("loss+grads in {:?}", t0.elapsed());
     let gr = gr.unwrap();
     let mut worst = 0f32;
-    let last = m.cfg.n_layer - 1;
-    for key in [(0, Target::Q), (0, Target::V), (last / 2, Target::K), (last, Target::O)] {
+    // the first and last attention layers, and (Qwen3.5) the first DeltaNet layer's output
+    let attn: Vec<usize> = ad.pairs.keys().filter(|k| k.1 == Target::Q).map(|k| k.0).collect();
+    let (first, last) = (attn[0], *attn.last().unwrap());
+    let mut keys = vec![(first, Target::Q), (first, Target::V), (last, Target::K), (m.cfg.n_layer - 1, Target::O)];
+    if let Some(r) = (0..m.cfg.n_layer).find(|&i| m.cfg.is_recurrent(i)) {
+        keys.push((r, Target::O));
+    }
+    for key in keys {
         for (which, idx) in [(0usize, 3usize), (0, 101), (1, 5), (1, 77)] {
             let h: f32 = std::env::var("H").ok().and_then(|s| s.parse().ok()).unwrap_or(1e-2);
             let mut plus = ad.clone();

@@ -88,7 +88,7 @@ pub(crate) struct Layer {
     pub(crate) ssm_alpha: Option<TensorInfo>,
     pub(crate) ssm_beta: Option<TensorInfo>,
     pub(crate) ssm_out: Option<TensorInfo>,
-    conv1d: Vec<f32>,
+    pub(crate) conv1d: Vec<f32>,
     pub(crate) dt_bias: Vec<f32>,
     pub(crate) ssm_a: Vec<f32>,
     pub(crate) ssm_norm: Vec<f32>,
@@ -730,6 +730,10 @@ impl Model {
                     o.iter_mut().zip(zz).for_each(|(a, z)| *a *= silu(*z));
                 });
         }
-        self.matmul(l.ssm_out.as_ref().unwrap(), &outs, n)
+        let mut y = self.matmul(l.ssm_out.as_ref().unwrap(), &outs, n);
+        if let Some(ad) = &self.adapter {
+            ad.apply((li, crate::train::Target::O), &outs, n, &mut y);
+        }
+        y
     }
 }
