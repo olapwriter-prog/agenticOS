@@ -3,7 +3,7 @@
 use crate::State;
 use crate::icons;
 use crate::theme::*;
-use rune::{El, Tx, col, icon};
+use rune::{El, Tx, col, icon, row};
 use serde_json::Value;
 
 fn group(key: &str, label: &str, rows: Vec<El>) -> El {
@@ -27,7 +27,7 @@ pub fn view(s: &State, st: &Value) -> El {
             .key("cards")
             .w_full()
             .gap(22.0)
-            .child(page_title("title-system", "Settings", None));
+            .child(page_title("title-system", "You", None));
 
     // services: each row opens its sign-in
     let mut services: Vec<(String, String)> = st["connectors"]
@@ -98,7 +98,7 @@ pub fn view(s: &State, st: &Value) -> El {
                 inner = inner
                     .child(t(format!("Paste the {} token. It is stored in the vault and cleared from this box.", pretty_id(&name)), CAPTION, MUTED).w_full().wrap())
                     .child(field(&s.token, "token", "Token").on_edit(|s: &mut State| &mut s.token))
-                    .child(pill(&format!("connect-{name}"), "Save token", ACCENT, rune::Color::WHITE).on_press(move |s: &mut State| {
+                    .child(pill(&format!("connect-{name}"), "Save token", ACCENT_FILL, rune::Color::WHITE).on_press(move |s: &mut State| {
                         let token = s.token.text.trim().to_string();
                         s.token.clear();
                         if !token.is_empty() {
@@ -111,6 +111,9 @@ pub fn view(s: &State, st: &Value) -> El {
         rows.push(r);
     }
     page = page.child(group("services", "Services", rows));
+
+    // the Android bridge: what each app may share with Agentic OS
+    page = page.child(bridge_group(st));
 
     // the assistant
     let models: Vec<String> = st["models"]
@@ -243,4 +246,119 @@ pub fn view(s: &State, st: &Value) -> El {
             ),
         )],
     ))
+}
+
+/// A switch: a track and a knob.
+fn switch(key: &str, label: &str, on: bool) -> El {
+    let clear = rune::Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
+    row()
+        .key(key)
+        .w(48.0)
+        .h(28.0)
+        .px(2.0)
+        .center_y()
+        .radius(14.0)
+        .fill(if on { GOOD } else { SURFACE3 })
+        .role("switch")
+        .label(label)
+        .focusable(true)
+        .press_scale(0.95)
+        .child(
+            rune::el()
+                .grow(if on { 1.0 } else { 0.0 })
+                .h(1.0)
+                .fill(clear),
+        )
+        .child(
+            rune::el()
+                .size(24.0, 24.0)
+                .radius(12.0)
+                .fill(rune::Color::WHITE),
+        )
+}
+
+/// Settings › Android bridge: whether it is up, and three switches per app (read, reply, files).
+/// Each change is a control command, and the daemon writes it to the ledger.
+fn bridge_group(st: &Value) -> El {
+    let b = &st["bridge"];
+    let up = b["up"].as_bool() == Some(true);
+    let apps = b["apps"].as_array().cloned().unwrap_or_default();
+    let allowed = apps
+        .iter()
+        .filter(|a| {
+            ["read", "reply", "files"]
+                .iter()
+                .any(|k| a[*k].as_bool() == Some(true))
+        })
+        .count();
+    let mut rows = vec![list_row(
+        "bridge-status",
+        tile(&icons::LINK, if up { GOOD } else { WARN }, 36.0),
+        if up { "Connected" } else { "Not connected" },
+        &format!(
+            "{allowed} {} allowed · logged in your ledger",
+            if allowed == 1 { "app" } else { "apps" }
+        ),
+        None,
+    )];
+    if apps.is_empty() {
+        rows.push(
+            t(
+                "Apps appear here the first time they post a notification in Android. Each starts with everything off.",
+                CAPTION,
+                MUTED,
+            )
+            .w_full()
+            .wrap(),
+        );
+    }
+    for a in apps {
+        let pkg = str_of(&a["package"]);
+        let name = str_of(&a["app"]);
+        let mut c = col()
+            .key(format!("bridge-app-{pkg}"))
+            .w_full()
+            .gap(4.0)
+            .py(6.0)
+            .child(
+                row()
+                    .gap(8.0)
+                    .center_y()
+                    .child(t(name.clone(), HEADLINE, TEXT))
+                    .child(source_tag(&name)),
+            );
+        for (what, label) in [
+            ("read", "Read messages"),
+            ("reply", "Reply for me"),
+            ("files", "Receive files"),
+        ] {
+            let on = a[what].as_bool() == Some(true);
+            let line = format!(
+                "bridge allow {pkg} {what} {}",
+                if on { "off" } else { "on" }
+            );
+            c = c.child(
+                row()
+                    .w_full()
+                    .min_h(44.0)
+                    .center_y()
+                    .child(t(label, BODY, TEXT).grow(1.0))
+                    .child(
+                        switch(
+                            &format!("bridge-{pkg}-{what}"),
+                            &format!("{label} from {name}"),
+                            on,
+                        )
+                        .on_press(move |s: &mut State| s.send(line.clone())),
+                    ),
+            );
+        }
+        rows.push(c);
+    }
+    group("bridge", "Android bridge", rows)
 }

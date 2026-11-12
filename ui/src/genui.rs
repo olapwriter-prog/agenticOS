@@ -14,12 +14,15 @@ use std::collections::HashMap;
 /// The icon and colour for a kind of answer.
 pub fn kind_mark(kind: &str) -> (&'static Icon, Color) {
     match kind {
-        "weather" => (&icons::SPARK, ACCENT2),
-        "air" => (&icons::SIGNAL, GOOD),
-        "money" => (&icons::BOLT, WARN),
-        "photo" => (&icons::CAMERA, ACCENT),
-        "dashboard" => (&icons::APPS, ACCENT),
-        _ => (&icons::SPARK, ACCENT),
+        "weather" => (&icons::SUN_CLOUD, SKY),
+        "air" => (&icons::WIND, MINT),
+        "money" => (&icons::COIN, SUN),
+        "photo" => (&icons::CAMERA, VIOLET),
+        "dashboard" => (&icons::GRID, VIOLET),
+        "inbox" | "thread" => (&icons::INBOX, CORAL),
+        "files" => (&icons::FOLDER, LIME),
+        "setup" => (&icons::ANDROID, MINT),
+        _ => (&icons::SPARK, VIOLET),
     }
 }
 
@@ -260,6 +263,78 @@ pub fn card_view(c: &Value, key: &str, s: &State, compact: bool) -> El {
         body = body.child(t(l.clone(), CAPTION, MUTED).w_full().wrap());
     }
 
+    // where it came from
+    let source = str_of(&c["source"]);
+    if !source.is_empty() {
+        body = body.child(source_tag(&source));
+    }
+
+    // the agent's work, step by step
+    if !compact {
+        for (i, st) in c["steps"].as_array().into_iter().flatten().enumerate() {
+            body = body.child(step_row(
+                &format!("{key}-step-{i}"),
+                &str_of(&st["label"]),
+                &str_of(&st["detail"]),
+                &str_of(&st["state"]),
+            ));
+        }
+    }
+
+    // a table
+    if !compact {
+        if let Some(tb) = c.get("table").filter(|v| v.is_object()) {
+            body = body.child(table_view(tb, key));
+        }
+    }
+
+    // a list: each row says its words back when tapped
+    for (i, it) in c["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .take(if compact { 2 } else { 12 })
+    {
+        body = body.child(item_row(it, &format!("{key}-item-{i}")));
+    }
+
+    // options side by side; the best one has a mint ring
+    let options = c["compare"].as_array().cloned().unwrap_or_default();
+    if !compact && !options.is_empty() {
+        let mut r = row()
+            .key(format!("{key}-compare"))
+            .w_full()
+            .gap(10.0)
+            .items_stretch();
+        for (i, o) in options.iter().enumerate() {
+            let best = o["best"].as_bool() == Some(true);
+            let mut col_ = col()
+                .key(format!("{key}-option-{i}"))
+                .grow(1.0)
+                .w_frac(1.0 / options.len() as f32)
+                .min_w(0.0)
+                .padding(14.0)
+                .gap(6.0)
+                .radius(20.0)
+                .fill(SURFACE2)
+                .border(
+                    if best { 2.0 } else { 1.0 },
+                    if best { MINT } else { HAIRLINE },
+                )
+                .child(t(str_of(&o["title"]), CALLOUT, TEXT2))
+                .child(t(str_of(&o["value"]), TextStyle::new(24.0, 700.0), TEXT));
+            for l in o["lines"].as_array().into_iter().flatten() {
+                col_ = col_.child(t(str_of(l), CAPTION, TEXT2).w_full().wrap());
+            }
+            if best {
+                col_ = col_.child(t("Best", MICRO, MINT));
+            }
+            r = r.child(col_);
+        }
+        body = body.child(r);
+    }
+
     // buttons: each says its words back to the agent
     let actions = c["actions"].as_array().cloned().unwrap_or_default();
     if !actions.is_empty() {
@@ -281,9 +356,91 @@ pub fn card_view(c: &Value, key: &str, s: &State, compact: bool) -> El {
     body
 }
 
+/// A small grid: column names in the label style, at most six rows, then how many more.
+fn table_view(tb: &Value, key: &str) -> El {
+    let cols: Vec<String> = tb["columns"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(str_of)
+        .collect();
+    let rows = tb["rows"].as_array().cloned().unwrap_or_default();
+    let mut grid = col()
+        .key(format!("{key}-table"))
+        .w_full()
+        .radius(16.0)
+        .fill(SURFACE2)
+        .border(1.0, HAIRLINE)
+        .padding(12.0)
+        .gap(8.0);
+    let mut head = row().w_full().gap(8.0);
+    for c in &cols {
+        head = head.child(
+            t(c.to_uppercase(), LABEL, TEXT2)
+                .grow(1.0)
+                .w_frac(1.0 / cols.len().max(1) as f32)
+                .truncate(),
+        );
+    }
+    grid = grid.child(head);
+    for r in rows.iter().take(6) {
+        let mut line = row().w_full().gap(8.0);
+        for cell in r.as_array().into_iter().flatten() {
+            line = line.child(
+                t(str_of(cell), CALLOUT, TEXT)
+                    .grow(1.0)
+                    .w_frac(1.0 / cols.len().max(1) as f32)
+                    .truncate(),
+            );
+        }
+        grid = grid.child(line);
+    }
+    if rows.len() > 6 {
+        grid = grid.child(t(format!("{} more", rows.len() - 6), CAPTION, TEXT2));
+    }
+    grid
+}
+
+/// One row of a list: icon tile, title, subtitle, value. Tapping it asks what the row says.
+fn item_row(it: &Value, key: &str) -> El {
+    let say = str_of(&it["say"]);
+    let ic = icons::by_name(&str_of(&it["icon"])).unwrap_or(&icons::NEXT);
+    let mut r = row()
+        .key(key)
+        .w_full()
+        .min_h(56.0)
+        .gap(12.0)
+        .center_y()
+        .child(tile(ic, ACCENT, 40.0))
+        .child(
+            col()
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .gap(2.0)
+                .child(t(str_of(&it["title"]), CALLOUT, TEXT).truncate())
+                .child(t(str_of(&it["subtitle"]), CAPTION, TEXT2).truncate()),
+        );
+    let value = str_of(&it["value"]);
+    if !value.is_empty() {
+        r = r.child(t(value, MICRO, CORAL));
+    }
+    if !say.is_empty() {
+        r = r
+            .role("button")
+            .label(str_of(&it["title"]))
+            .press_scale(0.98)
+            .on_press(move |s: &mut State| s.ask(&say));
+    }
+    r
+}
+
 /// A whole document: its title and its cards, and buttons for the whole screen.
 pub fn document(doc: &Value, key: &str, s: &State, with_actions: bool) -> El {
-    let (ic, c) = kind_mark(doc["kind"].as_str().unwrap_or(""));
+    let (ic, mut c) = kind_mark(doc["kind"].as_str().unwrap_or(""));
+    if let Some(a) = doc["accent"].as_str().filter(|a| !a.is_empty()) {
+        c = signal(a).0;
+    }
     let mut out = col().key(key).w_full().gap(10.0).child(
         row()
             .w_full()

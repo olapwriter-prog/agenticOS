@@ -81,7 +81,7 @@ pub fn view(s: &State, st: &Value) -> El {
                 el().h_full()
                     .w_frac(index / total)
                     .radius(3.0)
-                    .linear_gradient(90.0, [(0.0, ACCENT), (1.0, ACCENT2)]),
+                    .fill(ACCENT_FILL),
             ),
     );
     top = if can_skip && !options.iter().any(|o| o == "skip") {

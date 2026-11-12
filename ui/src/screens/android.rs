@@ -23,7 +23,7 @@ pub fn view(_s: &State, st: &Value) -> El {
         row()
             .w_full()
             .center_y()
-            .child(page_title("title-android", "Apps", None).grow(1.0))
+            .child(page_title("title-android", "Android", None).grow(1.0))
             .child(
                 row()
                     .h(28.0)
@@ -40,6 +40,8 @@ pub fn view(_s: &State, st: &Value) -> El {
                     .child(t(status, CAPTION, MUTED)),
             ),
     );
+
+    page = page.child(play_card(st));
 
     if let Some(stop) = android["last_stop"].as_object() {
         let reason = stop
@@ -197,4 +199,84 @@ pub fn view(_s: &State, st: &Value) -> El {
         );
     }
     page
+}
+
+/// Google Play and the bridge: set up the store (High tier: it waits for the PIN), ask its
+/// status, and see whether Android is sharing with Agentic OS.
+fn play_card(st: &Value) -> El {
+    let b = &st["bridge"];
+    let up = b["up"].as_bool() == Some(true);
+    let unread = b["unread"].as_u64().unwrap_or(0);
+    let apps = b["apps"].as_array().map_or(0, |a| a.len());
+    col()
+        .key("play-card")
+        .w_full()
+        .padding(16.0)
+        .gap(12.0)
+        .radius(24.0)
+        .fill(SURFACE)
+        .border(1.0, HAIRLINE)
+        .child(
+            row()
+                .w_full()
+                .gap(12.0)
+                .center_y()
+                .child(tile(&icons::BAG, MINT, 44.0))
+                .child(
+                    col()
+                        .grow(1.0)
+                        .shrink()
+                        .min_w(0.0)
+                        .gap(2.0)
+                        .child(t("Google Play", HEADLINE, TEXT))
+                        .child(
+                            t(
+                                "Install apps in the sandbox. Sign-in happens inside Android.",
+                                CAPTION,
+                                MUTED,
+                            )
+                            .w_full()
+                            .wrap(),
+                        ),
+                ),
+        )
+        .child(
+            row()
+                .w_full()
+                .gap(8.0)
+                .child(
+                    action("play-setup", "Set up Play Store", true)
+                        .grow(1.0)
+                        .on_press(|s: &mut State| s.ask("set up play store")),
+                )
+                .child(
+                    action("play-status", "Status", false)
+                        .on_press(|s: &mut State| s.ask("play store status")),
+                ),
+        )
+        .child(
+            row()
+                .key("bridge-line")
+                .w_full()
+                .gap(8.0)
+                .center_y()
+                .child(
+                    el().size(8.0, 8.0)
+                        .radius(4.0)
+                        .fill(if up { GOOD } else { WARN }),
+                )
+                .child(
+                    t(
+                        if up {
+                            format!("Bridge connected · {apps} apps known · {unread} unread")
+                        } else {
+                            "Bridge not connected: install Agentic Bridge in Android".to_string()
+                        },
+                        CAPTION,
+                        MUTED,
+                    )
+                    .grow(1.0)
+                    .wrap(),
+                ),
+        )
 }

@@ -199,3 +199,21 @@ Behaviour to know:
   inbox and bridge fields in the UI state, a dashboard card, and phrases. Two end-to-end tests.
 - Device tasks still open: build and install the companion app (`android/bridge-app`, Part B), grant
   notification access on the device, and run the two flows with a real WhatsApp.
+
+## Signal client (plan v3, Part E)
+
+- Tokens: the Signal palette in `ui/src/theme.rs` (linear values of the sRGB tokens), `signal(kind)`,
+  hero and label type. Old names map onto the tokens.
+- Icons: the plan's 42 names resolve (`icons::by_name`), with a test.
+- Components: signal field, actions, field actions, source tags, tier tags, step rows, and the floating
+  bar with the raised Ask button (Home, Inbox, Ask, Android, You).
+- Generated screens draw steps, tables, item lists, comparisons and sources; the accent sets the colour.
+- The assistant has six views (Poster, Board, Steps, Thread, Voice, Reader); the newest answer's
+  layout picks one until the owner does.
+- New screens: Inbox (SMS and Android, by person and app, replies by SMS or through the bridge),
+  Files (on this phone and from Android), Settings › Android bridge switches, Home's priority field,
+  and Google Play on the Android screen. The daemon's state now lists the documents folder.
+- Not yet: speech input for the Voice view (the orb shows state only), and the Space Grotesk face
+  (the client draws everything in its default face).
+- Snapshot scenes: chat-poster, chat-board, chat-steps, chat-thread, chat-voice, chat-reader, inbox,
+  inbox-thread, files.

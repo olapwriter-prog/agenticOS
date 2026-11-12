@@ -1650,7 +1650,34 @@ impl Core {
             "memory": self.memory_state(),
             "inbox": self.inbox_json(),
             "bridge": self.bridge_json(),
+            "documents": self.documents_json(),
         })
+    }
+
+    /// The documents on this phone (the documents folder itself, not what Android sent), by name.
+    fn documents_json(&self) -> Value {
+        let dir = self
+            .cfg
+            .documents_dir
+            .clone()
+            .unwrap_or_else(|| self.cfg.data_dir.join("documents"));
+        let mut files: Vec<(String, u64)> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().is_file())
+                    .map(|e| {
+                        let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                        (e.file_name().to_string_lossy().to_string(), size)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        json!(files
+            .iter()
+            .take(100)
+            .map(|(n, sz)| json!({"name": n, "size": sz}))
+            .collect::<Vec<_>>())
     }
 
     /// The newest 30 messages, newest first.

@@ -1825,3 +1825,21 @@ fn text_from_android_is_never_run_as_a_command() {
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
+
+#[test]
+fn the_state_lists_the_documents_on_the_phone() {
+    let (d, r, _tok) = boot("docs-state");
+    std::fs::create_dir_all(d.join("documents")).unwrap();
+    std::fs::write(d.join("documents/Lease.docx"), b"not really a docx").unwrap();
+    let st: Value = serde_json::from_str(&ctl_send(&r.ctl_path, "state").unwrap()).unwrap();
+    let docs = st["documents"].as_array().unwrap();
+    assert!(
+        docs.iter()
+            .any(|x| x["name"] == "Lease.docx" && x["size"] == json!(17)),
+        "{docs:?}"
+    );
+    // files from Android are listed apart, under the bridge
+    assert!(!docs.iter().any(|x| x["name"] == "android"));
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}

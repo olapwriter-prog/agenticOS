@@ -7,13 +7,14 @@
 //!   agentos-ui --snap ui.png --scene demo    render headless, with sample data
 //!   agentos-ui --snap ui.png --scene live    render headless, from a running agentd
 //!     (live takes AGENTOS_TAB, AGENTOS_SEG and AGENTOS_SHEET to show a given screen)
+#![recursion_limit = "512"]
 mod genui;
 mod icons;
 mod screens;
 mod theme;
 
 use rune::{AppSpec, Cx, El, ScrollSpec, TextEdit, Tx, col, el};
-use screens::{android, approval, chat, home, phone, setup, store, system};
+use screens::{android, approval, chat, files, home, inbox, phone, setup, store, system};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -50,15 +51,63 @@ enum Event {
     Reply { asked: String, answer: String },
 }
 
-/// The Phone tab's segments.
-/// The bottom tabs.
+/// The screens behind the bar (Home, Inbox, Android, You) and the ones Home opens (Phone,
+/// Store, Files).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Home,
+    Inbox,
     Phone,
     Store,
+    Files,
     Android,
     System,
+}
+
+/// The six ways to see the conversation with the assistant (plan v3, D.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Poster,
+    Board,
+    Steps,
+    Thread,
+    Voice,
+    Reader,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 6] = [
+        Mode::Poster,
+        Mode::Board,
+        Mode::Steps,
+        Mode::Thread,
+        Mode::Voice,
+        Mode::Reader,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Mode::Poster => "poster",
+            Mode::Board => "board",
+            Mode::Steps => "steps",
+            Mode::Thread => "thread",
+            Mode::Voice => "voice",
+            Mode::Reader => "reader",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Poster => "Poster",
+            Mode::Board => "Board",
+            Mode::Steps => "Steps",
+            Mode::Thread => "Thread",
+            Mode::Voice => "Voice",
+            Mode::Reader => "Reader",
+        }
+    }
+    /// The mode a document asks for by its layout; anything else reads as a thread.
+    pub fn from_layout(layout: &str) -> Option<Mode> {
+        Mode::ALL.into_iter().find(|m| m.name() == layout)
+    }
 }
 
 /// The Phone tab's segments.
@@ -94,6 +143,18 @@ pub struct State {
     pub confirm_restart: bool,
     /// the assistant's conversation is open, full screen
     pub chat_open: bool,
+    /// the view the owner picked; None follows the newest answer's layout
+    pub chat_mode: Option<Mode>,
+    /// which answer the poster shows; None is the newest
+    pub poster_at: Option<usize>,
+    /// the voice view is listening
+    pub voice_on: bool,
+    /// the conversation open in the inbox: "person|app", for example "Mum|WhatsApp"
+    pub inbox_open: Option<String>,
+    /// the inbox filter: "All", "SMS" or an app name
+    pub inbox_filter: String,
+    /// the reply box in an inbox conversation
+    pub reply: TextEdit,
     /// for each question, the newest answer screen's time when it was asked, so each answer is
     /// matched with the screen made for it
     pub asked_after: Vec<u64>,
@@ -130,6 +191,12 @@ impl State {
             expanded: None,
             confirm_restart: false,
             chat_open: false,
+            chat_mode: None,
+            poster_at: None,
+            voice_on: false,
+            inbox_open: None,
+            inbox_filter: "All".into(),
+            reply: TextEdit::new(""),
             asked_after: vec![],
             log: vec![],
             replies: vec![],
@@ -193,6 +260,13 @@ impl State {
 /// A worker thread: asks agentd for the state every second, and runs each command on a thread of
 /// its own (a chat can take a while), waking the window when something arrives.
 fn setup(s: &mut State, wake: rune::Waker) {
+    // a headless render of a demo scene draws sample data: no agentd to talk to
+    let args: Vec<String> = std::env::args().collect();
+    let snap = args.iter().any(|a| a == "--snap");
+    let live = args.windows(2).any(|w| w[0] == "--scene" && w[1] == "live");
+    if snap && !live {
+        return;
+    }
     let (cmd_tx, cmd_rx) = channel::<String>();
     let (ev_tx, ev_rx) = channel::<Event>();
     s.link = Some(cmd_tx);
@@ -280,8 +354,10 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     }
     let body = match s.tab {
         Tab::Home => home::view(s, st),
+        Tab::Inbox => inbox::view(s, st),
         Tab::Phone => phone::view(s, st),
         Tab::Store => store::view(s, st),
+        Tab::Files => files::view(s, st),
         Tab::Android => android::view(s, st),
         Tab::System => system::view(s, st),
     };
@@ -315,7 +391,12 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                 .grow(1.0)
                 .min_h(0.0),
         )
-        .child(theme::tab_bar(s.tab, waiting).pin(Some(14.0), None, Some(14.0), Some(18.0)));
+        .child(theme::tab_bar_with(s.tab, waiting, inbox::unread(st)).pin(
+            Some(12.0),
+            None,
+            Some(12.0),
+            Some(16.0),
+        ));
     if let Some(id) = s.sheet {
         page = page.child(approval::sheet(s, id));
     }
@@ -379,6 +460,16 @@ fn demo() -> Value {
             "last_stop": {"reason": "only 500 MiB free", "at_ms": 5000}
         },
         "memory": {"available_mib": 1800, "psi": 1.2},
+        "inbox": [
+            {"id": "e1", "time_ms": 1731400000000u64, "app": "WhatsApp", "package": "com.whatsapp", "conversation": "Mum", "sender": "Mum", "text": "Here is the invoice", "files": ["Invoice-0042.pdf"], "read": false, "replied": false}
+        ],
+        "bridge": {"up": true, "unread": 1, "apps": [
+            {"package": "com.whatsapp", "app": "WhatsApp", "read": true, "reply": false, "files": true},
+            {"package": "org.telegram.messenger", "app": "Telegram", "read": false, "reply": false, "files": false}
+        ], "received": [
+            {"name": "Invoice-0042.pdf", "from_app": "WhatsApp", "conversation": "Mum", "time_ms": 1731400000000u64, "size": 48213, "mime": "application/pdf"}
+        ]},
+        "documents": [{"name": "Lease.docx", "size": 90112}, {"name": "Ravi-Sheet.xlsx", "size": 215040}],
         "dashboard": {"title": "Today", "kind": "dashboard", "cards": [
             {"title": "Battery", "metric": {"value": "76%", "label": "on battery"}, "progress": 0.76, "tone": "ok"},
             {"title": "Waiting for you", "metric": {"value": "2", "label": "to approve"}, "tone": "warn"},
@@ -433,6 +524,45 @@ fn chat_demo(s: &mut State) {
     s.load_images();
 }
 
+/// Three answers that use the new views: the weather as a poster, an invoice with its steps, a
+/// table, a list and options, and a document for the reader.
+fn modes_demo(s: &mut State, mode: Option<Mode>) {
+    s.snap = demo();
+    let mut weather = s.snap["screens"][0].clone();
+    weather["ui"]["layout"] = json!("poster");
+    weather["ui"]["accent"] = json!("sky");
+    let invoice = json!({"tool": "invoice_create", "at": 2, "ui": {"title": "Invoice for Ravi", "kind": "money", "accent": "violet", "layout": "steps", "cards": [
+        {"title": "Plan", "source": "Connector",
+         "steps": [
+            {"label": "Read Ravi's details", "detail": "Ravi Traders", "state": "done"},
+            {"label": "Create invoice INV-0042", "detail": "GST included", "state": "done"},
+            {"label": "Share to WhatsApp", "detail": "waits for your PIN", "state": "wait"}
+         ],
+         "table": {"columns": ["Item", "Amount"], "rows": [["Design work", "₹4,000"], ["GST 18%", "₹720"]]},
+         "items": [{"title": "INV-0042.pdf", "subtitle": "Ready to send", "value": "₹4,720", "icon": "pdf", "say": "read document INV-0042.pdf"}],
+         "compare": [{"title": "UPI", "value": "Instant", "lines": ["No fee"], "best": true}, {"title": "Bank", "value": "1 day", "lines": ["NEFT"]}]}
+    ]}});
+    let reader = json!({"tool": "read_document", "at": 3, "ui": {"title": "Invoice-0042.pdf", "subtitle": "PDF · 2 parts", "kind": "document", "layout": "reader", "accent": "lime", "cards": [
+        {"title": "Page 1", "lines": ["Total ₹4,720, due 20 Nov", "Pay by UPI or bank transfer", "GST included; from Ravi Traders"]}
+    ]}});
+    s.snap["screens"] = json!([reader, invoice, weather]);
+    s.log = vec![
+        ("weather".into(), "done: Weather in Bengaluru".into()),
+        (
+            "make an invoice for Ravi".into(),
+            "done: Invoice for Ravi".into(),
+        ),
+        (
+            "read document Invoice-0042.pdf".into(),
+            "done: Invoice-0042.pdf".into(),
+        ),
+    ];
+    s.asked_after = vec![0, 1, 2];
+    s.chat_open = true;
+    s.chat_mode = mode;
+    s.load_images();
+}
+
 /// A photo answer, as the camera tool gives it.
 fn demo_photo_screen() -> Value {
     json!({"tool": "camera_take", "at": 2, "ui": {"title": "Photo taken", "kind": "photo", "cards": [
@@ -471,6 +601,25 @@ fn main() {
                 s.load_images();
             }),
             ("chat", |s| chat_demo(s)),
+            ("chat-poster", |s| modes_demo(s, Some(Mode::Poster))),
+            ("chat-board", |s| modes_demo(s, Some(Mode::Board))),
+            ("chat-steps", |s| modes_demo(s, Some(Mode::Steps))),
+            ("chat-thread", |s| modes_demo(s, Some(Mode::Thread))),
+            ("chat-voice", |s| modes_demo(s, Some(Mode::Voice))),
+            ("chat-reader", |s| modes_demo(s, None)),
+            ("inbox", |s| {
+                s.snap = demo();
+                s.tab = Tab::Inbox;
+            }),
+            ("inbox-thread", |s| {
+                s.snap = demo();
+                s.tab = Tab::Inbox;
+                s.inbox_open = Some("Mum|WhatsApp".into());
+            }),
+            ("files", |s| {
+                s.snap = demo();
+                s.tab = Tab::Files;
+            }),
             ("setup", |s| {
                 s.snap = setup_demo(
                     "wifi",
@@ -565,6 +714,8 @@ fn main() {
                 }
                 s.tab = match std::env::var("AGENTOS_TAB").as_deref() {
                     Ok("phone") => Tab::Phone,
+                    Ok("inbox") => Tab::Inbox,
+                    Ok("files") => Tab::Files,
                     Ok("store") => Tab::Store,
                     Ok("android") => Tab::Android,
                     Ok("system") => Tab::System,
@@ -595,10 +746,11 @@ mod tests {
     use rune::{Env, Runtime};
 
     fn rt_of(s: State) -> Runtime<State> {
+        // a tall phone, so the tests can tap what is below the fold (the runtime cannot scroll)
         let mut rt = Runtime::new(
             s,
             view,
-            (390.0, 844.0),
+            (390.0, 1600.0),
             Env {
                 system_dark: true,
                 scale: 2.0,
@@ -658,15 +810,25 @@ mod tests {
     #[test]
     fn each_tab_shows_its_title() {
         let mut rt = rt();
+        // the bar: Home, Inbox, Android, You
         for (tab, title) in [
-            ("tab-phone", "title-phone"),
-            ("tab-store", "title-store"),
+            ("tab-inbox", "title-inbox"),
             ("tab-android", "title-android"),
             ("tab-system", "title-system"),
             ("tab-home", "title-home"),
         ] {
             tap(&mut rt, tab);
             assert!(rt.find(title).is_some(), "{title} missing after {tab}");
+        }
+        // and the screens Home opens
+        for (go, title) in [
+            ("go-phone", "title-phone"),
+            ("go-store", "title-store"),
+            ("go-files", "title-files"),
+        ] {
+            tap(&mut rt, "tab-home");
+            tap(&mut rt, go);
+            assert!(rt.find(title).is_some(), "{title} missing after {go}");
         }
     }
 
@@ -818,7 +980,7 @@ mod tests {
     #[test]
     fn the_phone_calls_a_contact_and_answers_a_call() {
         let mut rt = rt();
-        tap(&mut rt, "tab-phone");
+        tap(&mut rt, "go-phone");
         tap(&mut rt, "seg-contacts");
         assert!(rt.find("contact-0").is_some());
         tap(&mut rt, "call-0");
@@ -830,7 +992,7 @@ mod tests {
     #[test]
     fn the_keypad_dials_what_is_typed() {
         let mut rt = rt();
-        tap(&mut rt, "tab-phone");
+        tap(&mut rt, "go-phone");
         tap(&mut rt, "seg-keypad");
         for k in ["kp-9", "kp-8", "kp-1"] {
             tap(&mut rt, k);
@@ -843,7 +1005,7 @@ mod tests {
     #[test]
     fn the_store_searches_by_category_and_installs_and_removes() {
         let mut rt = rt();
-        tap(&mut rt, "tab-store");
+        tap(&mut rt, "go-store");
         tap(&mut rt, "chip-agents");
         assert_eq!(
             rt.state.sent.last().unwrap(),
@@ -854,7 +1016,7 @@ mod tests {
             "zomato: Zomato — order food\nswiggy: Swiggy — order food".into(),
         ));
         tap(&mut rt, "tab-home");
-        tap(&mut rt, "tab-store");
+        tap(&mut rt, "go-store");
         tap(&mut rt, "store-install-0");
         assert_eq!(
             rt.state.sent.last().unwrap(),
@@ -1010,7 +1172,260 @@ mod tests {
         let mut s = State::new();
         chat_demo(&mut s);
         let rt = rt_of(s);
-        assert!(rt.find("answer-1-act-0").is_none(), "no duplicate inside the latest answer");
+        assert!(
+            rt.find("answer-1-act-0").is_none(),
+            "no duplicate inside the latest answer"
+        );
         assert!(rt.find("idea-0").is_some(), "they show above the box");
+    }
+
+    // ---- Part E: the Signal client ----------------------------------------------------------
+
+    #[test]
+    fn every_icon_the_plan_names_resolves() {
+        for name in icons::PLAN_NAMES {
+            assert!(icons::by_name(name).is_some(), "no icon {name}");
+        }
+    }
+
+    #[test]
+    fn a_document_draws_steps_a_table_items_and_options() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Thread));
+        let rt = rt_of(s);
+        for k in [
+            "answer-1-card-0-step-0",
+            "answer-1-card-0-step-2",
+            "answer-1-card-0-table",
+            "answer-1-card-0-item-0",
+            "answer-1-card-0-option-0",
+            "answer-1-card-0-option-1",
+        ] {
+            assert!(rt.find(k).is_some(), "{k} missing");
+        }
+    }
+
+    #[test]
+    fn each_chat_mode_draws_its_view() {
+        for (mode, key) in [
+            (Mode::Poster, "mode-poster-view"),
+            (Mode::Board, "mode-board-view"),
+            (Mode::Steps, "mode-steps-view"),
+            (Mode::Thread, "chat-thread"),
+            (Mode::Voice, "mode-voice-view"),
+            (Mode::Reader, "mode-reader-view"),
+        ] {
+            let mut s = State::new();
+            modes_demo(&mut s, Some(mode));
+            let rt = rt_of(s);
+            assert!(rt.find(key).is_some(), "{key} missing for {mode:?}");
+            assert!(
+                rt.find("chat-modes").is_some(),
+                "the switcher is always there"
+            );
+        }
+    }
+
+    #[test]
+    fn the_newest_answer_picks_the_view_until_the_owner_picks_one() {
+        let mut s = State::new();
+        modes_demo(&mut s, None);
+        let mut rt = rt_of(s);
+        // the newest answer is a document: the reader
+        assert!(rt.find("mode-reader-view").is_some());
+        tap(&mut rt, "mode-board");
+        assert_eq!(rt.state.chat_mode, Some(Mode::Board));
+        assert!(rt.find("mode-board-view").is_some());
+    }
+
+    #[test]
+    fn a_board_tile_opens_its_poster_and_the_poster_pages() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Board));
+        let mut rt = rt_of(s);
+        tap(&mut rt, "tile-0");
+        assert_eq!(rt.state.chat_mode, Some(Mode::Poster));
+        assert_eq!(rt.state.poster_at, Some(0));
+        assert!(rt.find("poster-field").is_some());
+        assert!(
+            rt.find("poster-bar-0").is_some(),
+            "the weather poster draws its chart"
+        );
+        tap(&mut rt, "poster-next");
+        assert_eq!(rt.state.poster_at, Some(1));
+    }
+
+    #[test]
+    fn steps_shows_the_steps_an_answer_carries_and_its_result() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Steps));
+        let rt = rt_of(s);
+        assert!(rt.find("run-1-step-2").is_some());
+        assert!(rt.find("run-1-result").is_some());
+        assert!(
+            rt.find("run-0-step-0").is_some(),
+            "an answer with no steps gets one"
+        );
+    }
+
+    #[test]
+    fn a_waiting_approval_shows_approve_on_its_step() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Steps));
+        s.snap["pin_set"] = json!(false);
+        s.log.push((
+            "call mum".into(),
+            "not done: approval required (id 4)".into(),
+        ));
+        s.asked_after.push(3);
+        let mut rt = rt_of(s);
+        tap(&mut rt, "steps-approve-4");
+        assert_eq!(rt.state.sent.last().unwrap(), "press 4");
+    }
+
+    #[test]
+    fn the_reader_shares_and_replies_to_the_sender() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Reader));
+        let mut rt = rt_of(s);
+        assert!(rt.find("reader-page").is_some());
+        assert!(
+            rt.find("reader-reply").is_some(),
+            "the file came from Mum on WhatsApp"
+        );
+        tap(&mut rt, "reader-share");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "chat share Invoice-0042.pdf to android app WhatsApp"
+        );
+    }
+
+    #[test]
+    fn voice_listens_on_the_orb_and_the_microphone() {
+        let mut s = State::new();
+        modes_demo(&mut s, Some(Mode::Voice));
+        let mut rt = rt_of(s);
+        assert!(
+            rt.find("voice-answer").is_some(),
+            "the newest answer shows as a card"
+        );
+        tap(&mut rt, "voice-mic");
+        assert!(rt.state.voice_on);
+        assert!(
+            rt.find("chat-bar").is_none(),
+            "the box is replaced by the microphone"
+        );
+    }
+
+    #[test]
+    fn the_inbox_merges_sms_and_android_and_turns_replies_on() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-inbox");
+        assert!(rt.find("title-inbox").is_some());
+        assert!(rt.find("inbox-row-0").is_some());
+        assert!(
+            rt.find("inbox-filter-whatsapp").is_some(),
+            "a filter for each app"
+        );
+        // Mum: an SMS and a WhatsApp message with a file, in one conversation
+        tap(&mut rt, "inbox-row-0");
+        assert_eq!(rt.state.inbox_open.as_deref(), Some("Mum|WhatsApp"));
+        tap(&mut rt, "inbox-file-0-0");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "chat read document Invoice-0042.pdf"
+        );
+        // replies to WhatsApp are off: the box is a card that turns them on
+        rt.update(|s, _| s.chat_open = false);
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(rt.find("inbox-reply").is_none());
+        tap(&mut rt, "inbox-turn-on");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "bridge allow com.whatsapp reply on"
+        );
+        // once on, the reply goes through the app's reply action
+        rt.update(|s, _| s.snap["bridge"]["apps"][0]["reply"] = json!(true));
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+        rt.state.reply.text = "On my way".into();
+        tap(&mut rt, "inbox-send");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "chat reply on android to Mum saying On my way"
+        );
+    }
+
+    #[test]
+    fn an_sms_conversation_replies_by_sms() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-inbox");
+        tap(&mut rt, "inbox-filter-sms");
+        tap(&mut rt, "inbox-row-0");
+        let key = rt.state.inbox_open.clone().unwrap();
+        let (who, source) = key.split_once('|').unwrap();
+        assert_eq!(source, "SMS");
+        rt.state.reply.text = "ok".into();
+        tap(&mut rt, "inbox-send");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            &format!("chat text {who} ok")
+        );
+    }
+
+    #[test]
+    fn files_lists_both_kinds_and_opens_one() {
+        let mut rt = rt();
+        tap(&mut rt, "go-files");
+        assert!(rt.find("file-local-0").is_some());
+        assert!(rt.find("file-android-0").is_some());
+        tap(&mut rt, "file-android-0");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "chat read document Invoice-0042.pdf"
+        );
+    }
+
+    #[test]
+    fn a_bridge_switch_sends_its_control_line() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-system");
+        assert!(rt.find("bridge-status").is_some());
+        tap(&mut rt, "bridge-com.whatsapp-reply");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "bridge allow com.whatsapp reply on"
+        );
+        tap(&mut rt, "bridge-com.whatsapp-read");
+        assert_eq!(
+            rt.state.sent.last().unwrap(),
+            "bridge allow com.whatsapp read off"
+        );
+    }
+
+    #[test]
+    fn home_leads_with_the_priority_field() {
+        let rt = rt();
+        assert!(rt.find("priority").is_some());
+        assert!(rt.find("priority-hero").is_some());
+    }
+
+    #[test]
+    fn the_ask_button_opens_the_assistant() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-ask");
+        assert!(rt.state.chat_open);
+    }
+
+    #[test]
+    fn the_android_screen_sets_up_play() {
+        let mut rt = rt();
+        tap(&mut rt, "tab-android");
+        assert!(rt.find("play-card").is_some());
+        tap(&mut rt, "play-setup");
+        assert_eq!(rt.state.sent.last().unwrap(), "chat set up play store");
     }
 }

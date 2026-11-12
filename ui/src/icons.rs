@@ -206,3 +206,206 @@ line_icon!(
     "wand",
     r#"<path d="M4 20 15 9M14 4v3M18.5 5.5l-2 2M20 10h-3"/><path d="M13.5 10.5l-3-3"/>"#
 );
+
+// ---- added for the Signal redesign (plan v3, D.1) ---------------------------------------------
+line_icon!(
+    INBOX,
+    "inbox",
+    r#"<path d="M3.5 13 6 5.5h12l2.5 7.5V19a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 19z"/><path d="M3.5 13h5l1 2h5l1-2h5"/>"#
+);
+line_icon!(
+    GRID,
+    "grid",
+    r#"<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>"#
+);
+line_icon!(
+    POSTER,
+    "poster",
+    r#"<rect x="4" y="3.5" width="16" height="17" rx="3"/><path d="M8 15.5h8M8 9.5h4"/>"#
+);
+line_icon!(
+    STEPS,
+    "steps",
+    r#"<path d="M6 4v16"/><circle cx="6" cy="6.5" r="1.6"/><circle cx="6" cy="12" r="1.6"/><circle cx="6" cy="17.5" r="1.6"/><path d="M10 6.5h9M10 12h7M10 17.5h8"/>"#
+);
+line_icon!(
+    IMAGE,
+    "image",
+    r#"<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m20.5 16-5-5-8.5 8"/>"#
+);
+line_icon!(
+    MIC,
+    "mic",
+    r#"<rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3"/>"#
+);
+line_icon!(
+    DOC,
+    "doc",
+    r#"<path d="M14 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3.5V8h4.5M9 12.5h6M9 16h6"/>"#
+);
+line_icon!(
+    SHEET,
+    "sheet",
+    r#"<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9.5h16M4 14.5h16M10 4v16"/>"#
+);
+line_icon!(
+    SLIDES,
+    "slides",
+    r#"<rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M12 16.5v3M8.5 19.5h7"/>"#
+);
+line_icon!(
+    PDF,
+    "pdf",
+    r#"<path d="M14 3.5H7A1.5 1.5 0 0 0 5.5 5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8z"/><path d="M14 3.5V8h4.5M8.5 15.5h2a1.5 1.5 0 0 0 0-3h-2v5"/>"#
+);
+line_icon!(
+    FOLDER,
+    "folder",
+    r#"<path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2.5h8A1.5 1.5 0 0 1 20.5 9.5V18a1.5 1.5 0 0 1-1.5 1.5H5A1.5 1.5 0 0 1 3.5 18z"/>"#
+);
+line_icon!(
+    SHARE,
+    "share",
+    r#"<circle cx="17.5" cy="6" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="18" r="2.5"/><path d="m8.7 10.8 6.6-3.6M8.7 13.2l6.6 3.6"/>"#
+);
+line_icon!(
+    REPLY,
+    "reply",
+    r#"<path d="M10 6.5 4.5 12l5.5 5.5"/><path d="M4.5 12h9a6 6 0 0 1 6 6v1"/>"#
+);
+line_icon!(
+    ANDROID,
+    "android",
+    r#"<path d="M6 10.5a6 6 0 0 1 12 0V18a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 18z"/><path d="M8 5 6.5 3M16 5l1.5-2M9.5 9.5h.01M14.5 9.5h.01"/>"#
+);
+line_icon!(
+    CLOCK,
+    "clock",
+    r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>"#
+);
+line_icon!(
+    SUN_CLOUD,
+    "sun-cloud",
+    r#"<circle cx="9" cy="8" r="3"/><path d="M9 2.5v1.5M3.5 8H5M4.8 3.8l1 1M13.2 3.8l-1 1"/><path d="M8 19.5h9a3.5 3.5 0 0 0 0-7 5 5 0 0 0-9.5 1.5A2.8 2.8 0 0 0 8 19.5z"/>"#
+);
+line_icon!(
+    WIND,
+    "wind",
+    r#"<path d="M3.5 9h10a2.5 2.5 0 1 0-2.5-2.5"/><path d="M3.5 13h14a2.5 2.5 0 1 1-2.5 2.5"/><path d="M3.5 17h6"/>"#
+);
+line_icon!(
+    COIN,
+    "coin",
+    r#"<circle cx="12" cy="12" r="8.5"/><path d="M9 8.5h4.5a2 2 0 0 1 0 4H9h5a2 2 0 0 1 0 4H9M11 7v1.5M11 16.5V18"/>"#
+);
+line_icon!(
+    ROUTE,
+    "route",
+    r#"<circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/><path d="M8.5 18h6a3 3 0 0 0 0-6h-5a3 3 0 0 1 0-6h6"/>"#
+);
+line_icon!(
+    TABLE,
+    "table",
+    r#"<rect x="3.5" y="5" width="17" height="14" rx="2"/><path d="M3.5 10h17M3.5 14.5h17M9.5 10v9"/>"#
+);
+line_icon!(
+    COMPARE,
+    "compare",
+    r#"<rect x="3.5" y="4.5" width="7" height="15" rx="2"/><rect x="13.5" y="4.5" width="7" height="15" rx="2"/><path d="M6 9h2M16 9h2"/>"#
+);
+
+/// Every icon the redesign names, by name (the prototype draws the same paths).
+pub fn by_name(name: &str) -> Option<&'static Icon> {
+    Some(match name {
+        "home" => &HOME,
+        "inbox" => &INBOX,
+        "spark" => &SPARK,
+        "grid" => &GRID,
+        "sliders" => &SLIDERS,
+        "phone" => &PHONE,
+        "message" => &MESSAGE,
+        "camera" => &CAMERA,
+        "image" => &IMAGE,
+        "bolt" => &BOLT,
+        "wifi" => &WIFI,
+        "lock" => &LOCK,
+        "send" => &SEND,
+        "mic" => &MIC,
+        "back" => &BACK,
+        "next" => &NEXT,
+        "close" => &CLOSE,
+        "check" => &CHECK,
+        "plus" => &PLUS,
+        "search" => &SEARCH,
+        "doc" => &DOC,
+        "sheet" => &SHEET,
+        "slides" => &SLIDES,
+        "pdf" => &PDF,
+        "folder" => &FOLDER,
+        "share" => &SHARE,
+        "reply" => &REPLY,
+        "android" => &ANDROID,
+        "play-store-bag" => &BAG,
+        "pin" => &PIN,
+        "clock" => &CLOCK,
+        "calendar" => &CALENDAR,
+        "sun-cloud" => &SUN_CLOUD,
+        "wind" => &WIND,
+        "coin" => &COIN,
+        "route" => &ROUTE,
+        "steps" => &STEPS,
+        "table" => &TABLE,
+        "compare" => &COMPARE,
+        "bell" => &BELL,
+        "shield" => &SHIELD,
+        "link" => &LINK,
+        "poster" => &POSTER,
+        _ => return None,
+    })
+}
+
+/// The names the plan lists (D.1), checked by a test.
+pub const PLAN_NAMES: &[&str] = &[
+    "home",
+    "inbox",
+    "spark",
+    "grid",
+    "sliders",
+    "phone",
+    "message",
+    "camera",
+    "image",
+    "bolt",
+    "wifi",
+    "lock",
+    "send",
+    "mic",
+    "back",
+    "next",
+    "close",
+    "check",
+    "plus",
+    "search",
+    "doc",
+    "sheet",
+    "slides",
+    "pdf",
+    "folder",
+    "share",
+    "reply",
+    "android",
+    "play-store-bag",
+    "pin",
+    "clock",
+    "calendar",
+    "sun-cloud",
+    "wind",
+    "coin",
+    "route",
+    "steps",
+    "table",
+    "compare",
+    "bell",
+    "shield",
+    "link",
+];

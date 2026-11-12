@@ -6,84 +6,184 @@ use rune::tok::TextStyle;
 use rune::{Color, El, Icon, col, el, icon, row, text};
 use serde_json::Value;
 
-pub const BG: Color = Color {
-    r: 0.00304,
-    g: 0.00335,
-    b: 0.00478,
+// ---- Signal tokens (plan v3, D.1). Rune colours are linear: these are the sRGB values converted.
+// Ground: ink-0 page, ink-1 raised, ink-2 cards and fields, ink-3 pressed and tracks.
+pub const INK0: Color = Color {
+    r: 0.00212,
+    g: 0.00243,
+    b: 0.00368,
     a: 1.0,
-};
-pub const SURFACE: Color = Color {
+}; // #07080C
+pub const INK1: Color = Color {
+    r: 0.00478,
+    g: 0.00561,
+    b: 0.00857,
+    a: 1.0,
+}; // #0F1117
+pub const INK2: Color = Color {
+    r: 0.00857,
+    g: 0.01033,
+    b: 0.01600,
+    a: 1.0,
+}; // #171A22
+pub const INK3: Color = Color {
+    r: 0.01600,
+    g: 0.01938,
+    b: 0.03310,
+    a: 1.0,
+}; // #222633
+pub const TEXT1: Color = Color {
+    r: 0.91310,
+    g: 0.92158,
+    b: 0.93869,
+    a: 1.0,
+}; // #F5F6F8
+pub const TEXT2: Color = Color {
+    r: 0.37124,
+    g: 0.40724,
+    b: 0.47932,
+    a: 1.0,
+}; // #A4ABB8
+pub const TEXT3: Color = Color {
+    r: 0.17144,
+    g: 0.19807,
+    b: 0.26225,
+    a: 1.0,
+}; // #737B8C, decoration
+// Signal colours: a field (full block), and the colour of text on it.
+pub const SKY: Color = Color {
+    r: 0.11193,
+    g: 0.57758,
+    b: 1.00000,
+    a: 1.0,
+}; // #5EC8FF
+pub const SKY_ON: Color = Color {
+    r: 0.00121,
+    g: 0.01444,
+    b: 0.02843,
+    a: 1.0,
+}; // #04202F
+pub const MINT: Color = Color {
+    r: 0.07819,
+    g: 0.76815,
+    b: 0.35640,
+    a: 1.0,
+}; // #4FE3A1
+pub const MINT_ON: Color = Color {
+    r: 0.00121,
+    g: 0.02416,
+    b: 0.01096,
+    a: 1.0,
+}; // #042B1B
+pub const SUN: Color = Color {
+    r: 1.00000,
+    g: 0.58408,
+    b: 0.06848,
+    a: 1.0,
+}; // #FFC94A
+pub const SUN_ON: Color = Color {
+    r: 0.02732,
+    g: 0.01521,
+    b: 0.00000,
+    a: 1.0,
+}; // #2E2100
+pub const CORAL: Color = Color {
+    r: 1.00000,
+    g: 0.19462,
+    b: 0.13287,
+    a: 1.0,
+}; // #FF7A66
+pub const CORAL_ON: Color = Color {
+    r: 0.03310,
+    g: 0.00335,
+    b: 0.00152,
+    a: 1.0,
+}; // #330B05
+pub const VIOLET: Color = Color {
+    r: 0.33245,
+    g: 0.26225,
+    b: 1.00000,
+    a: 1.0,
+}; // #9C8CFF
+pub const VIOLET_ON: Color = Color {
+    r: 0.00750,
+    g: 0.00335,
+    b: 0.04667,
+    a: 1.0,
+}; // #150B3D
+pub const LIME: Color = Color {
+    r: 0.56471,
+    g: 0.88792,
+    b: 0.07619,
+    a: 1.0,
+}; // #C6F24E
+pub const LIME_ON: Color = Color {
+    r: 0.01298,
+    g: 0.02315,
+    b: 0.00000,
+    a: 1.0,
+}; // #1E2A00
+/// filled buttons: white text on it reads at 4.9:1
+pub const VIOLET_STRONG: Color = Color {
+    r: 0.14703,
+    g: 0.10702,
+    b: 0.87137,
+    a: 1.0,
+}; // #6B5CF0
+// Paper: the document viewer and Android apps.
+pub const PAPER0: Color = Color {
+    r: 0.92158,
+    g: 0.93011,
+    b: 0.95597,
+    a: 1.0,
+}; // #F6F7FA
+pub const PAPER1: Color = Color {
+    r: 1.00000,
+    g: 1.00000,
+    b: 1.00000,
+    a: 1.0,
+}; // #FFFFFF
+pub const PAPER2: Color = Color {
+    r: 0.83880,
+    g: 0.85499,
+    b: 0.89627,
+    a: 1.0,
+}; // #ECEEF3
+pub const INK_TEXT: Color = Color {
     r: 0.00700,
     g: 0.00802,
     b: 0.01161,
     a: 1.0,
-};
-pub const SURFACE2: Color = Color {
-    r: 0.01161,
-    g: 0.01370,
-    b: 0.02029,
+}; // #14161C
+pub const INK_TEXT2: Color = Color {
+    r: 0.06848,
+    g: 0.08228,
+    b: 0.11697,
     a: 1.0,
-};
-pub const SURFACE3: Color = Color {
-    r: 0.02122,
-    g: 0.02519,
-    b: 0.03820,
-    a: 1.0,
-};
+}; // #4A5160
+
+// The names the screens use, mapped onto the tokens.
+pub const BG: Color = INK0;
+pub const SURFACE: Color = INK1;
+pub const SURFACE2: Color = INK2;
+pub const SURFACE3: Color = INK3;
 pub const HAIRLINE: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
-    a: 0.07,
+    a: 0.08,
 };
-pub const TEXT: Color = Color {
-    r: 0.89627,
-    g: 0.90466,
-    b: 0.92158,
-    a: 1.0,
-};
-pub const MUTED: Color = Color {
-    r: 0.33245,
-    g: 0.36625,
-    b: 0.42869,
-    a: 1.0,
-};
-pub const DIM: Color = Color {
-    r: 0.14703,
-    g: 0.16827,
-    b: 0.21586,
-    a: 1.0,
-};
-pub const ACCENT: Color = Color {
-    r: 0.20156,
-    g: 0.22697,
-    b: 1.00000,
-    a: 1.0,
-};
-pub const ACCENT2: Color = Color {
-    r: 0.01600,
-    g: 0.65141,
-    b: 0.85499,
-    a: 1.0,
-};
-pub const GOOD: Color = Color {
-    r: 0.03434,
-    g: 0.65141,
-    b: 0.31855,
-    a: 1.0,
-};
-pub const WARN: Color = Color {
-    r: 0.96469,
-    g: 0.52100,
-    b: 0.01764,
-    a: 1.0,
-};
-pub const BAD: Color = Color {
-    r: 0.93869,
-    g: 0.16513,
-    b: 0.16513,
-    a: 1.0,
-};
+pub const TEXT: Color = TEXT1;
+pub const MUTED: Color = TEXT2;
+pub const DIM: Color = TEXT3;
+/// icons and text in the assistant's colour
+pub const ACCENT: Color = VIOLET;
+/// a filled button with white text
+pub const ACCENT_FILL: Color = VIOLET_STRONG;
+pub const ACCENT2: Color = SKY;
+pub const GOOD: Color = MINT;
+pub const WARN: Color = SUN;
+pub const BAD: Color = CORAL;
 pub const SCRIM: Color = Color {
     r: 0.0,
     g: 0.0,
@@ -91,14 +191,35 @@ pub const SCRIM: Color = Color {
     a: 0.6,
 };
 
-pub const DISPLAY: TextStyle = TextStyle::new(32.0, 700.0);
-pub const TITLE: TextStyle = TextStyle::new(22.0, 680.0);
+/// the one big number or word of an answer
+pub const HERO: TextStyle = TextStyle::new(64.0, 700.0);
+pub const DISPLAY: TextStyle = TextStyle::new(34.0, 700.0);
+pub const TITLE: TextStyle = TextStyle::new(22.0, 600.0);
 pub const HEADLINE: TextStyle = TextStyle::new(17.0, 620.0);
-pub const BODY: TextStyle = TextStyle::new(15.0, 450.0);
+pub const BODY: TextStyle = TextStyle::new(16.0, 400.0);
 pub const CALLOUT: TextStyle = TextStyle::new(14.0, 520.0);
 pub const CAPTION: TextStyle = TextStyle::new(12.5, 500.0);
 pub const MICRO: TextStyle = TextStyle::new(11.5, 650.0);
 pub const KEY: TextStyle = TextStyle::new(26.0, 450.0);
+
+/// a small uppercase label above a group
+pub const LABEL: TextStyle = TextStyle {
+    tracking: 0.6,
+    ..TextStyle::new(13.0, 600.0)
+};
+
+/// A kind of answer, or an accent name, to its signal colours: (field, text on it, tint).
+pub fn signal(kind: &str) -> (Color, Color, Color) {
+    let (field, on) = match kind {
+        "sky" | "weather" | "air_travel" | "travel" => (SKY, SKY_ON),
+        "mint" | "air" | "done" | "health" | "calls" | "battery" => (MINT, MINT_ON),
+        "sun" | "money" | "waiting" | "alert" => (SUN, SUN_ON),
+        "coral" | "inbox" | "thread" | "people" | "messages" | "high" => (CORAL, CORAL_ON),
+        "lime" | "files" | "document" | "places" => (LIME, LIME_ON),
+        _ => (VIOLET, VIOLET_ON),
+    };
+    (field, on, field.alpha(0.16))
+}
 
 pub fn t(s: impl Into<String>, style: TextStyle, c: Color) -> El {
     text(s.into()).font(style).color(c)
@@ -183,7 +304,7 @@ pub fn primary(key: &str, label: &str) -> El {
         .h(52.0)
         .center()
         .radius(26.0)
-        .linear_gradient(90.0, [(0.0, ACCENT), (1.0, ACCENT.mix(ACCENT2, 0.35))])
+        .fill(ACCENT_FILL)
         .role("button")
         .label(label)
         .focusable(true)
@@ -380,46 +501,89 @@ pub fn status_bar(st: &Value) -> El {
         .child(right)
 }
 
-/// The tab bar: five icons with labels, floating above the bottom edge. A dot on Home when
-/// something waits for the human.
+/// The floating bar: Home, Inbox, a raised Ask button, Android and You. A dot on Home when
+/// something waits for the human, and one on Inbox when messages are unread.
+#[allow(dead_code)]
 pub fn tab_bar(active: crate::Tab, waiting: usize) -> El {
+    tab_bar_with(active, waiting, 0)
+}
+
+pub fn tab_bar_with(active: crate::Tab, waiting: usize, unread: usize) -> El {
     use crate::Tab;
+    let clear = Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.0,
+    };
     let mut bar = row()
         .key("tabs")
-        .h(66.0)
+        .h(68.0)
         .px(8.0)
-        .radius(33.0)
-        .fill(SURFACE2)
+        .radius(34.0)
+        .fill(INK1.alpha(0.94))
         .border(1.0, HAIRLINE)
         .shadow(
-            10.0,
-            30.0,
+            16.0,
+            40.0,
             Color {
                 r: 0.0,
                 g: 0.0,
                 b: 0.0,
-                a: 0.45,
+                a: 0.5,
             },
         )
         .center_y();
-    for (tab, label, k, ic) in [
-        (Tab::Home, "Home", "tab-home", &icons::HOME),
-        (Tab::Phone, "Phone", "tab-phone", &icons::PHONE),
-        (Tab::Store, "Store", "tab-store", &icons::BAG),
-        (Tab::Android, "Apps", "tab-android", &icons::APPS),
-        (Tab::System, "Settings", "tab-system", &icons::SLIDERS),
-    ] {
+    let items: [(Option<Tab>, &str, &str, &'static Icon); 5] = [
+        (Some(Tab::Home), "Home", "tab-home", &icons::HOME),
+        (Some(Tab::Inbox), "Inbox", "tab-inbox", &icons::INBOX),
+        (None, "Ask", "tab-ask", &icons::SPARK),
+        (
+            Some(Tab::Android),
+            "Android",
+            "tab-android",
+            &icons::ANDROID,
+        ),
+        (Some(Tab::System), "You", "tab-system", &icons::USER),
+    ];
+    for (tab, label, k, ic) in items {
+        let Some(tab) = tab else {
+            // the Ask button sits above the bar: the assistant is the centre of the phone
+            bar = bar.child(
+                col().grow(1.0).h(56.0).items_center().child(
+                    row()
+                        .key(k)
+                        .size(58.0, 58.0)
+                        .center()
+                        .radius(29.0)
+                        .fill(ACCENT_FILL)
+                        .shadow(8.0, 22.0, ACCENT_FILL.alpha(0.45))
+                        .offset(0.0, -14.0)
+                        .role("button")
+                        .label("Ask")
+                        .focusable(true)
+                        .press_scale(0.94)
+                        .child(icon(ic, 25.0).color(Color::WHITE))
+                        .on_press(|s: &mut State| {
+                            s.chat_open = true;
+                            s.confirm_restart = false;
+                        }),
+                ),
+            );
+            continue;
+        };
         let on = active == tab;
-        let c = if on { ACCENT } else { DIM };
+        let c = if on { VIOLET } else { TEXT2 };
         let mut mark = row()
             .size(24.0, 24.0)
             .center()
             .child(icon(ic, 22.0).color(c));
-        if tab == Tab::Home && waiting > 0 {
+        let dot = (tab == Tab::Home && waiting > 0) || (tab == Tab::Inbox && unread > 0);
+        if dot {
             mark = mark.child(
                 el().size(8.0, 8.0)
                     .radius(4.0)
-                    .fill(BAD)
+                    .fill(if tab == Tab::Home { SUN } else { CORAL })
                     .absolute(17.0, -1.0),
             );
         }
@@ -427,20 +591,11 @@ pub fn tab_bar(active: crate::Tab, waiting: usize) -> El {
             col()
                 .key(k)
                 .grow(1.0)
-                .h(56.0)
+                .h(54.0)
                 .center()
                 .gap(3.0)
-                .radius(24.0)
-                .fill(if on {
-                    ACCENT.alpha(0.12)
-                } else {
-                    Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 0.0,
-                    }
-                })
+                .radius(27.0)
+                .fill(if on { VIOLET.alpha(0.16) } else { clear })
                 .role("tab")
                 .label(label)
                 .focusable(true)
@@ -449,15 +604,156 @@ pub fn tab_bar(active: crate::Tab, waiting: usize) -> El {
                 .child(t(
                     label,
                     TextStyle::new(11.0, 600.0),
-                    if on { TEXT } else { DIM },
+                    if on { TEXT } else { TEXT2 },
                 ))
                 .on_press(move |s: &mut State| {
                     s.tab = tab;
                     s.confirm_restart = false;
+                    s.inbox_open = None;
                 }),
         );
     }
     bar
+}
+
+// ---- Signal components (plan v3, D.2) -----------------------------------------------------
+
+/// A Field: a full-width block in a signal colour, the one thing an answer is about.
+pub fn signal_field(key: &str, kind: &str, label: &str, hero: &str, line: &str) -> El {
+    let (field, on, _) = signal(kind);
+    let mut c = col()
+        .key(key)
+        .w_full()
+        .min_h(200.0)
+        .padding(22.0)
+        .gap(10.0)
+        .radius(32.0)
+        .fill(field)
+        .child(t(label.to_uppercase(), LABEL, on.alpha(0.85)));
+    if !hero.is_empty() {
+        c = c.child(t(hero, TextStyle::new(56.0, 700.0), on).key(format!("{key}-hero")));
+    }
+    if !line.is_empty() {
+        c = c.child(t(line, BODY, on.alpha(0.92)).w_full().wrap());
+    }
+    c
+}
+
+/// A button: primary (strong violet, white) or secondary (ink-3).
+pub fn action(key: &str, label: &str, primary: bool) -> El {
+    row()
+        .key(key)
+        .h(48.0)
+        .px(20.0)
+        .center()
+        .radius(24.0)
+        .fill(if primary { ACCENT_FILL } else { INK3 })
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .press_scale(0.97)
+        .child(t(label, CALLOUT, if primary { Color::WHITE } else { TEXT }))
+}
+
+/// A button that sits on a Field: a dark wash, text in the field's own ink.
+pub fn field_action(key: &str, label: &str, on: Color) -> El {
+    row()
+        .key(key)
+        .h(38.0)
+        .px(16.0)
+        .center()
+        .radius(19.0)
+        .fill(Color {
+            r: 0.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.16,
+        })
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .press_scale(0.96)
+        .child(t(label, CALLOUT, on))
+}
+
+/// Where something came from: SMS (mint), an Android app (coral, with the Android mark), a
+/// connector (violet).
+pub fn source_tag(source: &str) -> El {
+    let (c, android) = match source {
+        "" => (TEXT2, false),
+        "SMS" => (MINT, false),
+        "Connector" | "Agentic OS" => (VIOLET, false),
+        _ => (CORAL, true),
+    };
+    let mut r = row()
+        .h(20.0)
+        .px(7.0)
+        .gap(4.0)
+        .center_y()
+        .self_start()
+        .radius(10.0)
+        .fill(c.alpha(0.16));
+    if android {
+        r = r.child(icon(&icons::ANDROID, 11.0).color(c));
+    }
+    r.child(t(source, TextStyle::new(10.5, 650.0), c))
+}
+
+/// A tier: Low (mint), Medium (sun), High with the PIN (coral).
+#[allow(dead_code)] // the plan names it; screens show tiers once the state carries them
+pub fn tier_tag(tier: &str) -> El {
+    let (label, c) = match tier.to_lowercase().as_str() {
+        "low" => ("Low", MINT),
+        "medium" => ("Medium", SUN),
+        _ => ("High · PIN", CORAL),
+    };
+    row()
+        .h(22.0)
+        .px(9.0)
+        .center()
+        .radius(11.0)
+        .fill(c.alpha(0.16))
+        .child(t(label, TextStyle::new(11.0, 650.0), c))
+}
+
+/// One step of the agent's work: a status dot, what it did, the result, and its tier.
+pub fn step_row(key: &str, label: &str, detail: &str, state: &str) -> El {
+    let (c, word) = match state {
+        "done" => (MINT, "Done"),
+        "wait" => (SUN, "Waiting"),
+        "fail" => (CORAL, "Failed"),
+        _ => (VIOLET, "Running"),
+    };
+    row()
+        .key(key)
+        .w_full()
+        .gap(12.0)
+        .items_start()
+        .child(
+            el().size(14.0, 14.0)
+                .radius(7.0)
+                .fill(c)
+                .border(4.0, c.alpha(0.25))
+                .mt(3.0),
+        )
+        .child(
+            col()
+                .grow(1.0)
+                .shrink()
+                .min_w(0.0)
+                .gap(2.0)
+                .child(t(label, CALLOUT, TEXT).w_full().wrap())
+                .child(t(detail, CAPTION, TEXT2).w_full().wrap()),
+        )
+        .child(
+            row()
+                .h(22.0)
+                .px(9.0)
+                .center()
+                .radius(11.0)
+                .fill(c.alpha(0.16))
+                .child(t(word, TextStyle::new(11.0, 650.0), c)),
+        )
 }
 
 /// A large title with an optional line under it: the top of every tab.
