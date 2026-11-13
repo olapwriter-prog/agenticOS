@@ -350,3 +350,18 @@ fn an_event_rewrites_only_its_own_day_and_the_book_reopens_whole() {
     assert_eq!(again.book.outbox.len(), 1, "the sent-log comes back with its day");
     assert_eq!(again.order("W-NEW").unwrap().invoice_no, again.book.orders.last().unwrap().invoice_no);
 }
+
+#[test]
+fn an_unclear_typed_order_is_answered_with_the_dishes_it_could_be() {
+    let mut b = shop("unclear");
+    let c = agentos_business::CustomerIn { name: "Anil S".into(), phone: "+91 90000 22222".into(), address: "Door 9-1".into() };
+    let e = b.ingest_text(c, "Akkayyapalem", 2.5, "upi", "2 fried rice").unwrap_err();
+    assert!(e.contains("which one"), "{e}");
+    let (to, m) = b.wa.sent().last().unwrap().clone();
+    assert_eq!(to, "+91 90000 22222");
+    match m {
+        Msg::Text(t) => assert!(t.contains("Veg Fried Rice") && t.contains("Chicken Fried Rice") && t.contains("Mixed Fried Rice"), "{t}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(b.book.orders.is_empty() && b.book.outbox.last().unwrap().to == "An*** ••••••22");
+}

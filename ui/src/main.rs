@@ -39,6 +39,31 @@ fn ctl(line: &str) -> Result<String, String> {
     Ok(out.trim_end_matches('\n').replace('\u{1}', "\n"))
 }
 
+/// The phone's state, with the business it runs (if any) alongside. Everything in the
+/// business part is already masked by agentd: no customer's name, number or address.
+fn fetch_state() -> Result<Value, String> {
+    let mut v: Value = ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))?;
+    if let Ok(b) = ctl("biz state").and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string())) {
+        v["business"] = b;
+    }
+    Ok(v)
+}
+
+/// Paise as rupees, grouped the Indian way: 1234567 -> "₹12,345".
+fn inr(paise: &Value) -> String {
+    let r = (paise.as_f64().unwrap_or(0.0) / 100.0).round() as i64;
+    let s = r.abs().to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        let left = s.len() - i;
+        if i > 0 && (left == 3 || (left > 3 && (left - 3) % 2 == 0)) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{}₹{out}", if r < 0 { "-" } else { "" })
+}
+
 enum Event {
     State(Result<Value, String>),
     Reply { asked: String, answer: String },
@@ -101,7 +126,7 @@ fn setup(s: &mut State, wake: rune::Waker) {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(_) => return,
             }
-            let st = ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()));
+            let st = fetch_state();
             if ev_tx.send(Event::State(st)).is_err() {
                 return;
             }
@@ -271,8 +296,13 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
                             .shrink()
                             .min_w(0.0)
                             .gap(2.0)
-                            .child(line(str_of(&p["tool"]).replace('_', " "), t).truncate())
-                            .child(quiet(args.join("  ·  "), t).truncate()),
+                            .child(line(str_of(&p["tool"]).replace("biz_", "").replace('_', " "), t).truncate())
+                            .child(quiet(args.join("  ·  "), t).truncate())
+                            .child(if p["why"].is_string() {
+                                quiet(format!("The phone proposes this: {}", str_of(&p["why"])), t).w_full().wrap()
+                            } else {
+                                el()
+                            }),
                     )
                     .child(
                         button(format!("decline-{id}"), "Decline", t.control_off, t.text)
@@ -285,6 +315,72 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
             );
         }
         cards = cards.child(card("waiting", "Waiting for you", list, t));
+    }
+
+    // the business this phone runs, if it runs one: today at a glance
+    let biz = &st["business"];
+    if biz.is_object() {
+        let tot = &biz["totals"];
+        let mut body = col().gap(6.0).w_full();
+        body = body.child(quiet(format!("{} {}  ·  {}", str_of(&biz["weekday"]), str_of(&biz["day"]), str_of(&biz["now"]).get(11..).unwrap_or("")), t));
+        body = body.child(
+            text(format!("{} orders  ·  {} delivered", tot["orders"], inr(&tot["sales"])))
+                .font(H1)
+                .color(t.text),
+        );
+        body = body.child(quiet(
+            format!("{} reaches you  ·  {} delivered, {} cancelled, {} open", inr(&tot["net"]), tot["delivered"], tot["cancelled"], tot["open"]),
+            t,
+        ));
+        let channels = biz["channels"].as_array().cloned().unwrap_or_default();
+        let top = channels.iter().map(|c| c["orders"].as_f64().unwrap_or(0.0)).fold(1.0, f64::max);
+        for (i, c) in channels.iter().enumerate() {
+            let n = c["orders"].as_f64().unwrap_or(0.0);
+            let keep = c["net"].as_f64().unwrap_or(0.0) * 100.0 / c["sales"].as_f64().unwrap_or(0.0).max(1.0);
+            body = body.child(
+                row()
+                    .key(format!("channel-{i}"))
+                    .w_full()
+                    .center_y()
+                    .gap(8.0)
+                    .child(line(str_of(&c["name"]), t).w(78.0))
+                    .child(el().size((120.0 * n / top) as f32, 8.0).radius(4.0).fill(tok::accent(i, true)))
+                    .child(line(format!("{n:.0}"), t))
+                    .child(el().grow(1.0))
+                    .child(quiet(if c["sales"].as_f64().unwrap_or(0.0) > 0.0 { format!("keeps ₹{keep:.0} of ₹100") } else { String::new() }, t)),
+            );
+        }
+        let sent = &biz["sent_by_kind"];
+        if sent.as_object().is_some_and(|m| !m.is_empty()) {
+            body = body.child(quiet(
+                format!(
+                    "Sent today: {} bills  ·  {} rider positions  ·  {} questions to customers",
+                    sent["bill"].as_u64().unwrap_or(0),
+                    sent["rider location"].as_u64().unwrap_or(0),
+                    sent["question"].as_u64().unwrap_or(0)
+                ),
+                t,
+            ));
+        }
+        for r in biz["riders"].as_array().cloned().unwrap_or_default() {
+            if r["deliveries"].as_u64().unwrap_or(0) > 0 {
+                body = body.child(quiet(
+                    format!("{}: {} drops  ·  due {}  ·  holds {} of customers' cash", str_of(&r["name"]), r["deliveries"], inr(&r["due"]), inr(&r["cash_held"])),
+                    t,
+                ));
+            }
+        }
+        for (i, issue) in biz["issues"].as_array().cloned().unwrap_or_default().iter().take(3).enumerate() {
+            body = body.child(
+                text(format!("! {}", str_of(issue).split(": say").next().unwrap_or_default()))
+                    .font(type_::LABEL)
+                    .color(BAD)
+                    .key(format!("issue-{i}"))
+                    .w_full()
+                    .wrap(),
+            );
+        }
+        cards = cards.child(card("business", &str_of(&biz["business"]), body, t));
     }
 
     // what the agent did lately, and how it went
@@ -336,12 +432,18 @@ fn view(s: &State, _: &mut Cx<State>) -> El {
     for f in st["functions"].as_array().cloned().unwrap_or_default() {
         fns = fns.child(line(str_of(&f), t));
     }
-    cards = cards.child(card("functions", "Functions", fns, t));
+    if !st["functions"].as_array().map_or(true, |f| f.is_empty() || f.iter().all(|x| str_of(x).contains("no functions"))) {
+        cards = cards.child(card("functions", "Functions", fns, t));
+    }
     cards = cards.child(quiet(str_of(&st["learning"]), t).w_full().wrap());
 
     // chat
     let mut chat = col().key("chat-log").w_full().gap(6.0);
-    for (i, (q, a)) in s.log.iter().rev().take(3).rev().enumerate() {
+    let shown = if biz.is_object() { 2 } else { 3 };
+    for (i, (q, a)) in s.log.iter().rev().take(shown).rev().enumerate() {
+        // a long answer shows its first lines; the rest is a scroll away on a real phone
+        let lines: Vec<&str> = a.lines().collect();
+        let a = if lines.len() > 5 { format!("{}\n…", lines[..5].join("\n")) } else { a.clone() };
         chat = chat
             .child(
                 row()
@@ -446,10 +548,17 @@ fn main() {
                 ));
             }),
             ("live", |s| {
-                match ctl("state").and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
-                {
+                match fetch_state() {
                     Ok(v) => s.snap = v,
                     Err(e) => s.error = Some(e),
+                }
+                // for a headless render: what was said and answered, as [[asked, answer], ...]
+                if let Some(pairs) = std::env::var("AGENTOS_UI_CHAT")
+                    .ok()
+                    .and_then(|f| std::fs::read_to_string(f).ok())
+                    .and_then(|t| serde_json::from_str::<Vec<(String, String)>>(&t).ok())
+                {
+                    s.log = pairs;
                 }
             }),
         ],

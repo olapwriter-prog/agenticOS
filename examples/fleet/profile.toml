@@ -1,0 +1,370 @@
+# A made-up taxi fleet in Bengaluru: 15 cars on Uber and Namma Yatri, nine CNG hatchbacks under
+# ₹7 lakh and six electric cars under ₹12 lakh. Every figure here is an assumption to replace
+# with the real one: prices, instalments, km per kg and per kWh, energy prices, the platforms'
+# terms, the drivers' share. The people are invented.
+name = "Namma Wheels Fleet"
+city = "Bengaluru"
+depot_chargers = 4
+
+[[cars]]
+id = "C01"
+model = "WagonR CNG"
+fuel = "cng"
+price = 660000
+emi_month = 12500
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 24.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 41200
+last_service_km = 36000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C02"
+model = "Tiago CNG"
+fuel = "cng"
+price = 690000
+emi_month = 13100
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 22.0
+capacity = 9.0
+service_every_km = 10000
+odometer = 39100
+last_service_km = 30500
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C03"
+model = "Celerio CNG"
+fuel = "cng"
+price = 685000
+emi_month = 13000
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 26.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 52800
+last_service_km = 45500
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C04"
+model = "WagonR CNG"
+fuel = "cng"
+price = 660000
+emi_month = 12500
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 24.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 36400
+last_service_km = 30100
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C05"
+model = "Tiago CNG"
+fuel = "cng"
+price = 690000
+emi_month = 13100
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 22.0
+capacity = 9.0
+service_every_km = 10000
+odometer = 47900
+last_service_km = 41000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C06"
+model = "Celerio CNG"
+fuel = "cng"
+price = 685000
+emi_month = 13000
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 26.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 39150
+last_service_km = 29300
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C07"
+model = "WagonR CNG"
+fuel = "cng"
+price = 660000
+emi_month = 12500
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 24.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 58300
+last_service_km = 50200
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C08"
+model = "Tiago CNG"
+fuel = "cng"
+price = 690000
+emi_month = 13100
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 22.0
+capacity = 9.0
+service_every_km = 10000
+odometer = 44700
+last_service_km = 38000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C09"
+model = "Celerio CNG"
+fuel = "cng"
+price = 685000
+emi_month = 13000
+fixed_year = 42000
+maint_per_km = 1.3
+efficiency = 26.0
+capacity = 8.5
+service_every_km = 10000
+odometer = 33900
+last_service_km = 26500
+insurance_until = "2026-11-20"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C10"
+model = "Tiago EV 24 kWh"
+fuel = "ev"
+price = 1020000
+emi_month = 19500
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 8.0
+capacity = 24.0
+service_every_km = 15000
+odometer = 21400
+last_service_km = 9000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C11"
+model = "Tigor EV 26 kWh"
+fuel = "ev"
+price = 1190000
+emi_month = 22600
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 7.8
+capacity = 26.0
+service_every_km = 15000
+odometer = 26800
+last_service_km = 14500
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C12"
+model = "Tiago EV 24 kWh"
+fuel = "ev"
+price = 1020000
+emi_month = 19500
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 8.0
+capacity = 24.0
+service_every_km = 15000
+odometer = 31200
+last_service_km = 19000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C13"
+model = "Tigor EV 26 kWh"
+fuel = "ev"
+price = 1190000
+emi_month = 22600
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 7.8
+capacity = 26.0
+service_every_km = 15000
+odometer = 28550
+last_service_km = 13700
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C14"
+model = "Tiago EV 24 kWh"
+fuel = "ev"
+price = 1020000
+emi_month = 19500
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 8.0
+capacity = 24.0
+service_every_km = 15000
+odometer = 19800
+last_service_km = 7500
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+[[cars]]
+id = "C15"
+model = "Tigor EV 26 kWh"
+fuel = "ev"
+price = 1190000
+emi_month = 22600
+fixed_year = 38000
+maint_per_km = 0.6
+efficiency = 7.8
+capacity = 26.0
+service_every_km = 15000
+odometer = 24300
+last_service_km = 12000
+insurance_until = "2027-06-30"
+permit_until = "2028-03-31"
+
+[[drivers]]
+id = "D01"
+name = "Manjunath"
+phone = "+91 90000 30001"
+car = "C01"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D02"
+name = "Ravi Kumar"
+phone = "+91 90000 30002"
+car = "C02"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D03"
+name = "Suresh"
+phone = "+91 90000 30003"
+car = "C03"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D04"
+name = "Nagaraj"
+phone = "+91 90000 30004"
+car = "C04"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D05"
+name = "Prakash"
+phone = "+91 90000 30005"
+car = "C05"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D06"
+name = "Mahesh"
+phone = "+91 90000 30006"
+car = "C06"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D07"
+name = "Venkatesh"
+phone = "+91 90000 30007"
+car = "C07"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D08"
+name = "Lokesh"
+phone = "+91 90000 30008"
+car = "C08"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D09"
+name = "Shivu"
+phone = "+91 90000 30009"
+car = "C09"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D10"
+name = "Basavaraj"
+phone = "+91 90000 30010"
+car = "C10"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D11"
+name = "Girish"
+phone = "+91 90000 30011"
+car = "C11"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D12"
+name = "Anand"
+phone = "+91 90000 30012"
+car = "C12"
+licence_until = "2026-11-10"
+[[drivers]]
+id = "D13"
+name = "Imran"
+phone = "+91 90000 30013"
+car = "C13"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D14"
+name = "Kiran"
+phone = "+91 90000 30014"
+car = "C14"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D15"
+name = "Srinivas"
+phone = "+91 90000 30015"
+car = "C15"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D16"
+name = "Chandru"
+phone = "+91 90000 30016"
+car = "C01"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D17"
+name = "Yogesh"
+phone = "+91 90000 30017"
+car = "C08"
+licence_until = "2029-12-31"
+[[drivers]]
+id = "D18"
+name = "Naveen"
+phone = "+91 90000 30018"
+car = "C15"
+licence_until = "2029-12-31"
+
+# Uber takes a commission (with GST on it) and pays the fleet weekly for online fares.
+[[platforms]]
+name = "Uber"
+commission_pct = 25
+commission_gst_pct = 18
+tds_pct = 0.1
+settles = true
+# Namma Yatri takes no commission: the rider pays the driver or the fleet's QR, and the
+# platform charges a flat fee per driver per day.
+[[platforms]]
+name = "Namma Yatri"
+daily_fee = 25
+settles = false
+
+[energy]
+cng_per_kg = 89
+depot_per_kwh = 9
+public_per_kwh = 21
+
+[rules]
+driver_share_pct = 35
+max_shift_hours = 12
+cash_tolerance = 100
+personal_km_tolerance = 10
+fuel_floor_pct = 80
+cancel_pct = 20
+papers_days = 15

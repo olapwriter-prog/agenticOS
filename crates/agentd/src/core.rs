@@ -79,12 +79,20 @@ pub struct Core {
     business: Option<std::rc::Rc<std::cell::RefCell<Business>>>,
     /// The retail store whose books this phone keeps, if a profile is configured.
     store: Option<std::rc::Rc<std::cell::RefCell<agentos_retail::books::Books>>>,
+    /// The taxi fleet this phone keeps the book of, if a profile is configured.
+    fleet: Option<std::rc::Rc<std::cell::RefCell<agentos_fleet::Fleet>>>,
+    /// The simulator's generator of fleet days (kept between `fleet sim` calls).
+    fleet_gen: Option<agentos_fleet::gen::Gen>,
     /// The simulator's generator of store days (kept between `shop sim` calls).
     store_gen: Option<agentos_retail::gen::Gen>,
     /// Answers to likely read-only requests, prepared ahead (crate::predict).
     predictor: Predictor,
     /// The book revision the last round of preparing was done for.
     prepared_rev: u64,
+    /// Actions the phone queued itself to fix what it found: approval id -> why.
+    proposals: std::collections::HashMap<u64, String>,
+    /// What was already proposed (action and day), so a declined fix is not asked again.
+    proposed: std::collections::BTreeSet<String>,
     metrics: Metrics,
     /// How the request in hand was understood: intent, shortcut, classifier, model...
     last_source: String,
@@ -232,6 +240,17 @@ impl Core {
         if let Some(s) = &store {
             connectors.push(Box::new(agentos_retail::tools::RetailTools(s.clone())));
         }
+        let fleet = match &cfg.fleet_profile {
+            Some(path) => {
+                let profile = agentos_fleet::Profile::load(path)?;
+                let f = agentos_fleet::Fleet::open(profile, dir.join("fleet"), &secrets.business_key)?;
+                Some(std::rc::Rc::new(std::cell::RefCell::new(f)))
+            }
+            None => None,
+        };
+        if let Some(f) = &fleet {
+            connectors.push(Box::new(agentos_fleet::tools::FleetTools(f.clone())));
+        }
         if let Some(b) = &business {
             connectors.push(Box::new(agentos_business::tools::BusinessTools(b.clone())));
         }
@@ -313,7 +332,7 @@ impl Core {
             }
         };
         let local = Local {
-            intents: intents(business.is_some(), store.is_some()),
+            intents: intents(business.is_some(), store.is_some(), fleet.is_some()),
             host,
         };
         let model: Box<dyn Model> = match (&secrets.commercial_key, commercial_on) {
@@ -346,7 +365,7 @@ impl Core {
             functions,
             learner: Learner::open(dir.join("experience.jsonl"))?,
             classifier: crate::qa::classifier(&[]),
-            intents: intents(business.is_some(), store.is_some()),
+            intents: intents(business.is_some(), store.is_some(), fleet.is_some()),
             grammar: grammar_copy,
             system: system_copy,
             coder_jobs: Vec::new(),
@@ -364,7 +383,11 @@ impl Core {
             business,
             store,
             store_gen: None,
+            fleet,
+            fleet_gen: None,
             prepared_rev: 0,
+            proposals: Default::default(),
+            proposed: Default::default(),
             metrics: Metrics::default(),
             last_source: String::new(),
         };
@@ -731,7 +754,9 @@ impl Core {
         // number remembered from another day (a shortcut) or a word taken for one ("it").
         let mut a = a;
         if let Some(b) = &self.business {
-            b.borrow().fresh_args(&a.tool, &mut a.args, prompt);
+            if let Err(why) = b.borrow().fresh_args(&a.tool, &mut a.args, prompt) {
+                return format!("not done: {why}");
+            }
         }
         let key = crate::model::action_json(&a);
         let ep = self.learner.begin(now, prompt, &key, source);
@@ -1173,7 +1198,7 @@ impl Core {
                     .iter()
                     .map(|(k, v)| (k.clone(), json!(v)))
                     .collect();
-                json!({"id": p.id, "tool": p.action.tool, "args": args})
+                json!({"id": p.id, "tool": p.action.tool, "args": args, "why": self.proposals.get(&p.id)})
             })
             .collect();
         let recent: Vec<Value> = self
@@ -1225,6 +1250,22 @@ impl Core {
                 }
             }
             "press" => match rest.trim().trim_start_matches('#').parse::<u64>() {
+                Ok(id) if self.proposals.contains_key(&id) => {
+                    // the phone proposed this itself: the key press is the go-ahead, so it runs now
+                    let action = self.gateway.pending().into_iter().find(|p| p.id == id).map(|p| p.action);
+                    let why = self.proposals.remove(&id).unwrap_or_default();
+                    match action {
+                        Some(a) if self.gateway.press_key(id) => {
+                            // if the owner had asked for the same thing, their words are learned too
+                            self.learner.approved(id, self.clock.now_ms());
+                            self.retrain();
+                            let (ok, text) = self.call_tool(&a.tool, &a.args);
+                            let _ = self.kernel.record(&format!("proposed fix {} approved and {}", a.tool, if ok { "done" } else { "failed" }));
+                            format!("approved #{id} ({why}); {}: {text}", if ok { "done" } else { "not done" })
+                        }
+                        _ => "no such pending item".into(),
+                    }
+                }
                 Ok(id) if self.gateway.press_key(id) => {
                     self.learner.approved(id, self.clock.now_ms());
                     self.retrain();
@@ -1264,6 +1305,7 @@ impl Core {
             }
             "biz" => self.biz(rest),
             "shop" => self.shop(rest),
+            "fleet" => self.fleet(rest),
             // what kind of request the classifier thinks this is (the top three, with probability)
             "classify" => self.classifier.predict(rest).iter().take(3).map(|(l, p)| format!("{l} {p:.2}")).collect::<Vec<_>>().join(", "),
             "metrics" => self.metrics_json(rest.trim() == "reset"),
@@ -1518,6 +1560,47 @@ impl Core {
                 b.borrow_mut().tick(&at);
             }
             let _ = b;
+            self.propose_fixes();
+        }
+    }
+
+    /// Look at the business and queue the actions that would fix what is wrong. An action that
+    /// needs the key waits on the screen with its reason; a lower one runs and is reported in
+    /// the ledger. Each is proposed once a day: a declined proposal is not asked again.
+    fn propose_fixes(&mut self) {
+        let Some(b) = self.business.clone() else { return };
+        let (fixes, day) = {
+            let b = b.borrow();
+            (b.fixes(), b.today())
+        };
+        // a proposal the books no longer support (the amount changed, or it was done another
+        // way) is withdrawn from the screen, so the owner cannot approve a stale figure
+        let action_key = |tool: &str, args: &[(String, String)]| {
+            let mut a: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            a.sort();
+            format!("{tool} {}", a.join(" "))
+        };
+        let current: std::collections::BTreeSet<String> = fixes.iter().map(|(t, a, _)| action_key(t, a)).collect();
+        for p in self.gateway.pending() {
+            if self.proposals.contains_key(&p.id) && !current.contains(&action_key(&p.action.tool, &p.action.args)) {
+                self.gateway.decline(p.id);
+                self.proposals.remove(&p.id);
+            }
+        }
+        for (tool, args, why) in fixes {
+            let key = format!("{day} {}", action_key(&tool, &args));
+            if !self.proposed.insert(key) {
+                continue;
+            }
+            let (ok, text) = self.call_tool(&tool, &args);
+            match approval_id(&text) {
+                Some(id) if !ok => {
+                    self.proposals.insert(id, why);
+                }
+                _ => {
+                    let _ = self.kernel.record(&format!("fixed by the phone: {tool} ({why}): {}", if ok { "done" } else { "failed" }));
+                }
+            }
         }
     }
 
@@ -1532,6 +1615,11 @@ impl Core {
         let mut b = b.borrow_mut();
         let out = match cmd {
             "event" => agentos_business::dataset::play(&mut b, arg),
+            "propose" => {
+                drop(b);
+                self.propose_fixes();
+                return format!("{} proposal(s) waiting", self.proposals.len());
+            }
             "import" => std::fs::read_to_string(arg).map_err(|e| format!("{arg}: {e}")).and_then(|t| {
                 agentos_business::dataset::import(&mut b, &t).map(|(ok, bad)| {
                     format!("imported {ok} past events, {} refused{}", bad.len(), bad.iter().take(3).map(|e| format!("\n  {e}")).collect::<String>())
@@ -1612,7 +1700,94 @@ impl Core {
                 Some((id, path)) => b.bill_pdf(id).and_then(|pdf| std::fs::write(path.trim(), pdf).map_err(|e| e.to_string())).map(|_| format!("wrote {}", path.trim())),
                 None => Err("usage: biz bill <order> <file>".to_string()),
             },
-            other => Err(format!("biz: unknown command {other:?} (event, import, play, wa, state, clock, payout, outbox, sent, bill)")),
+            other => Err(format!("biz: unknown command {other:?} (event, import, play, wa, state, clock, payout, outbox, sent, bill, propose)")),
+        };
+        drop(b);
+        // whatever came in may have made something to fix
+        if matches!(cmd, "event" | "import" | "play" | "wa" | "clock" | "payout") {
+            self.propose_fixes();
+        }
+        out.unwrap_or_else(|e| format!("refused: {e}"))
+    }
+
+    /// `fleet ...` on the control socket: the platforms' and drivers' side of the fleet (trips,
+    /// shifts, fuel bills and cash coming in), the simulator, and the operator's view. Not
+    /// reachable over MCP.
+    fn fleet(&mut self, rest: &str) -> String {
+        use agentos_fleet::gen::{play, play_text, Event, Gen, Truth, PLANTED};
+        let Some(fl) = self.fleet.clone() else {
+            return "no fleet on this phone: set fleet_profile in the config".into();
+        };
+        let (cmd, arg) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let a: Vec<&str> = arg.split_whitespace().collect();
+        let mut f = fl.borrow_mut();
+        let out: Result<String, String> = match cmd {
+            "state" => Ok(f.state().to_string()),
+            // the time is part of the book: it must survive a restart
+            "clock" => {
+                f.tick(arg.trim());
+                f.save().map(|_| format!("it is {}", f.now()))
+            }
+            "event" => serde_json::from_str::<Event>(arg).map_err(|e| format!("not an event: {e}")).and_then(|e| play(&mut f, &e)),
+            // a file of events, one JSON object a line (a platform's trip export, a driver's day)
+            "import" => std::fs::read_to_string(arg.trim()).map_err(|e| format!("{arg}: {e}")).map(|text| {
+                let (ok, bad) = play_text(&mut f, &text);
+                format!("{ok} events taken, {} refused{}", bad.len(), bad.iter().take(5).map(|e| format!("\n  {e}")).collect::<String>())
+            }),
+            // simulator: the platform pays for a week: platform from to [rupees it wrongly keeps]
+            "payout" if a.len() >= 3 => {
+                let name = a[0].replace('_', " ");
+                let owed: i64 = f.days.range(a[1].to_string()..=a[2].to_string()).flat_map(|(_, d)| d.trips.iter()).filter(|t| t.platform.eq_ignore_ascii_case(&name)).map(|t| f.trip_money(t).platform_owes).sum();
+                let cut = agentos_business::util::rs(a.get(3).and_then(|c| c.parse().ok()).unwrap_or(0.0));
+                f.add_payout(agentos_fleet::Payout { platform: name.clone(), from: a[1].into(), to: a[2].into(), amount: owed - cut, reference: format!("{}{}", name[..2].to_uppercase(), a[2].replace('-', "")) })
+            }
+            // simulator: invent every day from..to, take its events, and score the day's checks
+            // against the problems planted in it: from to seed
+            "sim" if a.len() == 3 => {
+                let seed: u64 = a[2].parse().unwrap_or(1);
+                let mut g = match self.fleet_gen.take() {
+                    Some(g) => g,
+                    // after a restart the generator carries on from the book
+                    None => Gen::resume(&f, seed).unwrap_or_else(|| Gen::new(&f.profile, a[0], seed)),
+                };
+                let profile = f.profile.clone();
+                let (mut day, mut events, mut refused, mut planted, mut found) = (a[0].to_string(), 0usize, Vec::new(), 0u32, 0u32);
+                let (mut missed, mut extra) = (Vec::new(), Vec::new());
+                let mut by_kind: std::collections::BTreeMap<&str, (u32, u32)> = Default::default();
+                let t0 = std::time::Instant::now();
+                f.live = false;
+                while day.as_str() <= a[1] {
+                    let (evs, truth) = g.day(&profile, &day);
+                    for e in &evs {
+                        match play(&mut f, e) {
+                            Ok(_) => events += 1,
+                            Err(why) => refused.push(format!("{day}: {why}")),
+                        }
+                    }
+                    let want: std::collections::BTreeSet<Truth> = truth.into_iter().collect();
+                    let got: std::collections::BTreeSet<Truth> = f.issues(&day).into_iter().filter_map(|i| PLANTED.iter().find(|k| **k == i.kind).map(|k| Truth { kind: k, who: i.who })).collect();
+                    planted += want.len() as u32;
+                    found += got.len() as u32;
+                    for w in &want {
+                        let e = by_kind.entry(w.kind).or_default();
+                        e.0 += 1;
+                        if got.contains(w) {
+                            e.1 += 1;
+                        } else {
+                            missed.push(format!("{day} {} {}", w.kind, w.who));
+                        }
+                    }
+                    extra.extend(got.difference(&want).map(|x| format!("{day} {} {}", x.kind, x.who)));
+                    day = agentos_business::util::add_days(&day, 1);
+                }
+                self.fleet_gen = Some(g);
+                f.set_live(true).map(|_| {
+                    json!({"events": events, "refused": refused, "planted": planted, "found": found, "missed": missed, "extra": extra,
+                        "by_kind": by_kind.iter().map(|(k, (p, n))| (k.to_string(), json!({"planted": p, "found": n}))).collect::<serde_json::Map<_, _>>(),
+                        "seconds": t0.elapsed().as_secs_f64()}).to_string()
+                })
+            }
+            other => Err(format!("fleet: unknown command {other:?} (state, clock <at>, event <json>, import <file>, payout <platform> <from> <to> [cut], sim <from> <to> <seed>)")),
         };
         out.unwrap_or_else(|e| format!("refused: {e}"))
     }

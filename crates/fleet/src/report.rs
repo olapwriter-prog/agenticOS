@@ -279,8 +279,15 @@ impl Fleet {
 
     /// Each car over a period (a month "2026-10", or any prefix of a day).
     pub fn car_month(&self, period: &str) -> Vec<CarMonth> {
+        self.car_days(self.days.keys().filter(|d| d.starts_with(period)).collect())
+    }
+    /// Each car over the last `n` days in the book up to today.
+    pub fn car_recent(&self, n: i64) -> Vec<CarMonth> {
+        let (today, since) = (self.today(), add_days(&self.today(), 1 - n));
+        self.car_days(self.days.range(since..=today).map(|(d, _)| d).collect())
+    }
+    fn car_days(&self, days: Vec<&String>) -> Vec<CarMonth> {
         let p = &self.profile;
-        let days: Vec<&String> = self.days.keys().filter(|d| d.starts_with(period)).collect();
         let span = days.len() as f64;
         p.cars
             .iter()
@@ -548,10 +555,16 @@ impl Fleet {
         if !same.is_empty() {
             out.push(format!("Expect about {} after the platforms' cut, as on the last {} {}(s).", inr(same.iter().sum::<Paise>() / same.len() as Paise), same.len(), WEEKDAYS[weekday(&tomorrow)]));
         }
-        let month = self.car_month(&today[..7.min(today.len())]);
+        // over thirty days, so that one service bill early in a calendar month does not
+        // make a sound car look like a loss
+        let month = self.car_recent(30);
         let losing: Vec<String> = month.iter().filter(|m| m.profit() < 0 && m.days_out > 3).map(|m| format!("{} ({})", m.id, inr(m.profit()))).collect();
         if !losing.is_empty() {
-            out.push(format!("Losing money this month: {}.", losing.join(", ")));
+            out.push(format!("Lost money over the last 30 days: {}.", losing.join(", ")));
+        }
+        let thin: Vec<String> = month.iter().filter(|m| m.profit() >= 0 && m.days_out > 20 && m.profit() < rs(1500.0)).map(|m| format!("{} ({})", m.id, inr(m.profit()))).collect();
+        if !thin.is_empty() {
+            out.push(format!("Barely paid for themselves over the last 30 days: {}.", thin.join(", ")));
         }
         out.join("\n")
     }

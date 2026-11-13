@@ -221,7 +221,9 @@ impl Business {
     /// request; if they said none ("settle ravi", "claim it from zomato"), it is what the book
     /// says is due now. An action remembered from another day, or a phrase pattern that took a
     /// word for the amount, therefore cannot carry a wrong figure to the approval screen.
-    pub fn fresh_args(&self, tool: &str, args: &mut [(String, String)], text: &str) {
+    /// When the owner names no amount and the book says nothing is due, the request is
+    /// refused here, before it reaches the approval screen.
+    pub fn fresh_args(&self, tool: &str, args: &mut [(String, String)], text: &str) -> Result<(), String> {
         let get = |k: &str| args.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).unwrap_or_default();
         let today = self.today();
         let book = match tool {
@@ -230,16 +232,24 @@ impl Business {
                 Some(if tool == "biz_pay_rider" { s.due } else { s.cash_held })
             }),
             "biz_claim" => self.profile.platform(&get("platform")).map(|p| self.claimable(&p.name.to_lowercase()).0),
-            _ => return,
+            _ => return Ok(()),
         };
         let amount = match (first_number(text), book) {
             (Some(said), _) => said,
             (None, Some(p)) if p > 0 => format!("{}", p as f64 / 100.0),
-            _ => return,
+            (None, Some(_)) => {
+                return Err(match tool {
+                    "biz_claim" => format!("nothing to claim from {}", get("platform")),
+                    "biz_cash_in" => format!("{} holds no customers' cash today", get("rider")),
+                    _ => format!("{} has nothing due today", get("rider")),
+                })
+            }
+            _ => return Ok(()),
         };
         if let Some(a) = args.iter_mut().find(|(n, _)| n == "amount") {
             a.1 = amount;
         }
+        Ok(())
     }
 
     /// Turn a request the classifier recognised into a tool call by rules. None when a detail

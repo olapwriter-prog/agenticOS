@@ -83,6 +83,9 @@ pub struct Config {
     /// A retail store's profile (TOML). When set, the phone audits the store's bills and keeps
     /// its GST and income-tax books (crates/retail).
     pub store_profile: Option<PathBuf>,
+    /// A taxi fleet's profile (TOML). When set, the phone keeps the fleet's trips, drivers'
+    /// sheets, cars' costs and checks (crates/fleet).
+    pub fleet_profile: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -128,6 +131,7 @@ impl Default for Config {
             train_chunk_secs: 1800,
             business_profile: None,
             store_profile: None,
+            fleet_profile: None,
         }
     }
 }

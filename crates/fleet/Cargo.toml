@@ -9,5 +9,6 @@ agentos-business = { path = "../business" }
 agentos-executor = { path = "../executor" }
 agentos-action = { path = "../action" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# odometer readings and quantities are decimals: they must come back from disk bit for bit
+serde_json = { version = "1", features = ["float_roundtrip"] }
 toml = "0.8"

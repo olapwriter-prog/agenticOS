@@ -43,7 +43,10 @@ pub fn describe(tool: &str) -> &'static str {
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
         other => match agentos_business::tools::describe(other) {
-            "" => agentos_retail::tools::describe(other),
+            "" => match agentos_retail::tools::describe(other) {
+                "" => agentos_fleet::tools::describe(other),
+                d => d,
+            },
             d => d,
         },
     }
@@ -178,8 +181,9 @@ pub fn default_intents() -> IntentTable {
     t
 }
 
-/// The phrase table, with the phrases of the business and of the store the phone runs, if any.
-pub fn intents(business: bool, store: bool) -> IntentTable {
+/// The phrase table, with the phrases of the business, the store and the fleet the phone runs,
+/// if any.
+pub fn intents(business: bool, store: bool, fleet: bool) -> IntentTable {
     let mut t = default_intents();
     if business {
         for (pattern, tool) in agentos_business::tools::INTENTS {
@@ -188,6 +192,11 @@ pub fn intents(business: bool, store: bool) -> IntentTable {
     }
     if store {
         for (pattern, tool) in agentos_retail::tools::INTENTS {
+            t.add(pattern, tool);
+        }
+    }
+    if fleet {
+        for (pattern, tool) in agentos_fleet::tools::INTENTS {
             t.add(pattern, tool);
         }
     }
