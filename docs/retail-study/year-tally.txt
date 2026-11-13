@@ -1,0 +1,29 @@
+Vizag Value Fashion (CMR Central store) — 2025-04-01 to 2026-03-31: 365 days, 1891057 bills
+Turnover (before GST) ₹3,44,89,78,122.25; GST on it ₹24,58,78,283.75; billed in all ₹3,69,48,56,406
+Tally with money received: ₹3,69,48,07,721 came in (cash banked, UPI, card), ₹48,685 less than billed; ₹27,045 of that is cash short at the tills, the rest is bills whose payment or total did not match (see payment_mismatch and total_mismatch)
+Tally with the GST returns: output tax ₹24,57,23,529.17, credit claimed ₹20,41,14,383.18, paid in cash ₹4,50,20,693.16; every month filed
+Credit not taken: ₹64,52,167.72 held back until suppliers report 8 invoice(s); ₹54,72,000 blocked; ₹10,34,278.68 refused as entered twice
+Profit and loss
+  turnover                              ₹3,44,89,78,122.25
+  cost of goods sold                    ₹2,00,77,83,882.52   (purchases ₹2,06,19,43,734.18, closing stock ₹2,40,43,093.43)
+  bank charges                             ₹2,66,23,753.03
+  electricity                                   ₹78,00,000
+  head office                             ₹41,38,77,374.61
+  marketing                                     ₹36,00,000
+  packaging                                     ₹45,60,000
+  rent                                        ₹5,40,00,000
+  repairs                                          ₹55,500
+  services                                      ₹50,40,000
+  staff food                                    ₹14,40,000
+  salaries                                    ₹7,20,00,000
+  depreciation on fit-out                       ₹30,00,000
+  GST with no credit (blocked)                     ₹72,000
+  cash short at the tills                          ₹27,045
+  stock lost (shrinkage)                   ₹3,01,16,758.23
+  profit per books                        ₹81,89,81,808.86   (23.7% of turnover)
+  add back: rent paid without deducting tax at source         ₹13,50,000
+  add back: cash payments above ₹10000             ₹55,500
+  taxable income                          ₹82,03,87,308.86
+Income tax at 22% ₹18,04,85,207.95 + surcharge ₹1,80,48,520.80 + cess ₹79,41,349.15 = ₹20,64,75,077.90
+Advance tax, if paid on time: ₹3,09,71,261.68 by 15 Jun, ₹9,29,13,785.05 by 15 Sep, ₹15,48,56,308.42 by 15 Dec, ₹20,64,75,077.90 by 15 Mar
+Exceptions in the year: cash_short 9, duplicate_no 412, gap 389, gstin_invalid 285, hsn_missing 941, hsn_wrong 544, old_rate 507, payment_mismatch 556, place_of_supply 317, return_excess 214, return_unmatched 294, slab_on_tag 1134, tax_arithmetic 899, total_mismatch 616, wrong_rate 1889

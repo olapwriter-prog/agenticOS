@@ -24,6 +24,7 @@ version = "0.1.0"
 dependencies = [
  "agentos-action",
  "agentos-brain",
+ "agentos-business",
  "agentos-commercial",
  "agentos-connectors",
  "agentos-executor",
@@ -43,6 +44,7 @@ dependencies = [
  "agentos-phone",
  "agentos-power",
  "agentos-prio",
+ "agentos-retail",
  "agentos-router",
  "agentos-stage",
  "agentos-status",
@@ -90,6 +92,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "agentos-business"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-executor",
+ "chacha20poly1305",
+ "getrandom",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
 name = "agentos-commercial"
 version = "0.1.0"
 dependencies = [
@@ -121,6 +138,18 @@ dependencies = [
 [[package]]
 name = "agentos-firewall"
 version = "0.1.0"
+
+[[package]]
+name = "agentos-fleet"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-business",
+ "agentos-executor",
+ "serde",
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "agentos-forge"
@@ -299,6 +328,18 @@ dependencies = [
 [[package]]
 name = "agentos-prio"
 version = "0.1.0"
+
+[[package]]
+name = "agentos-retail"
+version = "0.1.0"
+dependencies = [
+ "agentos-action",
+ "agentos-business",
+ "agentos-executor",
+ "serde",
+ "serde_json",
+ "toml",
+]
 
 [[package]]
 name = "agentos-router"

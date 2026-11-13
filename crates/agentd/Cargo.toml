@@ -32,6 +32,8 @@ agentos-models = { path = "../models" }
 agentos-functions = { path = "../functions" }
 agentos-learn = { path = "../learn" }
 agentos-understand = { path = "../understand" }
+agentos-business = { path = "../business" }
+agentos-retail = { path = "../retail" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

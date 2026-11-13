@@ -1,0 +1,13 @@
+[package]
+name = "agentos-fleet"
+version.workspace = true
+edition.workspace = true
+description = "A taxi fleet on the phone: trips from every platform, drivers' sheets, cars' costs and profit, checks, and tomorrow's plan"
+
+[dependencies]
+agentos-business = { path = "../business" }
+agentos-executor = { path = "../executor" }
+agentos-action = { path = "../action" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"

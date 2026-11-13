@@ -2,7 +2,9 @@
 //! from one thread. Listeners elsewhere send it commands over a channel.
 use crate::anchors;
 use crate::config::Config;
-use crate::model::{default_intents, Local};
+use crate::model::{intents, Local};
+use crate::predict::Predictor;
+use agentos_business::Business;
 use crate::secrets::Secrets;
 use agentos_action::{Registry, Tier};
 use agentos_brain::{Engine, Model, Outcome};
@@ -73,6 +75,30 @@ pub struct Core {
     last_anchor_ms: u64,
     /// Tests set this so quiet hours do not depend on the real time of day.
     pub fixed_minute_of_day: Option<u32>,
+    /// The business this phone runs, if a profile is configured.
+    business: Option<std::rc::Rc<std::cell::RefCell<Business>>>,
+    /// The retail store whose books this phone keeps, if a profile is configured.
+    store: Option<std::rc::Rc<std::cell::RefCell<agentos_retail::books::Books>>>,
+    /// The simulator's generator of store days (kept between `shop sim` calls).
+    store_gen: Option<agentos_retail::gen::Gen>,
+    /// Answers to likely read-only requests, prepared ahead (crate::predict).
+    predictor: Predictor,
+    /// The book revision the last round of preparing was done for.
+    prepared_rev: u64,
+    metrics: Metrics,
+    /// How the request in hand was understood: intent, shortcut, classifier, model...
+    last_source: String,
+}
+
+/// Counters for `ctl metrics`: how requests were understood and how long they took.
+#[derive(Default)]
+pub struct Metrics {
+    /// source -> (requests, total microseconds)
+    pub chats: std::collections::BTreeMap<String, (u64, u64)>,
+    pub retrains: u64,
+    pub retrain_us: u64,
+    /// The request just answered: (how it was understood, microseconds).
+    pub last: (String, u64),
 }
 
 #[derive(Debug)]
@@ -173,6 +199,20 @@ impl Core {
             Box::new(Messenger::default()),
             Box::new(PhoneTools(phone.clone())),
         ];
+        // The business, if this phone runs one. Its book is sealed with a key from the vault.
+        let business = match &cfg.business_profile {
+            Some(path) => {
+                let profile = agentos_business::profile::Profile::load(path)?;
+                let b = Business::open(
+                    profile,
+                    dir.join("business"),
+                    &secrets.business_key,
+                    Box::new(agentos_business::wa::SimWhatsapp::default()),
+                )?;
+                Some(std::rc::Rc::new(std::cell::RefCell::new(b)))
+            }
+            None => None,
+        };
         // What a function may ask the phone to do: every tool except the function tools.
         let phone_tools: Vec<agentos_action::Tool> =
             connectors.iter().flat_map(|c| c.tools()).collect();
@@ -181,6 +221,20 @@ impl Core {
         let compiler = Compiler::new(cfg.rustc.clone(), dir.join("run/compile"));
         let functions = FunctionStore::open(dir.join("functions"), &reserved, compiler)?.shared();
         connectors.push(Box::new(FunctionTools(functions.clone())));
+        let store = match &cfg.store_profile {
+            Some(path) => {
+                let profile = agentos_retail::Profile::load(path)?;
+                let b = agentos_retail::books::Books::open(profile, dir.join("store"), &secrets.business_key)?;
+                Some(std::rc::Rc::new(std::cell::RefCell::new(b)))
+            }
+            None => None,
+        };
+        if let Some(s) = &store {
+            connectors.push(Box::new(agentos_retail::tools::RetailTools(s.clone())));
+        }
+        if let Some(b) = &business {
+            connectors.push(Box::new(agentos_business::tools::BusinessTools(b.clone())));
+        }
         let coder_prompt = crate::coder::system_prompt(&phone_tools);
         let phone_tool_names: Vec<&'static str> = phone_tools.iter().map(|t| t.name).collect();
         let exec = Executor::new(
@@ -259,7 +313,7 @@ impl Core {
             }
         };
         let local = Local {
-            intents: default_intents(),
+            intents: intents(business.is_some(), store.is_some()),
             host,
         };
         let model: Box<dyn Model> = match (&secrets.commercial_key, commercial_on) {
@@ -292,7 +346,7 @@ impl Core {
             functions,
             learner: Learner::open(dir.join("experience.jsonl"))?,
             classifier: crate::qa::classifier(&[]),
-            intents: default_intents(),
+            intents: intents(business.is_some(), store.is_some()),
             grammar: grammar_copy,
             system: system_copy,
             coder_jobs: Vec::new(),
@@ -306,6 +360,13 @@ impl Core {
             last_activity_ms: now,
             last_anchor_ms: now,
             fixed_minute_of_day: None,
+            predictor: Predictor::open(business.as_ref().map(|_| dir.join("habits.json"))),
+            business,
+            store,
+            store_gen: None,
+            prepared_rev: 0,
+            metrics: Metrics::default(),
+            last_source: String::new(),
         };
         let _ = core.kernel.record("agentd started");
         core.serve_adapter();
@@ -510,14 +571,24 @@ impl Core {
                 .wait_ready(Role::Small, Duration::from_secs(self.cfg.model_wait_secs));
         }
         self.prio.set_mode(Mode::Inference);
+        self.last_source = "other".into();
+        let t0 = std::time::Instant::now();
         let answer = self.chat_inner(text);
+        let us = t0.elapsed().as_micros() as u64;
+        let e = self.metrics.chats.entry(self.last_source.clone()).or_default();
+        e.0 += 1;
+        e.1 += us;
+        self.metrics.last = (self.last_source.clone(), us);
         self.prio.set_mode(self.baseline_mode());
+        // while the owner reads this answer, get the likely next ones ready
+        self.prepare_ahead();
         answer
     }
 
     fn chat_inner(&mut self, text: &str) -> String {
         let now = self.clock.now_ms();
         if let Some(good) = feedback_of(text) {
+            self.last_source = "feedback".into();
             let said = self.learner.feedback(good, now);
             self.retrain();
             return match said {
@@ -544,7 +615,9 @@ impl Core {
             if let Some((label, _)) = self.classifier.decide(text, crate::qa::CONFIDENCE) {
                 if !label.starts_with("q.") {
                     let contacts = self.contact_names();
+                    let business = self.business.clone();
                     if let Some(a) = crate::qa::command(&label, text, &contacts)
+                        .or_else(|| business.and_then(|b| b.borrow().command(&label, text)))
                         .and_then(|j| self.engine.registry.parse(&j.to_string()).ok())
                     {
                         return self.act(text, a, "classifier", now);
@@ -579,8 +652,12 @@ impl Core {
         let source = if is_intent { "intent" } else { "model" };
         match self.engine.handle(job, &prompt, self.model.as_mut()) {
             Outcome::Run(a) | Outcome::NeedsApproval(a) => self.act(text, a, source, now),
-            Outcome::Blocked(why) => format!("blocked: {why}"),
+            Outcome::Blocked(why) => {
+                self.last_source = "blocked".into();
+                format!("blocked: {why}")
+            }
             Outcome::GaveUp => {
+                self.last_source = "gave-up".into();
                 let ep = self.learner.begin(now, text, "", source);
                 self.learner.gave_up(ep);
                 "I could not turn that into something I am allowed to do.".into()
@@ -603,7 +680,17 @@ impl Core {
                 Some((tool, e.prompt.clone()))
             })
             .collect();
+        let t0 = std::time::Instant::now();
         self.classifier = crate::qa::classifier(&confirmed);
+        if self.business.is_some() {
+            for (label, phrases) in agentos_business::tools::SEEDS {
+                for p in *phrases {
+                    self.classifier.train(label, p);
+                }
+            }
+        }
+        self.metrics.retrains += 1;
+        self.metrics.retrain_us += t0.elapsed().as_micros() as u64;
     }
 
     fn contact_names(&mut self) -> Vec<String> {
@@ -639,10 +726,40 @@ impl Core {
 
     /// Carry out a chosen action and record how it went, for learning.
     fn act(&mut self, prompt: &str, a: agentos_action::Action, source: &str, now: u64) -> String {
-        let ep = self
-            .learner
-            .begin(now, prompt, &crate::model::action_json(&a), source);
-        let (ok, text) = self.call_tool(&a.tool, &a.args);
+        self.last_source = source.to_string();
+        // An amount of money is what the owner said now, or what the book says now: never a
+        // number remembered from another day (a shortcut) or a word taken for one ("it").
+        let mut a = a;
+        if let Some(b) = &self.business {
+            b.borrow().fresh_args(&a.tool, &mut a.args, prompt);
+        }
+        let key = crate::model::action_json(&a);
+        let ep = self.learner.begin(now, prompt, &key, source);
+        // a read-only business answer may already be prepared (and is used only if the book
+        // has not changed since)
+        let rev = self
+            .business
+            .as_ref()
+            .filter(|_| agentos_business::tools::reads_only(&a.tool))
+            .map(|b| (b.borrow().rev.get(), agentos_business::util::hour_of(b.borrow().now())));
+        let kept = rev.and_then(|(r, _)| self.predictor.get(&key, r));
+        let (ok, text) = match kept {
+            Some(answer) => {
+                self.last_source = format!("{source}+ready");
+                self.predictor.used(&key);
+                (true, answer)
+            }
+            None => {
+                let (ok, text) = self.call_tool(&a.tool, &a.args);
+                if let (true, Some((r, _))) = (ok, rev) {
+                    self.predictor.put(&key, r, text.clone(), false);
+                }
+                (ok, text)
+            }
+        };
+        if let Some((_, hour)) = rev {
+            self.predictor.observe(&key, hour);
+        }
         match approval_id(&text) {
             Some(q) if !ok => self.learner.waiting(ep, q),
             _ => {
@@ -660,6 +777,28 @@ impl Core {
             }
         }
         format!("done: {text}")
+    }
+
+    /// Run the read-only requests most likely to come next and keep their answers. Called after
+    /// each answer, while the owner is reading it; not while orders stream in with nobody
+    /// looking, where the answers would go stale unused. Only Low-tier business tools.
+    fn prepare_ahead(&mut self) {
+        let Some(b) = self.business.clone() else { return };
+        let (rev, hour) = (b.borrow().rev.get(), agentos_business::util::hour_of(b.borrow().now()));
+        for key in self.predictor.likely(hour) {
+            if self.predictor.fresh(&key, rev) {
+                continue;
+            }
+            let Ok(a) = self.engine.registry.parse(&key) else { continue };
+            if !agentos_business::tools::reads_only(&a.tool) {
+                continue;
+            }
+            let (ok, text) = self.call_tool(&a.tool, &a.args);
+            if ok {
+                self.predictor.put(&key, rev, text, true);
+            }
+        }
+        self.prepared_rev = rev;
     }
 
     /// One tool call through the gateway, so tiers and the approval key apply. (ok, text)
@@ -723,8 +862,29 @@ impl Core {
         }
         if let Some(text) = t.strip_prefix("chat ") {
             self.touch();
+            // What the human taught comes first: a fixed phrase, or a request they approved or
+            // corrected before, is never re-guessed by the classifier.
+            if self.intents.resolve(text).is_some() || self.learner.shortcut(text).is_some() {
+                let _ = reply.send(self.ctl(line));
+                return;
+            }
+            let t0 = std::time::Instant::now();
             if let Some(answer) = self.answer_by_code(text) {
+                let us = t0.elapsed().as_micros() as u64;
+                let e = self.metrics.chats.entry("code-answer".into()).or_default();
+                e.0 += 1;
+                e.1 += us;
+                self.metrics.last = ("code-answer".into(), us);
                 let _ = reply.send(answer);
+                return;
+            }
+        }
+        // A request the phone already knows how to do (a fixed phrase, a learned shortcut, or a
+        // command the classifier is sure of) is never handed to the model to write analysis
+        // code for, however much it sounds like a question ("did swiggy pay properly").
+        if let Some(text) = t.strip_prefix("chat ") {
+            if self.knows(text) {
+                let _ = reply.send(self.ctl(line));
                 return;
             }
         }
@@ -739,6 +899,31 @@ impl Core {
             return;
         }
         let _ = reply.send(self.ctl(line));
+    }
+
+    /// Does the phone already know what to do with this request, without writing code for it?
+    fn knows(&mut self, text: &str) -> bool {
+        self.intents.resolve(text).is_some()
+            || self.learner.shortcut(text).is_some()
+            || self
+                .classifier
+                .decide(text, crate::qa::CONFIDENCE)
+                .is_some_and(|(label, _)| !label.starts_with("q."))
+    }
+
+    /// A background job ended: close its episode and count it.
+    fn job_done(&mut self, job: &crate::coder::Job, ok: bool) {
+        if ok {
+            self.learner.ran(job.episode, self.clock.now_ms(), true);
+        } else {
+            self.learner.gave_up(job.episode);
+        }
+        let source = if job.question.is_some() { "analyst" } else { "coder" };
+        let us = job.started.elapsed().as_micros() as u64;
+        let e = self.metrics.chats.entry(source.to_string()).or_default();
+        e.0 += 1;
+        e.1 += us;
+        self.metrics.last = (source.to_string(), us);
     }
 
     /// Ask the local model for code in the background: a function to keep (question None) or
@@ -774,7 +959,12 @@ impl Core {
         ];
         let timeout = Duration::from_secs(self.cfg.coder_timeout_secs);
         let rx = crate::coder::generate(&url, &messages, &schema, timeout);
+        // an episode of its own: feedback after this answer is about this request
+        let source = if question.is_some() { "analyst" } else { "coder" };
+        let episode = self.learner.begin(self.clock.now_ms(), request, "", source);
         self.coder_jobs.push(crate::coder::Job {
+            episode,
+            started: std::time::Instant::now(),
             reply,
             url,
             messages,
@@ -853,12 +1043,14 @@ impl Core {
                     i += 1;
                 }
                 Ok(answer) if job.question.is_some() => {
+                    self.job_done(&job, true);
                     let _ = job
                         .reply
                         .send(format!("answer (attempt {}): {answer}", job.attempt));
                 }
                 Ok(ok) => {
                     let name = ok.split_whitespace().next().unwrap_or("").to_string();
+                    self.job_done(&job, true);
                     let _ = self.kernel.record(&format!("function written: {name}"));
                     let _ = job.reply.send(format!(
                         "done (attempt {}): {ok}\nRead it first: agentd ctl show {name}",
@@ -878,6 +1070,7 @@ impl Core {
                     } else {
                         "function"
                     };
+                    self.job_done(&job, false);
                     let _ = job.reply.send(format!(
                         "not done: no working {what} after {} attempts. Last problem:\n{why}\n--- last code ---\n{code}",
                         job.attempt
@@ -1069,6 +1262,11 @@ impl Core {
                     agentos_notify::digest_text(&g)
                 }
             }
+            "biz" => self.biz(rest),
+            "shop" => self.shop(rest),
+            // what kind of request the classifier thinks this is (the top three, with probability)
+            "classify" => self.classifier.predict(rest).iter().take(3).map(|(l, p)| format!("{l} {p:.2}")).collect::<Vec<_>>().join(", "),
+            "metrics" => self.metrics_json(rest.trim() == "reset"),
             "phone" => self
                 .phone
                 .borrow_mut()
@@ -1313,6 +1511,232 @@ impl Core {
         self.sync_models();
         self.prio.set_mode(self.baseline_mode());
         self.prio.tick();
+        if let Some(b) = self.business.clone() {
+            // a real phone follows the wall clock; the simulated one follows its events
+            if self.cfg.phone != "sim" {
+                let at = agentos_business::util::local_time(self.wall_secs() * 1000, self.cfg.utc_offset_minutes);
+                b.borrow_mut().tick(&at);
+            }
+            let _ = b;
+        }
+    }
+
+    /// `biz ...` on the control socket: the channel adapters' side of the business (orders and
+    /// events coming in), and the operator's view. None of this is reachable over MCP.
+    fn biz(&mut self, rest: &str) -> String {
+        let Some(b) = self.business.clone() else {
+            return "no business on this phone: set business_profile in the config".into();
+        };
+        let (cmd, arg) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let arg = arg.trim();
+        let mut b = b.borrow_mut();
+        let out = match cmd {
+            "event" => agentos_business::dataset::play(&mut b, arg),
+            "import" => std::fs::read_to_string(arg).map_err(|e| format!("{arg}: {e}")).and_then(|t| {
+                agentos_business::dataset::import(&mut b, &t).map(|(ok, bad)| {
+                    format!("imported {ok} past events, {} refused{}", bad.len(), bad.iter().take(3).map(|e| format!("\n  {e}")).collect::<String>())
+                })
+            }),
+            "play" => std::fs::read_to_string(arg).map_err(|e| format!("{arg}: {e}")).map(|t| {
+                let (mut ok, mut bad) = (0, Vec::new());
+                for line in t.lines().filter(|l| !l.trim().is_empty()) {
+                    match agentos_business::dataset::play(&mut b, line) {
+                        Ok(_) => ok += 1,
+                        Err(e) => bad.push(e),
+                    }
+                }
+                format!("{ok} events handled, {} refused{}", bad.len(), bad.iter().take(5).map(|e| format!("\n  {e}")).collect::<String>())
+            }),
+            // a customer typed an order: phone|name|address|locality|cod or upi|what they wrote
+            "wa" => {
+                let f: Vec<&str> = arg.splitn(6, '|').map(str::trim).collect();
+                if f.len() != 6 {
+                    Err("usage: biz wa <phone>|<name>|<address>|<locality>|<cod or upi>|<what they wrote>".to_string())
+                } else {
+                    match b.profile.locality(f[3]).map(|l| l.km) {
+                        None => Err(format!("we do not know {}: ask the customer for a nearby area", f[3])),
+                        Some(km) => {
+                            let c = agentos_business::CustomerIn { phone: f[0].into(), name: f[1].into(), address: f[2].into() };
+                            b.ingest_text(c, f[3], km, f[4], f[5]).map(|said| {
+                                let id = said.split_whitespace().next().unwrap_or_default().to_string();
+                                match b.profile.auto_bill.then(|| b.send_bill(&id)) {
+                                    Some(Ok(t)) => format!("{said}; {t}"),
+                                    Some(Err(e)) => format!("{said}; bill not sent: {e}"),
+                                    None => said,
+                                }
+                            })
+                        }
+                    }
+                }
+            }
+            // simulator: write one invented day for this shop: day seed scale direct-share file
+            "gen" => {
+                let f: Vec<&str> = arg.split_whitespace().collect();
+                if f.len() != 5 {
+                    Err("usage: biz gen <day> <seed> <scale> <direct share, 0 for usual> <file>".to_string())
+                } else {
+                    let ev = agentos_business::dataset::day_events(&b.profile, f[0], f[1].parse().unwrap_or(1), f[2].parse().unwrap_or(1.0), f[3].parse().unwrap_or(0.0));
+                    std::fs::write(f[4], ev.join("\n") + "\n").map(|_| format!("{} events for {} in {}", ev.len(), f[0], f[4])).map_err(|e| e.to_string())
+                }
+            }
+            "state" => Ok(b.state().to_string()),
+            "clock" => {
+                b.tick(arg);
+                Ok(format!("it is {}", b.now()))
+            }
+            // the platform pays for a week (simulator): platform from to [rupees it wrongly keeps]
+            "payout" => {
+                let f: Vec<&str> = arg.split_whitespace().collect();
+                if f.len() < 3 {
+                    Err("usage: biz payout <platform> <from> <to> [cut]".to_string())
+                } else {
+                    let cut = f.get(3).and_then(|c| c.parse().ok()).unwrap_or(0.0);
+                    let at = b.now().to_string();
+                    let ev = agentos_business::dataset::payout_event(&b, &f[0].to_lowercase(), f[1], f[2], &at, cut);
+                    agentos_business::dataset::play(&mut b, &ev)
+                }
+            }
+            "outbox" => {
+                let n: usize = arg.parse().unwrap_or(10);
+                Ok(b.book.outbox.iter().rev().take(n).rev().map(|s| format!("{} {} → {}: {} ({}, {} bytes)", s.at, s.channel, s.to, s.kind, s.about, s.bytes)).collect::<Vec<_>>().join("\n"))
+            }
+            "sent" => {
+                let mut kinds: std::collections::BTreeMap<&str, usize> = Default::default();
+                for (_, m) in b.wa.sent() {
+                    *kinds.entry(m.kind()).or_default() += 1;
+                }
+                Ok(serde_json::to_string(&kinds).unwrap_or_default())
+            }
+            // the operator saves a bill to look at it: biz bill <order> <file>
+            "bill" => match arg.split_once(' ') {
+                Some((id, path)) => b.bill_pdf(id).and_then(|pdf| std::fs::write(path.trim(), pdf).map_err(|e| e.to_string())).map(|_| format!("wrote {}", path.trim())),
+                None => Err("usage: biz bill <order> <file>".to_string()),
+            },
+            other => Err(format!("biz: unknown command {other:?} (event, import, play, wa, state, clock, payout, outbox, sent, bill)")),
+        };
+        out.unwrap_or_else(|e| format!("refused: {e}"))
+    }
+
+    /// `shop ...` on the control socket: the tills' side of the store (days of bills coming
+    /// in), the simulator, and the operator's view. Not reachable over MCP.
+    fn shop(&mut self, rest: &str) -> String {
+        use agentos_retail::gen::{family, inward, Gen};
+        let Some(s) = self.store.clone() else {
+            return "no store on this phone: set store_profile in the config".into();
+        };
+        let (cmd, arg) = rest.trim().split_once(' ').unwrap_or((rest.trim(), ""));
+        let f: Vec<&str> = arg.split_whitespace().collect();
+        let mut b = s.borrow_mut();
+        let out: Result<String, String> = match cmd {
+            "state" => Ok(b.state().to_string()),
+            "clock" => {
+                b.tick(arg.trim());
+                Ok(format!("it is {}", b.now()))
+            }
+            // a day's bills from the tills: a file whose first line is {"day","cash_banked"}
+            // (rupees) and whose other lines are bills
+            "import" => std::fs::read_to_string(arg.trim()).map_err(|e| format!("{arg}: {e}")).and_then(|text| {
+                let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+                let head: Value = serde_json::from_str(lines.next().unwrap_or("{}")).map_err(|e| format!("first line: {e}"))?;
+                let day = head["day"].as_str().ok_or("the first line needs \"day\"")?.to_string();
+                let mut bills = Vec::new();
+                for (i, l) in lines.enumerate() {
+                    bills.push(serde_json::from_str::<agentos_retail::Bill>(l).map_err(|e| format!("bill on line {}: {e}", i + 2))?);
+                }
+                b.import_day(&day, &bills, agentos_business::util::rs(head["cash_banked"].as_f64().unwrap_or(0.0)))
+            }),
+            // simulator: write one invented day as such a file: day seed file
+            "gen" if f.len() == 3 => {
+                let mut g = Gen::new(f[1].parse().unwrap_or(1));
+                let d = g.day(&b.profile, f[0]);
+                let mut text = json!({"day": f[0], "cash_banked": d.cash_banked as f64 / 100.0}).to_string();
+                for bill in &d.bills {
+                    text.push('\n');
+                    text.push_str(&serde_json::to_string(bill).unwrap_or_default());
+                }
+                std::fs::write(f[2], text).map(|_| format!("{} bills for {} in {} ({} faults planted)", d.bills.len(), f[0], f[2], d.truth.len())).map_err(|e| e.to_string())
+            }
+            // simulator: invent and audit every day from..to, add each finished month's supplier
+            // invoices, and score the audit against the faults planted: from to seed
+            "sim" if f.len() == 3 => {
+                let seed: u64 = f[2].parse().unwrap_or(1);
+                // after a restart the series carries on from the books, not from 1
+                let mut g = self.store_gen.take().unwrap_or_else(|| {
+                    let mut g = Gen::new(seed ^ b.last_no());
+                    g.next_no = b.last_no() + 1;
+                    g
+                });
+                let (mut day, mut planted, mut found, mut missed, mut extra, mut bills) = (f[0].to_string(), 0u32, 0u32, Vec::new(), Vec::new(), 0u64);
+                let mut by_family: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+                let t0 = std::time::Instant::now();
+                let mut err = None;
+                while day.as_str() <= f[1] {
+                    let d = g.day(&b.profile, &day);
+                    bills += d.bills.len() as u64;
+                    if let Err(e) = b.import_day(&day, &d.bills, d.cash_banked) {
+                        err = Some(e);
+                        break;
+                    }
+                    let got: std::collections::BTreeSet<(u64, String)> = b.days[&day].exceptions.iter().map(|x| (x.bill, family(&x.kind).to_string())).collect();
+                    let want: std::collections::BTreeSet<(u64, String)> = d.truth.iter().map(|t| (t.bill, t.kind.to_string())).collect();
+                    planted += want.len() as u32;
+                    found += got.len() as u32;
+                    for w in &want {
+                        let e = by_family.entry(w.1.clone()).or_default();
+                        e.0 += 1;
+                        if got.contains(w) {
+                            e.1 += 1;
+                        } else if missed.len() < 10 {
+                            missed.push(format!("{day} {} {}", w.0, w.1));
+                        }
+                    }
+                    for x in got.difference(&want) {
+                        if extra.len() < 10 {
+                            extra.push(format!("{day} {} {}", x.0, x.1));
+                        }
+                    }
+                    let next = agentos_business::util::add_days(&day, 1);
+                    if next[..7] != day[..7] {
+                        let m = b.month(&day[..7]);
+                        let cost: i64 = b.days.range(day[..7].to_string()..).take_while(|(k, _)| k.starts_with(&day[..7])).map(|(_, d)| d.cost).sum();
+                        let paid: i64 = b.days.range(day[..7].to_string()..).take_while(|(k, _)| k.starts_with(&day[..7])).map(|(_, d)| d.upi + d.card).sum();
+                        let rows = inward(&b.profile, &day[..7], cost, m.taxable(), paid, seed);
+                        let _ = b.add_inward(rows);
+                    }
+                    day = next;
+                }
+                self.store_gen = Some(g);
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(json!({"bills": bills, "planted": planted, "found": found,
+                        "by_family": by_family.iter().map(|(k, (p, f))| (k.clone(), json!({"planted": p, "found": f}))).collect::<serde_json::Map<_, _>>(),
+                        "missed": missed, "extra": extra, "seconds": t0.elapsed().as_secs_f64()}).to_string()),
+                }
+            }
+            other => Err(format!("shop: unknown command {other:?} (state, clock, import <file>, gen <day> <seed> <file>, sim <from> <to> <seed>)")),
+        };
+        out.unwrap_or_else(|e| format!("refused: {e}"))
+    }
+
+    fn metrics_json(&mut self, reset: bool) -> String {
+        let p = self.predictor.stats;
+        let v = json!({
+            "chats": self.metrics.chats.iter().map(|(k, (n, us))| (k.clone(), json!({"n": n, "avg_ms": *us as f64 / 1000.0 / (*n).max(1) as f64}))).collect::<serde_json::Map<_, _>>(),
+            "retrains": self.metrics.retrains,
+            "retrain_avg_ms": self.metrics.retrain_us as f64 / 1000.0 / self.metrics.retrains.max(1) as f64,
+            "last": {"source": self.metrics.last.0, "ms": self.metrics.last.1 as f64 / 1000.0,
+                "tool": self.learner.episodes.last().and_then(|e| serde_json::from_str::<Value>(&e.action).ok()).and_then(|a| a["tool"].as_str().map(String::from)).unwrap_or_default()},
+            "classifier_labels": self.classifier.labels(),
+            "episodes": self.learner.episodes.len(),
+            "confirmed": self.learner.labelled(),
+            "ready": {"ahead_hits": p.ahead_hits, "repeat_hits": p.repeat_hits, "misses": p.misses,
+                "prepared": p.prepared, "stale": p.stale, "habits": self.predictor.habits()},
+        });
+        if reset {
+            self.metrics = Metrics::default();
+            self.predictor.stats = Default::default();
+        }
+        v.to_string()
     }
 
     /// Only agentos-llm reads our adapter format (llama-server's --lora wants its own).

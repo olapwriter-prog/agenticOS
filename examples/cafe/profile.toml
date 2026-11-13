@@ -1,0 +1,292 @@
+# A cafe in Visakhapatnam that sells noodles, fried rice and fried chicken on Swiggy, Zomato and
+# WhatsApp Business. This file is the whole description of the shop: change it and the same
+# code runs another business. The shop, its GSTIN and its people are made up; prices are
+# estimates for a mid-range takeaway in the city, before GST.
+name = "Vizag Wok & Crunch"
+address = "Dwaraka Nagar, Visakhapatnam 530016"
+city = "Visakhapatnam"
+state = "Andhra Pradesh"
+state_code = "37"
+gstin = "37AAAAA0000A1Z5"
+fssai = "10100000000000"
+lat = 17.7285
+lon = 83.3080
+
+gst_scheme = "restaurant_5"     # 5% on food, no input tax credit. "regular_18" allows credit.
+food_gst_pct = 5.0
+sac = "996331"
+invoice_prefix = "VWC/26-27/"
+delivery_fee = 30
+rider_pay_per_delivery = 25
+rider_pay_per_km = 6
+max_delivery_km = 8
+retain_customer_days = 30
+auto_bill = true
+auto_tracking = true
+buffer_pct = 10
+
+# ---- noodles ----
+[[menu]]
+code = "N1"
+name = "Veg Hakka Noodles"
+category = "noodles"
+price = 120
+popularity = 1.0
+aliases = ["veg noodles"]
+recipe = { noodles = 0.15, vegetables = 0.10, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "N2"
+name = "Egg Noodles"
+category = "noodles"
+price = 140
+popularity = 0.9
+recipe = { noodles = 0.15, eggs = 2, vegetables = 0.05, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "N3"
+name = "Chicken Hakka Noodles"
+category = "noodles"
+price = 160
+popularity = 1.6
+aliases = ["chicken noodles"]
+recipe = { noodles = 0.15, chicken = 0.10, vegetables = 0.05, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "N4"
+name = "Schezwan Chicken Noodles"
+category = "noodles"
+price = 170
+popularity = 1.0
+aliases = ["schezwan noodles", "szechuan chicken noodles"]
+recipe = { noodles = 0.15, chicken = 0.10, vegetables = 0.05, oil = 0.02, sauces = 0.04, box = 1 }
+
+# ---- fried rice ----
+[[menu]]
+code = "R1"
+name = "Veg Fried Rice"
+category = "fried rice"
+price = 120
+popularity = 1.0
+recipe = { rice = 0.15, vegetables = 0.10, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "R2"
+name = "Egg Fried Rice"
+category = "fried rice"
+price = 140
+popularity = 1.1
+recipe = { rice = 0.15, eggs = 2, vegetables = 0.05, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "R3"
+name = "Chicken Fried Rice"
+category = "fried rice"
+price = 160
+popularity = 2.2
+recipe = { rice = 0.15, chicken = 0.10, vegetables = 0.05, oil = 0.02, sauces = 0.02, box = 1 }
+[[menu]]
+code = "R4"
+name = "Schezwan Chicken Fried Rice"
+category = "fried rice"
+price = 170
+popularity = 1.1
+aliases = ["schezwan fried rice", "szechuan chicken fried rice"]
+recipe = { rice = 0.15, chicken = 0.10, vegetables = 0.05, oil = 0.02, sauces = 0.04, box = 1 }
+[[menu]]
+code = "R5"
+name = "Mixed Fried Rice"
+category = "fried rice"
+price = 190
+popularity = 0.6
+recipe = { rice = 0.15, chicken = 0.08, eggs = 1, vegetables = 0.05, oil = 0.02, sauces = 0.02, box = 1 }
+
+# ---- fried chicken ----
+[[menu]]
+code = "C1"
+name = "Crispy Fried Chicken 2pc"
+category = "fried chicken"
+price = 170
+popularity = 1.5
+aliases = ["fried chicken", "chicken 2pc", "2pc chicken"]
+recipe = { chicken = 0.25, breading = 0.06, oil = 0.05, box = 1 }
+[[menu]]
+code = "C2"
+name = "Crispy Fried Chicken Bucket 6pc"
+category = "fried chicken"
+price = 450
+popularity = 0.7
+aliases = ["chicken bucket", "bucket"]
+recipe = { chicken = 0.75, breading = 0.18, oil = 0.12, box = 2 }
+[[menu]]
+code = "C3"
+name = "Hot Wings 6pc"
+category = "fried chicken"
+price = 180
+popularity = 1.3
+aliases = ["wings", "hot wings", "chicken wings"]
+recipe = { chicken = 0.30, breading = 0.05, oil = 0.05, sauces = 0.02, box = 1 }
+[[menu]]
+code = "C4"
+name = "Chicken Popcorn"
+category = "fried chicken"
+price = 130
+popularity = 1.2
+aliases = ["popcorn chicken", "popcorn"]
+recipe = { chicken = 0.15, breading = 0.05, oil = 0.04, box = 1 }
+[[menu]]
+code = "C5"
+name = "Chicken Strips 4pc"
+category = "fried chicken"
+price = 160
+popularity = 0.8
+aliases = ["strips", "chicken strips"]
+recipe = { chicken = 0.18, breading = 0.05, oil = 0.04, box = 1 }
+[[menu]]
+code = "C6"
+name = "Crispy Chicken Burger"
+category = "fried chicken"
+price = 150
+popularity = 0.02
+aliases = ["burger", "chicken burger"]
+recipe = { chicken = 0.12, breading = 0.03, oil = 0.03, bun = 1, box = 1 }
+
+# ---- what the kitchen buys (pack price before GST; GST rates are assumptions to check) ----
+[[ingredients]]
+name = "chicken"
+unit = "kg"
+pack = 1
+pack_price = 240
+gst_pct = 0
+supplier = "Vizag Poultry Mart"
+[[ingredients]]
+name = "eggs"
+unit = "nos"
+pack = 30
+pack_price = 180
+gst_pct = 0
+supplier = "Vizag Poultry Mart"
+[[ingredients]]
+name = "vegetables"
+unit = "kg"
+pack = 1
+pack_price = 50
+gst_pct = 0
+supplier = "Rythu Bazaar"
+[[ingredients]]
+name = "rice"
+unit = "kg"
+pack = 25
+pack_price = 2100
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "noodles"
+unit = "kg"
+pack = 5
+pack_price = 450
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "oil"
+unit = "l"
+pack = 15
+pack_price = 2100
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "sauces"
+unit = "kg"
+pack = 5
+pack_price = 600
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "breading"
+unit = "kg"
+pack = 5
+pack_price = 550
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "bun"
+unit = "nos"
+pack = 6
+pack_price = 40
+gst_pct = 5
+supplier = "Sri Lakshmi Traders"
+[[ingredients]]
+name = "box"
+unit = "nos"
+pack = 100
+pack_price = 450
+gst_pct = 18
+supplier = "Coastal Packaging"
+
+# ---- platforms (rates are assumptions; put the ones in your agreement) ----
+[[platforms]]
+name = "Swiggy"
+commission_pct = 25
+commission_gst_pct = 18
+tds_pct = 0.1
+[[platforms]]
+name = "Zomato"
+commission_pct = 24
+commission_gst_pct = 18
+tds_pct = 0.1
+
+[[riders]]
+id = "R1"
+name = "Ravi"
+phone = "+91 90000 00101"
+[[riders]]
+id = "R2"
+name = "Suresh"
+phone = "+91 90000 00102"
+
+# ---- where orders come from (distances and positions are approximate) ----
+[[localities]]
+name = "Dwaraka Nagar"
+km = 1.0
+lat = 17.7290
+lon = 83.3100
+[[localities]]
+name = "Siripuram"
+km = 2.0
+lat = 17.7200
+lon = 83.3160
+[[localities]]
+name = "Akkayyapalem"
+km = 2.5
+lat = 17.7350
+lon = 83.2980
+[[localities]]
+name = "Seethammadhara"
+km = 3.0
+lat = 17.7445
+lon = 83.3125
+[[localities]]
+name = "Maddilapalem"
+km = 3.0
+lat = 17.7370
+lon = 83.3220
+[[localities]]
+name = "Beach Road"
+km = 3.5
+lat = 17.7140
+lon = 83.3260
+[[localities]]
+name = "MVP Colony"
+km = 4.5
+lat = 17.7430
+lon = 83.3360
+[[localities]]
+name = "NAD Junction"
+km = 7.0
+lat = 17.7440
+lon = 83.2330
+[[localities]]
+name = "Madhurawada"
+km = 13.0
+lat = 17.8170
+lon = 83.3540
+[[localities]]
+name = "Gajuwaka"
+km = 14.0
+lat = 17.6900
+lon = 83.2090

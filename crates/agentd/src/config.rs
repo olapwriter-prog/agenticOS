@@ -77,6 +77,12 @@ pub struct Config {
     pub train_steps: usize,
     /// A run stops and checkpoints after this long, and continues on the next tick.
     pub train_chunk_secs: u64,
+    /// A business profile (TOML). When set, the phone also runs that business: orders, bills,
+    /// GST, riders, platforms, the dashboard and the plan (crates/business).
+    pub business_profile: Option<PathBuf>,
+    /// A retail store's profile (TOML). When set, the phone audits the store's bills and keeps
+    /// its GST and income-tax books (crates/retail).
+    pub store_profile: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -120,6 +126,8 @@ impl Default for Config {
             train_min_battery: 50,
             train_steps: 60,
             train_chunk_secs: 1800,
+            business_profile: None,
+            store_profile: None,
         }
     }
 }

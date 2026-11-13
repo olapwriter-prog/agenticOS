@@ -6,6 +6,7 @@ pub mod coder;
 pub mod config;
 pub mod core;
 pub mod model;
+pub mod predict;
 pub mod qa;
 pub mod secrets;
 pub mod server;

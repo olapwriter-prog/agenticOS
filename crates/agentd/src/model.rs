@@ -42,7 +42,10 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        _ => "",
+        other => match agentos_business::tools::describe(other) {
+            "" => agentos_retail::tools::describe(other),
+            d => d,
+        },
     }
 }
 
@@ -172,6 +175,22 @@ pub fn default_intents() -> IntentTable {
     t.add("roll back {name} to version {version}", "rollback_function");
     t.add("remove function {name}", "remove_function");
     t.add("run {name} with {args}", "run_function");
+    t
+}
+
+/// The phrase table, with the phrases of the business and of the store the phone runs, if any.
+pub fn intents(business: bool, store: bool) -> IntentTable {
+    let mut t = default_intents();
+    if business {
+        for (pattern, tool) in agentos_business::tools::INTENTS {
+            t.add(pattern, tool);
+        }
+    }
+    if store {
+        for (pattern, tool) in agentos_retail::tools::INTENTS {
+            t.add(pattern, tool);
+        }
+    }
     t
 }
 

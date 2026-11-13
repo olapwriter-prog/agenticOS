@@ -9,6 +9,8 @@ pub struct Secrets {
     pub gate_secret: Vec<u8>,
     pub anchor_key: Vec<u8>,
     pub commercial_key: Option<String>,
+    /// Seals the business book (customers, orders) at rest.
+    pub business_key: Vec<u8>,
 }
 
 fn random(n: usize) -> Result<Vec<u8>, String> {
@@ -42,6 +44,7 @@ pub fn open_or_create(dir: &Path, pass: &str, kdf_mib: u32) -> Result<Secrets, S
         ("gateway_token", 32),
         ("gate_secret", 32),
         ("anchor_key", 32),
+        ("business_key", 32),
     ] {
         if v.get(name).is_none() {
             let val = random(len)?;
@@ -58,6 +61,7 @@ pub fn open_or_create(dir: &Path, pass: &str, kdf_mib: u32) -> Result<Secrets, S
             .map_err(|e| e.to_string())?,
         gate_secret: v.get("gate_secret").unwrap().to_vec(),
         anchor_key: v.get("anchor_key").unwrap().to_vec(),
+        business_key: v.get("business_key").unwrap().to_vec(),
         commercial_key: v
             .get("commercial_key")
             .and_then(|b| String::from_utf8(b.to_vec()).ok()),

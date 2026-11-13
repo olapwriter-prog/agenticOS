@@ -163,6 +163,10 @@ pub struct Job {
     pub question: Option<String>,
     /// An answer of "none" over non-empty data has been sent back for one more look.
     pub rechecked: bool,
+    /// The learner's episode for this request, so "that was wrong" lands on it and not on
+    /// whatever was asked before.
+    pub episode: u64,
+    pub started: std::time::Instant,
 }
 
 /// Ask the model on another thread; the answer arrives on the returned channel.

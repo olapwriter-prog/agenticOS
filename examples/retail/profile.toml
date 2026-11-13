@@ -1,0 +1,172 @@
+# A value-fashion store in a shopping centre in Visakhapatnam, about 5,000 bills a day. The store,
+# its GSTIN and its suppliers are made up. Every rate and amount here is an assumption to be
+# replaced with the real one: check the GST rates and dates against the current notifications.
+name = "Vizag Value Fashion (CMR Central store)"
+gstin = "37AABCV5555K1ZW"
+state_code = "37"
+invoice_prefix = "VVF/25-26/"
+fy_start = "2025-04-01"
+fy_end = "2026-03-31"
+bills_per_day = 5000
+
+# ---- GST on what is sold. A slab is on the value of one piece before tax. ----
+# Clothing (HSN 61, 62, 63): 5% up to ₹1,000 and 12% above until 21 Sep 2025; from 22 Sep 2025
+# 5% up to ₹2,500 and 18% above.
+[[rate_rules]]
+hsn = "61"
+from = "2017-07-01"
+to = "2025-09-21"
+slab = 1000
+low = 5
+high = 12
+[[rate_rules]]
+hsn = "61"
+from = "2025-09-22"
+to = "2099-12-31"
+slab = 2500
+low = 5
+high = 18
+[[rate_rules]]
+hsn = "62"
+from = "2017-07-01"
+to = "2025-09-21"
+slab = 1000
+low = 5
+high = 12
+[[rate_rules]]
+hsn = "62"
+from = "2025-09-22"
+to = "2099-12-31"
+slab = 2500
+low = 5
+high = 18
+# Footwear (HSN 64): 12% up to ₹1,000 and 18% above until 21 Sep 2025; then 5% up to ₹2,500.
+[[rate_rules]]
+hsn = "64"
+from = "2017-07-01"
+to = "2025-09-21"
+slab = 1000
+low = 12
+high = 18
+[[rate_rules]]
+hsn = "64"
+from = "2025-09-22"
+to = "2099-12-31"
+slab = 2500
+low = 5
+high = 18
+# Bags (HSN 4202) and fragrances (HSN 3303): 18% throughout.
+[[rate_rules]]
+hsn = "4202"
+from = "2017-07-01"
+to = "2099-12-31"
+high = 18
+[[rate_rules]]
+hsn = "3303"
+from = "2017-07-01"
+to = "2099-12-31"
+high = 18
+
+# ---- what is sold: tag prices include GST ----
+[[categories]]
+code = "TS"
+name = "T-shirts"
+hsn = "6109"
+prices = [199, 299, 399, 499]
+cost_pct = 52
+weight = 3.0
+[[categories]]
+code = "SH"
+name = "Shirts"
+hsn = "6205"
+prices = [499, 699, 999, 1049]
+cost_pct = 52
+weight = 2.0
+[[categories]]
+code = "JN"
+name = "Jeans and trousers"
+hsn = "6203"
+prices = [699, 999, 1299, 1499]
+cost_pct = 54
+weight = 2.2
+[[categories]]
+code = "KU"
+name = "Kurtas and ethnic wear"
+hsn = "6204"
+prices = [499, 799, 1049, 1499, 2599]
+cost_pct = 50
+weight = 2.0
+[[categories]]
+code = "DR"
+name = "Dresses and tops"
+hsn = "6206"
+prices = [399, 599, 999, 1699]
+cost_pct = 50
+weight = 2.2
+[[categories]]
+code = "KD"
+name = "Kids' wear"
+hsn = "6111"
+prices = [199, 299, 499, 699]
+cost_pct = 53
+weight = 1.8
+[[categories]]
+code = "IW"
+name = "Innerwear and socks"
+hsn = "6107"
+prices = [149, 249, 399]
+cost_pct = 55
+weight = 1.2
+[[categories]]
+code = "JK"
+name = "Jackets and winter wear"
+hsn = "6201"
+prices = [1499, 1999, 2599, 2999]
+cost_pct = 55
+weight = 0.5
+[[categories]]
+code = "FW"
+name = "Footwear"
+hsn = "6404"
+prices = [399, 599, 999, 1049, 1299]
+cost_pct = 56
+weight = 1.4
+[[categories]]
+code = "BG"
+name = "Bags"
+hsn = "4202"
+prices = [399, 699, 999]
+cost_pct = 50
+weight = 0.6
+[[categories]]
+code = "FR"
+name = "Fragrances"
+hsn = "3303"
+prices = [299, 499]
+cost_pct = 45
+weight = 0.5
+
+# ---- monthly running costs, rupees (before GST) ----
+[expenses]
+rent = 4500000
+rent_gst_pct = 18
+rent_tds_pct = 10
+salaries = 6000000
+electricity = 650000
+security_housekeeping = 420000
+marketing = 300000
+staff_food = 120000
+packaging = 380000
+card_fee_pct = 0.9
+head_office_pct = 12
+shrinkage_pct = 1.5
+fitout = 30000000
+depreciation_pct = 10
+
+# ---- income tax: a domestic company on the 22% option ----
+[tax]
+rate_pct = 22
+surcharge_pct = 10
+cess_pct = 4
+tds_default_disallow_pct = 30
+cash_limit = 10000

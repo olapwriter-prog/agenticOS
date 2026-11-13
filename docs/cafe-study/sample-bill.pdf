@@ -1,0 +1,56 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 420 595] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 1513 >>
+stream
+BT /F1 9 Tf 12 TL 28 559 Td
+(                       TAX INVOICE                        ) Tj T*
+(                    Vizag Wok & Crunch                    ) Tj T*
+(           Dwaraka Nagar, Visakhapatnam 530016            ) Tj T*
+(       GSTIN 37AAAAA0000A1Z5   FSSAI 10100000000000       ) Tj T*
+(----------------------------------------------------------) Tj T*
+(Invoice: VWC/26-27/00598            Date: 2026-11-13 17:29) Tj T*
+(Order:   W-77006                    Place of supply: Andhra Pradesh \(37\)) Tj T*
+(To:      Harsha P, +91 90000 10518) Tj T*
+(         Flat 115, Sai Residency, Siripuram) Tj T*
+(----------------------------------------------------------) Tj T*
+(Item                            Qty       Rate      Amount) Tj T*
+(Egg Noodles                       1       Rs 140        Rs 140) Tj T*
+(----------------------------------------------------------) Tj T*
+(Items                                                 Rs 140) Tj T*
+(Delivery                                               Rs 30) Tj T*
+(Taxable value \(SAC 996331\)                            Rs 170) Tj T*
+(CGST 2.5%                                            Rs 4.25) Tj T*
+(SGST 2.5%                                            Rs 4.25) Tj T*
+(Round off                                            Rs 0.50) Tj T*
+(TOTAL                                                 Rs 179) Tj T*
+(----------------------------------------------------------) Tj T*
+(Paid by: UPI) Tj T*
+(Thank you. This is a computer-generated invoice.) Tj T*
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000001805 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1873
+%%EOF
