@@ -60,6 +60,7 @@ pub fn describe(tool: &str) -> &'static str {
         other => [
             agentos_business::tools::describe(other),
             agentos_retail::tools::describe(other),
+            agentos_fleet::tools::describe(other),
             agentos_skillpack::tools::describe(other),
             agentos_docs::describe(other),
             agentos_apps::describe(other),
@@ -334,10 +335,10 @@ fn add_default_intents(t: &mut IntentTable) {
     t.add("run {name} with {args}", "run_function");
 }
 
-/// The phrase table, with the phrases of the business and of the store the phone runs, if any.
-/// Theirs come first: the first match wins, and theirs are the specific ones ("file store gst
-/// for {period}" before the general "file {form} for {period}").
-pub fn intents(business: bool, store: bool) -> IntentTable {
+/// The phrase table, with the phrases of the business, the store and the fleet the phone runs,
+/// if any. Theirs come first: the first match wins, and theirs are the specific ones ("file
+/// store gst for {period}" before the general "file {form} for {period}").
+pub fn intents(business: bool, store: bool, fleet: bool) -> IntentTable {
     let mut t = IntentTable::new();
     if business {
         for (pattern, tool) in agentos_business::tools::INTENTS {
@@ -346,6 +347,11 @@ pub fn intents(business: bool, store: bool) -> IntentTable {
     }
     if store {
         for (pattern, tool) in agentos_retail::tools::INTENTS {
+            t.add(pattern, tool);
+        }
+    }
+    if fleet {
+        for (pattern, tool) in agentos_fleet::tools::INTENTS {
             t.add(pattern, tool);
         }
     }

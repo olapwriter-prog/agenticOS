@@ -10,7 +10,10 @@ let dir = URL(fileURLWithPath: args[1]), out = URL(fileURLWithPath: args[2])
 try? FileManager.default.removeItem(at: out)
 let list = try String(contentsOf: dir.appendingPathComponent("frames.txt"), encoding: .utf8)
     .split(separator: "\n").map { $0.split(separator: " ") }.map { (String($0[0]), Int($0[1]) ?? 1) }
-let (w, h, fps) = (1280, 720, 10)
+// the frames' size, from the first one
+guard let first = NSImage(contentsOf: dir.appendingPathComponent(list[0].0)),
+      let firstCG = first.cgImage(forProposedRect: nil, context: nil, hints: nil) else { print("cannot read \(list[0].0)"); exit(1) }
+let (w, h, fps) = (firstCG.width, firstCG.height, 10)
 let writer = try AVAssetWriter(outputURL: out, fileType: .mp4)
 let input = AVAssetWriterInput(mediaType: .video, outputSettings: [
     AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: w, AVVideoHeightKey: h,

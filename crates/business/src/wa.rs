@@ -87,6 +87,15 @@ fn match_item<'a>(p: &'a Profile, phrase: &str) -> Option<&'a str> {
     }
 }
 
+/// The dishes a phrase could mean: every item whose name has all of the phrase's words.
+pub fn candidates<'a>(p: &'a Profile, phrase: &str) -> Vec<&'a str> {
+    let have: Vec<String> = words(phrase).into_iter().filter(|w| w.parse::<u32>().is_err()).collect();
+    if have.is_empty() {
+        return vec![];
+    }
+    p.menu.iter().filter(|m| { let n = words(&m.name); have.iter().all(|w| n.contains(w)) }).map(|m| m.name.as_str()).collect()
+}
+
 /// "2 chicken fried rice, wings x1 and a veg noodles" -> [(code, qty)], or what was not understood.
 pub fn parse_order(p: &Profile, text: &str) -> Result<Vec<(String, u32)>, String> {
     let mut lines: Vec<(String, u32)> = Vec::new();

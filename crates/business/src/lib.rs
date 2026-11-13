@@ -467,9 +467,28 @@ impl Business {
         Ok(said)
     }
 
-    /// A customer typed an order on WhatsApp. `Err` says what to ask them.
+    /// A customer typed an order on WhatsApp. If it cannot be read, the customer is asked on
+    /// WhatsApp (with the dishes it could be), and `Err` says what was asked.
     pub fn ingest_text(&mut self, c: CustomerIn, locality: &str, km: f64, payment: &str, text: &str) -> Result<String, String> {
-        let lines = wa::parse_order(&self.profile, text)?;
+        let lines = match wa::parse_order(&self.profile, text) {
+            Ok(l) => l,
+            Err(e) => {
+                let options = wa::candidates(&self.profile, text);
+                let ask = if options.len() > 1 {
+                    format!("Sorry, which one did you mean? {}. Reply with the dish and how many.", options.join(", "))
+                } else {
+                    "Sorry, we could not find that on our menu. Reply with the dish and how many, or ask for the menu.".to_string()
+                };
+                if self.live && digits(&c.phone).len() >= 10 {
+                    let n = ask.len();
+                    self.wa.send(&c.phone, Msg::Text(ask.clone()))?;
+                    let to = format!("{} {}", mask_name(&c.name), mask_phone(&c.phone));
+                    self.record("whatsapp", &to, "question", "unclear order", n);
+                    self.save()?;
+                }
+                return Err(format!("{e}; asked the customer: “{ask}”"));
+            }
+        };
         let n = self.book.orders.iter().filter(|o| o.id.starts_with("W-")).count();
         self.ingest(OrderIn {
             id: format!("W-{}", 1001 + n),

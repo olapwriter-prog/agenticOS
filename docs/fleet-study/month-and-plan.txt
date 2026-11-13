@@ -1,0 +1,50 @@
+Namma Wheels Fleet — 2026-1, 30 day(s): each car, from what it keeps after the platforms' cut to its profit
+  car  model              days     km      keeps   drivers    energy   upkeep  repairs      loan    papers     profit
+  C01  WagonR CNG           30   4382    ₹71,273 ₹24,945.55   ₹16,650 ₹5,696.34       ₹0 ₹12,335.53 ₹3,452.05  ₹8,193.53
+  C02  Tiago CNG            30   4334 ₹70,523.21 ₹24,683.12   ₹17,972 ₹5,634.46   ₹4,200 ₹12,927.63 ₹3,452.05  ₹1,653.95
+  C03  Celerio CNG          30   4576 ₹73,345.32 ₹25,670.86   ₹16,059 ₹5,949.32   ₹4,200 ₹12,828.95 ₹3,452.05  ₹5,185.14
+  C04  WagonR CNG           30   4383 ₹72,156.75 ₹25,254.86   ₹17,602 ₹5,697.51   ₹4,200 ₹12,335.53 ₹3,452.05  ₹3,614.80
+  C05  Tiago CNG            30   4275 ₹68,565.13 ₹23,997.80   ₹17,863 ₹5,557.11   ₹4,200 ₹12,927.63 ₹3,452.05    ₹567.54
+  C06  Celerio CNG          30   4377 ₹71,324.60 ₹24,963.61   ₹15,492 ₹5,689.84   ₹4,200 ₹12,828.95 ₹3,452.05  ₹4,698.15
+  C07  WagonR CNG           30   4437 ₹68,610.08 ₹24,013.53   ₹17,223 ₹5,768.36   ₹4,200 ₹12,335.53 ₹3,452.05  ₹1,617.61
+  C08  Tiago CNG            29   4183 ₹67,025.45 ₹23,458.91   ₹17,047 ₹5,438.16   ₹4,200 ₹12,927.63 ₹3,452.05    ₹501.70
+  C09  Celerio CNG          30   4271 ₹69,039.36 ₹24,163.78   ₹15,009 ₹5,551.91   ₹4,200 ₹12,828.95 ₹3,452.05  ₹3,833.67
+  C10  Tiago EV 24 kWh      30   4434 ₹71,507.38 ₹25,027.58    ₹6,289 ₹2,660.34   ₹2,800 ₹19,243.42 ₹3,123.29 ₹12,363.75
+  C11  Tigor EV 26 kWh      30   4386 ₹71,366.40 ₹24,978.24    ₹5,810 ₹2,631.90   ₹2,800 ₹22,302.63 ₹3,123.29  ₹9,720.34
+  C12  Tiago EV 24 kWh      28   4081 ₹64,599.90 ₹22,609.97    ₹5,659 ₹2,448.36  ₹12,500 ₹19,243.42 ₹3,123.29   -₹984.14
+  C13  Tigor EV 26 kWh      30   4456 ₹72,833.05 ₹25,491.57    ₹5,894 ₹2,673.60   ₹2,800 ₹22,302.63 ₹3,123.29 ₹10,547.96
+  C14  Tiago EV 24 kWh      30   4260 ₹68,333.69 ₹23,916.79    ₹5,911   ₹2,556   ₹2,800 ₹19,243.42 ₹3,123.29 ₹10,783.19
+  C15  Tigor EV 26 kWh      30   4435 ₹71,567.13 ₹25,048.50    ₹5,885 ₹2,660.94   ₹2,800 ₹22,302.63 ₹3,123.29  ₹9,746.77
+Fleet profit for the period: ₹82,043.96
+CNG cars (9, about ₹6.8 lakh each): a car leaves ₹648.92 a day before its loan and papers (₹538.31 a day), so ₹110.61 a day; energy ₹3.68 a km
+Electric cars (6, about ₹11.1 lakh each): a car leaves ₹1,086.42 a day before its loan and papers (₹796.54 a day), so ₹289.88 a day; energy ₹1.19 a km
+An electric car leaves ₹437.50 a day more than a CNG car before the loan. It costs ₹4.3 lakh more, which that pays back in about 32 months of running.
+Public fast charging cost ₹1,282.80 more this period than the same energy at the depot.
+
+Plan for Friday 2026-11-13 (from the last 14 days)
+Where an hour of driving pays most (after the platform's cut):
+  06–10: Namma Yatri at ₹345 an hour (Uber ₹263)
+  10–16: Namma Yatri at ₹342 an hour (Uber ₹251)
+  16–21: Namma Yatri at ₹344 an hour (Uber ₹263)
+Charging (4 depot charger(s), 6 electric cars):
+  C13: on a depot charger from the end of its shift
+  C11: on a depot charger from the end of its shift
+  C15: on a depot charger from the end of its shift
+  C10: on a depot charger from the end of its shift
+  C12: takes over a charger at about 01:00, when the first cars are full
+  C14: takes over a charger at about 02:00, when the first cars are full
+Before the cars go out:
+  C09's insurance runs out on 2026-11-20
+  Anand's licence expired on 2026-11-10
+Expect about ₹34,013 after the platforms' cut, as on the last 4 Friday(s).
+Lost money over the last 30 days: C12 (-₹984.14).
+Barely paid for themselves over the last 30 days: C05 (₹567.54), C08 (₹501.70).
+
+Uber (commission 25% + GST, tax deducted 0.1%)
+  2026-10-14 to 2026-10-20: owed ₹59,742.55, paid ₹59,742.55 — ok
+  2026-10-21 to 2026-10-27: owed ₹60,294.95, paid ₹57,894.95 — SHORT ₹2,400
+  2026-10-28 to 2026-11-03: owed ₹61,104.89, paid ₹61,104.89 — ok
+  2026-11-04 to 2026-11-10: owed ₹61,726.64, paid ₹61,726.64 — ok
+  awaiting payout: ₹17,085.42
+  claimed ₹2,400 on 2026-10-29 (CLM-UBER-1)
+Namma Yatri: riders pay the driver or the fleet's QR directly; the platform takes ₹25 a driver a day

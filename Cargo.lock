@@ -45,6 +45,7 @@ dependencies = [
  "agentos-docs",
  "agentos-executor",
  "agentos-firewall",
+ "agentos-fleet",
  "agentos-freeze",
  "agentos-functions",
  "agentos-gate",

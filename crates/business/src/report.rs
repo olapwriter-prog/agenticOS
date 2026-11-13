@@ -394,6 +394,48 @@ impl Business {
         out.join("\n")
     }
 
+    /// The actions that would fix what the book shows now, with the reason for each. The phone
+    /// queues them itself: one that needs the key waits on the owner's screen; nothing here
+    /// is chosen by the person or by a script. (Taking cash from a rider is not among them:
+    /// only the owner knows the money is in their hand.)
+    pub fn fixes(&self) -> Vec<(String, Vec<(String, String)>, String)> {
+        let day = self.today();
+        let now = self.now().to_string();
+        let rupees = |p: Paise| format!("{}", p as f64 / 100.0);
+        let mut out = Vec::new();
+        let mut add = |tool: &str, args: &[(&str, String)], why: String| {
+            out.push((tool.to_string(), args.iter().map(|(k, v)| (k.to_string(), v.clone())).collect(), why));
+        };
+        for o in self.on_day(&day).filter(|o| self.is_direct(o) && !o.bill_sent && o.status != "cancelled" && o.customer.as_ref().is_some_and(|t| self.book.customers.contains_key(t))) {
+            add("biz_send_bill", &[("order", o.id.clone())], format!("{} has no bill yet", o.id));
+        }
+        for pf in &self.profile.platforms {
+            let n = pf.name.to_lowercase();
+            let (can, why) = self.claimable(&n);
+            if can > 0 {
+                let why = why.split("; payouts").next().unwrap_or_default();
+                add("biz_claim", &[("platform", n.clone()), ("amount", rupees(can))], format!("{} paid {} less than its orders come to: {why}", pf.name, inr(can)));
+            }
+        }
+        if day.len() >= 10 {
+            let last = add_days(&format!("{}-01", &day[..7]), -1)[..7].to_string();
+            let g = self.gst(&last);
+            if (g.invoices > 0 || !g.eco.is_empty()) && !self.book.gst_filed.iter().any(|(p, _)| p == &last) {
+                add("biz_file_gst", &[("period", last.clone())], format!("{last} is over and its GST return is not filed: tax to pay {}", inr(g.payable)));
+            }
+        }
+        // closing time: every order done, so each rider's day is final
+        let open = self.on_day(&day).any(|o| !matches!(o.status.as_str(), "delivered" | "cancelled"));
+        if now.get(11..13).is_some_and(|h| h >= "22") && !open {
+            for r in self.rider_sheet(&day) {
+                if r.due > 0 {
+                    add("biz_pay_rider", &[("rider", r.id.clone()), ("amount", rupees(r.due))], format!("{}: {} drops, {:.1} km today", r.name, r.deliveries, r.km));
+                }
+            }
+        }
+        out
+    }
+
     /// What needs the owner now, found by rules over the book. Each line says what to do.
     pub fn issues(&self) -> Vec<String> {
         let day = self.today();
@@ -426,7 +468,7 @@ impl Business {
             let (can, _) = self.claimable(&pf.name.to_lowercase());
             if can > 0 {
                 // the amount is read from the book when the owner does not say one
-                out.push(format!("{} underpaid {}: say 'claim it from {}'", pf.name, inr(can), pf.name.to_lowercase()));
+                out.push(format!("{} underpaid {}: the claim is ready for your approval", pf.name, inr(can)));
             }
         }
         // last month's return: due once the month is over
@@ -434,7 +476,7 @@ impl Business {
             let last = add_days(&format!("{}-01", &day[..7]), -1)[..7].to_string();
             let g = self.gst(&last);
             if (g.invoices > 0 || !g.eco.is_empty()) && !self.book.gst_filed.iter().any(|(p, _)| p == &last) {
-                out.push(format!("GST return for {last} is not filed: say 'file gst for {last}'"));
+                out.push(format!("GST return for {last} is not filed: the return is ready for your approval"));
             }
         }
         let cut = add_days(&day, -self.profile.retain_customer_days);
@@ -607,6 +649,7 @@ impl Business {
             "hours": s.hours.to_vec(),
             "items": s.items.iter().map(|(c, q)| json!({"code": c, "name": self.profile.item(c).map(|m| m.name.clone()).unwrap_or_default(), "qty": q})).collect::<Vec<_>>(),
             "open": s.open,
+            "issues": self.issues(),
             "riders": self.rider_sheet(&day).iter().map(|r| json!({"id": r.id, "name": r.name, "deliveries": r.deliveries,
                 "km": r.km, "earnings": r.earnings, "paid": r.paid, "due": r.due, "cash_held": r.cash_held})).collect::<Vec<_>>(),
             "platforms": self.profile.platforms.iter().map(|pf| { let n = pf.name.to_lowercase(); let (can, why) = self.claimable(&n);

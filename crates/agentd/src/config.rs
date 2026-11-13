@@ -182,6 +182,9 @@ pub struct Config {
     pub bridge_dir: Option<PathBuf>,
     /// How often the bridge's events are read, in seconds.
     pub bridge_poll_secs: u64,
+    /// A taxi fleet's profile (TOML). When set, the phone keeps the fleet's trips, drivers'
+    /// sheets, cars' costs and checks (crates/fleet).
+    pub fleet_profile: Option<PathBuf>,
 }
 
 /// An OAuth provider the owner registered (for example a Google client of type Desktop app).
@@ -312,6 +315,7 @@ impl Default for Config {
             bridge: "sim".into(),
             bridge_dir: None,
             bridge_poll_secs: 2,
+            fleet_profile: None,
         }
     }
 }

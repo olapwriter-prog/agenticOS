@@ -287,8 +287,12 @@ fn a_word_is_never_taken_for_an_amount_on_the_approval_screen() {
     assert!(a.contains("approval required"), "{a}");
     let pending = ctl(&r, "pending");
     assert!(pending.contains("biz_claim amount=480 platform=zomato"), "the owner approves a figure, not a word: {pending}");
-    ctl(&r, &format!("press {}", a.split("id ").nth(1).and_then(|s| s.split(')').next()).unwrap()));
-    assert!(ctl(&r, "chat claim it from zomato").contains("claim CLM-ZOMATO-1 for ₹480 filed"));
+    // the phone had already proposed this claim; the owner's request is the same item, and one
+    // press carries it out
+    let done = ctl(&r, &format!("press {}", a.split("id ").nth(1).and_then(|s| s.split(')').next()).unwrap()));
+    assert!(done.contains("claim CLM-ZOMATO-1 for ₹480 filed"), "{done}");
+    let again = ctl(&r, "chat claim it from zomato");
+    assert!(again.contains("nothing to claim"), "{again}");
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
@@ -305,6 +309,48 @@ fn a_question_the_phone_knows_is_not_sent_to_write_analysis_code() {
     assert!(a.contains("W-1") && a.contains("La***"), "{a}");
     let m: Value = serde_json::from_str(&ctl(&r, "metrics")).unwrap();
     assert_eq!(m["chats"]["classifier"]["n"], 2, "{m}");
+    r.stop();
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn the_phone_proposes_the_fix_itself_and_one_press_carries_it_out() {
+    let (d, r, _tok) = boot("propose", true);
+    for i in 0..3 {
+        ctl(&r, &format!(r#"biz event {{"t":"order","id":"ZO-{i}","channel":"zomato","at":"2026-11-0{}T13:00","items":[{{"code":"C2","qty":2}}],"locality":"Gajuwaka","km":14,"status":"delivered"}}"#, i + 2));
+    }
+    ctl(&r, "biz clock 2026-11-11T10:00");
+    ctl(&r, "biz payout zomato 2026-11-02 2026-11-08 480");
+    // nobody asked: the claim is waiting, with its amount and its reason
+    let pending = ctl(&r, "pending");
+    assert!(pending.contains("biz_claim amount=480 platform=zomato"), "{pending}");
+    let state: Value = serde_json::from_str(&ctl(&r, "state")).unwrap();
+    let why = state["pending"][0]["why"].as_str().unwrap_or_default().to_string();
+    assert!(why.contains("Zomato paid ₹480 less") && !why.contains("payouts"), "{state}");
+    // another short week: the old proposal is withdrawn and one claim for the whole amount waits
+    for i in 0..3 {
+        ctl(&r, &format!(r#"biz event {{"t":"order","id":"ZO-1{i}","channel":"zomato","at":"2026-11-1{}T13:00","items":[{{"code":"C2","qty":2}}],"locality":"Gajuwaka","km":14,"status":"delivered"}}"#, i + 2));
+    }
+    ctl(&r, "biz clock 2026-11-18T10:00");
+    ctl(&r, "biz payout zomato 2026-11-12 2026-11-14 100");
+    let pending = ctl(&r, "pending");
+    assert_eq!(pending.lines().count(), 1, "{pending}");
+    assert!(pending.contains("biz_claim amount=580 platform=zomato"), "{pending}");
+    // one press: done, with no second request
+    let id = pending.split_whitespace().next().unwrap().trim_start_matches('#').to_string();
+    let done = ctl(&r, &format!("press {id}"));
+    assert!(done.contains("done: claim CLM-ZOMATO-1 for ₹580 filed"), "{done}");
+    // a declined proposal is not asked again the same day
+    order(&r, "W-1", "2026-11-18T13:05", "upi");
+    deliver(&r, "W-1", "R1", "2026-11-18T13:30");
+    assert!(!ctl(&r, "pending").contains("biz_pay_rider"), "not before closing");
+    ctl(&r, "biz clock 2026-11-18T22:30");
+    let pending = ctl(&r, "pending");
+    assert!(pending.contains("biz_pay_rider amount=52 rider=R1"), "{pending}");
+    let id = pending.split_whitespace().next().unwrap().trim_start_matches('#').to_string();
+    assert!(ctl(&r, &format!("decline {id}")).contains("declined"));
+    ctl(&r, "biz clock 2026-11-18T22:40");
+    assert!(!ctl(&r, "pending").contains("biz_pay_rider"), "declined stays declined today");
     r.stop();
     let _ = std::fs::remove_dir_all(d);
 }
