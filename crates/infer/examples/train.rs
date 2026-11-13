@@ -30,32 +30,67 @@ fn main() {
             let prompt = format!("<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\nring ravi<|im_end|>\n<|im_start|>assistant\n");
             let (tokens, train) = example(&tok, &prompt, r#"{"tool":"call","args":{"to":"ravi"}}"#);
             let ad = Adapter::new(&m, 8, 16.0, 1).unwrap();
-            let tr = Trainer::new(&m);
-            for _ in 0..2 {
+            let mut tr = Trainer::new(&m);
+            println!("{} tokens: all activations would take {} MiB", tokens.len(), tr.saved_bytes(tokens.len()) >> 20);
+            for budget in [usize::MAX, 0] {
+                tr.budget = budget;
                 let t0 = Instant::now();
                 let (l, _) = tr.loss(&ad, &tokens, &train, false);
                 let t1 = Instant::now();
                 let (_, g) = tr.loss(&ad, &tokens, &train, true);
                 assert!(g.is_some());
-                println!("{} tokens: forward {:?}, forward+backward {:?} (loss {l:.3})", tokens.len(), t1 - t0, t1.elapsed());
+                let how = if tr.checkpoints(tokens.len()) { "recomputing layers" } else { "keeping activations" };
+                println!("{how}: forward {:?}, forward+backward {:?} (loss {l:.3})", t1 - t0, t1.elapsed());
                 let p = &agentos_infer::model::PROFILE;
                 println!("  of which quantized matmul {:.2}s", p[0].swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e9);
             }
+        }
+        "batchbench" => {
+            // one training step's batch on the phone's real prompt: one by one, then packed
+            // (the system prompt shared once). args: model system.txt requests.tsv [batch]
+            let sys = std::fs::read_to_string(&a[3]).unwrap();
+            let reqs: Vec<(String, String)> = std::fs::read_to_string(&a[4])
+                .unwrap()
+                .lines()
+                .filter(|l| !l.starts_with('#') && l.contains('\t'))
+                .map(|l| {
+                    let (u, c) = l.split_once('\t').unwrap();
+                    (u.to_string(), c.to_string())
+                })
+                .collect();
+            let b: usize = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(4);
+            let items: Vec<(Vec<u32>, Vec<bool>)> = reqs
+                .iter()
+                .take(b)
+                .map(|(u, c)| {
+                    let prompt = format!("<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n{u}<|im_end|>\n<|im_start|>assistant\n");
+                    example(&tok, &prompt, c)
+                })
+                .collect();
+            let ad = Adapter::new(&m, 8, 16.0, 1).unwrap();
+            let mut tr = Trainer::new(&m);
+            tr.budget = usize::MAX;
+            let lay = Layout::pack(&items);
+            let total: usize = items.iter().map(|i| i.0.len()).sum();
+            println!("batch of {b}: {total} tokens one by one, {} packed ({} shared)", lay.tokens.len(), lay.shared);
+            let t0 = Instant::now();
+            let mut alone = vec![];
+            for (t, train) in &items {
+                alone.push(tr.loss(&ad, t, train, true).0);
+            }
+            let t1 = Instant::now();
+            let (packed, g) = tr.loss_batch(&ad, &items, true);
+            assert!(g.is_some());
+            let t2 = Instant::now();
+            println!("forward+backward one by one: {:?}   packed: {:?}   ({:.2}x)", t1 - t0, t2 - t1, (t1 - t0).as_secs_f64() / (t2 - t1).as_secs_f64());
+            println!("losses one by one {alone:.4?}\n       packed     {packed:.4?}");
         }
         x => panic!("unknown {x}"),
     }
 }
 
 fn gradcheck(m: &Model, tok: &Tokenizer) {
-    // LONG=1: a prompt past the DeltaNet checkpoint interval (64 tokens), so the backward pass
-    // replays the recurrence across chunks
-    let prompt = if std::env::var("LONG").is_ok() {
-        chat(&"please call mum on her mobile when you get the chance, thank you. ".repeat(8))
-    } else {
-        chat("call mum")
-    };
-    let (tokens, train) = example(tok, &prompt, "dial Mum");
-    println!("{} tokens", tokens.len());
+    let (tokens, train) = example(tok, &chat("call mum"), "dial Mum");
     let mut tr = Trainer::new(m);
     tr.exact = true;
     // forward agrees with the inference engine (adapter zero)
@@ -73,7 +108,15 @@ fn gradcheck(m: &Model, tok: &Tokenizer) {
             n += 1;
         }
     }
-    println!("loss trainer {l0:.4}  engine {:.4}", ce / n as f32);
+    tr.exact = false;
+    let (lf, _) = tr.loss(&ad0, &tokens, &train, false);
+    tr.exact = true;
+    // the engine quantizes matmul inputs to 8 bits and keeps the attention cache in f16, so it
+    // is closest to the trainer's fast (8-bit) path
+    println!("loss trainer {l0:.4} (exact), {lf:.4} (8-bit)  engine {:.4}", ce / n as f32);
+    if std::env::var("LOSS_ONLY").is_ok() {
+        return;
+    }
     // random B so every gradient is live
     let mut ad = ad0.clone();
     let mut s = 99u64;
@@ -88,14 +131,10 @@ fn gradcheck(m: &Model, tok: &Tokenizer) {
     println!("loss+grads in {:?}", t0.elapsed());
     let gr = gr.unwrap();
     let mut worst = 0f32;
-    // the first and last attention layers, and (Qwen3.5) the first DeltaNet layer's output
-    let attn: Vec<usize> = ad.pairs.keys().filter(|k| k.1 == Target::Q).map(|k| k.0).collect();
-    let (first, last) = (attn[0], *attn.last().unwrap());
-    let mut keys = vec![(first, Target::Q), (first, Target::V), (last, Target::K), (m.cfg.n_layer - 1, Target::O)];
-    if let Some(r) = (0..m.cfg.n_layer).find(|&i| m.cfg.is_recurrent(i)) {
-        keys.push((r, Target::O));
-    }
-    for key in keys {
+    // first, middle and last attention layers (on Qwen3.5 only every fourth layer has one)
+    let layers: Vec<usize> = ad.pairs.keys().map(|k| k.0).collect();
+    let (first, mid, last) = (layers[0], layers[layers.len() / 2], layers[layers.len() - 1]);
+    for key in [(first, Target::Q), (first, Target::V), (mid, Target::K), (last, Target::O)] {
         for (which, idx) in [(0usize, 3usize), (0, 101), (1, 5), (1, 77)] {
             let h: f32 = std::env::var("H").ok().and_then(|s| s.parse().ok()).unwrap_or(1e-2);
             let mut plus = ad.clone();

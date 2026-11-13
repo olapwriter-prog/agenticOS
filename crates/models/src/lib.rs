@@ -84,6 +84,8 @@ pub struct Supervisor {
     failed: BTreeMap<String, String>,
     /// LoRA adapters the model servers load (agentos-llm's own format), by model name.
     adapters: BTreeMap<String, PathBuf>,
+    /// Flags every server gets (agentos-llm only: its cache budget and experts folder).
+    pub server_args: Vec<String>,
 }
 
 impl Supervisor {
@@ -105,6 +107,7 @@ impl Supervisor {
             crashes: BTreeMap::new(),
             failed: BTreeMap::new(),
             adapters: BTreeMap::new(),
+            server_args: Vec::new(),
         }
     }
 
@@ -169,6 +172,7 @@ impl Supervisor {
             a.push("--lora".into());
             a.push(ad.display().to_string());
         }
+        a.extend(self.server_args.iter().cloned());
         a.extend(s.extra_args.iter().cloned());
         a
     }

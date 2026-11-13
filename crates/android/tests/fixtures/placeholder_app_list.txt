@@ -1,0 +1,7 @@
+Name: Placeholder Notes
+packageName: org.example.notes
+categories: Productivity
+
+Name: Placeholder Maps
+packageName: org.example.maps
+categories: Travel

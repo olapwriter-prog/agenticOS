@@ -11,9 +11,43 @@ fn arg<'a>(a: &'a Action, name: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("missing {name}"))
 }
 
+/// Read a JSON list from a file, or an empty list when there is no file yet.
+fn load_list<T: serde::de::DeserializeOwned + Default>(path: &std::path::Path) -> T {
+    std::fs::read(path)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Write to <path>.tmp and rename over <path>, so a crash never leaves half a file.
+fn save_list<T: serde::Serialize>(path: &std::path::Path, v: &T) -> Result<(), String> {
+    let tmp = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec(v).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
 #[derive(Default)]
 pub struct Calendar {
     pub events: Vec<(String, String)>, // (day, title)
+    /// Where the events are kept across restarts. None keeps them in memory only.
+    pub path: Option<std::path::PathBuf>,
+}
+impl Calendar {
+    /// A calendar kept in a file: its events are read now and written after every change.
+    pub fn load(path: std::path::PathBuf) -> Self {
+        let events = load_list(&path);
+        Calendar {
+            events,
+            path: Some(path),
+        }
+    }
+    fn persist(&self) -> Result<(), String> {
+        match &self.path {
+            Some(p) => save_list(p, &self.events),
+            None => Ok(()),
+        }
+    }
 }
 impl Connector for Calendar {
     fn name(&self) -> &str {
@@ -52,6 +86,7 @@ impl Connector for Calendar {
             "add_event" => {
                 self.events
                     .push((arg(a, "day")?.to_string(), arg(a, "title")?.to_string()));
+                self.persist()?;
                 Ok("added".into())
             }
             other => Err(format!("calendar cannot {other}")),
@@ -62,6 +97,18 @@ impl Connector for Calendar {
 #[derive(Default)]
 pub struct Reminders {
     pub items: Vec<(String, String)>, // (when, text)
+    /// Where the reminders are kept across restarts. None keeps them in memory only.
+    pub path: Option<std::path::PathBuf>,
+}
+impl Reminders {
+    /// Reminders kept in a file: read now, written after every change.
+    pub fn load(path: std::path::PathBuf) -> Self {
+        let items = load_list(&path);
+        Reminders {
+            items,
+            path: Some(path),
+        }
+    }
 }
 impl Connector for Reminders {
     fn name(&self) -> &str {
@@ -77,6 +124,9 @@ impl Connector for Reminders {
     fn call(&mut self, a: &Action) -> Result<String, String> {
         self.items
             .push((arg(a, "when")?.to_string(), arg(a, "text")?.to_string()));
+        if let Some(p) = &self.path {
+            save_list(p, &self.items)?;
+        }
         Ok("reminder set".into())
     }
 }
@@ -134,6 +184,38 @@ mod tests {
             c.call(&act("read_calendar", &[("day", "tue")])).unwrap(),
             "nothing"
         );
+    }
+    #[test]
+    fn a_calendar_event_survives_a_reload() {
+        let path = std::env::temp_dir().join(format!("cal-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut c = Calendar::load(path.clone());
+        c.call(&act("add_event", &[("day", "mon"), ("title", "dentist")]))
+            .unwrap();
+        let mut again = Calendar::load(path.clone());
+        assert_eq!(
+            again
+                .call(&act("read_calendar", &[("day", "mon")]))
+                .unwrap(),
+            "dentist"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn a_reminder_survives_a_reload() {
+        let path = std::env::temp_dir().join(format!("rem-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut r = Reminders::load(path.clone());
+        r.call(&act(
+            "set_reminder",
+            &[("text", "call mum"), ("when", "6pm")],
+        ))
+        .unwrap();
+        assert_eq!(
+            Reminders::load(path.clone()).items,
+            vec![("6pm".to_string(), "call mum".to_string())]
+        );
+        let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn reminder_is_stored() {

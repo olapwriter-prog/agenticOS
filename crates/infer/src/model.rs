@@ -127,6 +127,19 @@ pub struct Snapshot {
     ssm: Vec<Vec<f32>>,
 }
 
+/// Where a sequence was before a batch of tokens (see `State::mark`).
+pub struct Mark {
+    pub pos: usize,
+    conv: Vec<Vec<f32>>,
+    ssm: Vec<Vec<f32>>,
+}
+
+impl crate::cache::Weigh for Snapshot {
+    fn bytes(&self) -> usize {
+        Snapshot::bytes(self)
+    }
+}
+
 impl Snapshot {
     pub fn bytes(&self) -> usize {
         self.k
@@ -174,6 +187,19 @@ impl State {
             dst.copy_from_slice(src);
         }
     }
+    /// The part of the state that cannot be rewound by moving `pos` back: the recurrent layers'
+    /// states (constant size, nothing for a dense model). Taken before a speculative batch so
+    /// the state can go back to before the tokens that turned out wrong.
+    pub fn mark(&self) -> Mark {
+        Mark { pos: self.pos, conv: self.conv.clone(), ssm: self.ssm.clone() }
+    }
+    /// Back to a mark: the attention cache entries after it are simply written over later.
+    pub fn rewind(&mut self, m: &Mark) {
+        self.pos = m.pos;
+        for (dst, src) in self.conv.iter_mut().zip(&m.conv).chain(self.ssm.iter_mut().zip(&m.ssm)) {
+            dst.copy_from_slice(src);
+        }
+    }
     /// Start over (recurrent states back to zero).
     pub fn reset(&mut self) {
         self.pos = 0;
@@ -203,7 +229,7 @@ pub(crate) fn silu(x: f32) -> f32 {
 pub(crate) fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }
-fn softplus(x: f32) -> f32 {
+pub(crate) fn softplus(x: f32) -> f32 {
     if x > 20.0 {
         x
     } else {
@@ -387,6 +413,12 @@ impl Model {
         } else {
             vec![]
         };
+        // ARMv8.6 i8mm: two rows at a time against inputs interleaved in pairs (once, here)
+        let pairs = if n >= 2 && !q8.is_empty() && crate::quant::has_pair_kernel(w.dtype) {
+            crate::quant::pair_inputs(&q8, cols)
+        } else {
+            vec![]
+        };
         let mut t = vec![0f32; rows * n]; // rows x n
                                           // big enough tasks that scheduling is cheap, small enough that every core stays busy
         let chunk = (rows / (rayon::current_num_threads() * 8)).clamp(8, 256);
@@ -394,14 +426,26 @@ impl Model {
             .enumerate()
             .for_each(|(ci, out)| {
                 let r0 = ci * chunk;
-                for (k, o) in out.chunks_mut(n).enumerate() {
+                let here = out.len() / n;
+                let mut k = 0;
+                while k < here {
                     let r = r0 + k;
                     let row = &data[r * row_bytes..(r + 1) * row_bytes];
+                    if !pairs.is_empty() && k + 1 < here {
+                        let next = &data[(r + 1) * row_bytes..(r + 2) * row_bytes];
+                        let (o0, o1) = out[k * n..(k + 2) * n].split_at_mut(n);
+                        if crate::quant::rows2_dot_q8(w.dtype, row, next, cols, &q8, &pairs, o0, o1) {
+                            k += 2;
+                            continue;
+                        }
+                    }
+                    let o = &mut out[k * n..(k + 1) * n];
                     if q8.is_empty() {
                         row_dot_many(w.dtype, row, cols, x, n, o);
                     } else {
                         crate::quant::row_dot_q8(w.dtype, row, cols, &q8, o);
                     }
+                    k += 1;
                 }
             });
         if n == 1 {
@@ -502,6 +546,16 @@ impl Model {
 
     /// Run `tokens` (positions st.pos..) through the model. Returns the logits of the last token.
     pub fn forward(&self, st: &mut State, tokens: &[u32]) -> Result<Vec<f32>, String> {
+        self.forward_logits(st, tokens, false)
+    }
+
+    /// The same, returning the logits after every token (n x vocab): what checking a batch of
+    /// drafted tokens needs.
+    pub fn forward_all(&self, st: &mut State, tokens: &[u32]) -> Result<Vec<f32>, String> {
+        self.forward_logits(st, tokens, true)
+    }
+
+    fn forward_logits(&self, st: &mut State, tokens: &[u32], all: bool) -> Result<Vec<f32>, String> {
         let c = &self.cfg;
         let n = tokens.len();
         if st.pos + n > c.ctx {
@@ -536,6 +590,12 @@ impl Model {
             let _ = (&l.attn_norm, &l.ffn_norm);
         }
         st.pos += n;
+        if all {
+            for row in x.chunks_mut(d) {
+                rms_norm(row, &self.output_norm, c.eps);
+            }
+            return Ok(self.matmul(&self.output, &x, n));
+        }
         let mut last = x[(n - 1) * d..].to_vec();
         rms_norm(&mut last, &self.output_norm, c.eps);
         let logits = self.matmul(&self.output, &last, 1);
@@ -730,10 +790,6 @@ impl Model {
                     o.iter_mut().zip(zz).for_each(|(a, z)| *a *= silu(*z));
                 });
         }
-        let mut y = self.matmul(l.ssm_out.as_ref().unwrap(), &outs, n);
-        if let Some(ad) = &self.adapter {
-            ad.apply((li, crate::train::Target::O), &outs, n, &mut y);
-        }
-        y
+        self.matmul(l.ssm_out.as_ref().unwrap(), &outs, n)
     }
 }

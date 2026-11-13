@@ -1,0 +1,26 @@
+#!/sbin/openrc-run
+# A user session for agentd's audio and feedback services (see agentd-session.sh).
+
+name="agentd-session"
+description="User session for agentd: PipeWire, callaudiod, feedbackd"
+: ${AGENTD_SESSION_USER:=agentd-session}
+command="/usr/libexec/agentd/agentd-session"
+command_user="$AGENTD_SESSION_USER"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=10
+respawn_period=300
+output_log="/var/log/agentd-session.log"
+error_log="/var/log/agentd-session.log"
+
+depend() {
+	need dbus localmount
+	before agentd
+}
+
+start_pre() {
+	local uid
+	uid=$(id -u "$AGENTD_SESSION_USER") || return 1
+	checkpath -d -m 0700 -o "$AGENTD_SESSION_USER:$AGENTD_SESSION_USER" "/run/user/$uid"
+	checkpath -f -m 0640 -o "$AGENTD_SESSION_USER:$AGENTD_SESSION_USER" /var/log/agentd-session.log
+}

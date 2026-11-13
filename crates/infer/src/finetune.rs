@@ -1,10 +1,10 @@
 //! A training job: the human-confirmed requests agentd exported (sft.jsonl) in, a LoRA adapter
 //! out, kept only if it answers held-out requests better than the model without it.
 //!
-//! The job checkpoints as it goes and picks up from the checkpoint when run again, so agentd can
-//! stop it whenever the phone is unplugged, warm or needed, and continue the next night.
+//! The job checkpoints after every step and picks up from the checkpoint when run again, so
+//! agentd can stop it whenever the phone is unplugged, warm or needed, and continue the next night.
 use crate::engine::{Engine, Msg, Request};
-use crate::train::{example, Adapter, AdamW, Grads, Trainer};
+use crate::train::{example, Adapter, AdamW, Trainer};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -22,6 +22,8 @@ pub struct Job {
     pub holdout: usize,
     /// stop (with a checkpoint) after this long; run again to continue
     pub max_secs: Option<u64>,
+    /// bytes of saved activations per example before layers are recomputed instead
+    pub memory: usize,
 }
 
 impl Default for Job {
@@ -37,6 +39,7 @@ impl Default for Job {
             lr: 1e-3,
             holdout: 5,
             max_secs: None,
+            memory: 256 << 20,
         }
     }
 }
@@ -147,8 +150,8 @@ pub fn judge(e: &mut Engine, cases: &[Chat], grammar: &Option<String>) -> Result
     Ok(total / cases.len() as f32)
 }
 
-fn ckpt(out: &std::path::Path) -> (PathBuf, PathBuf) {
-    (out.with_extension("ckpt"), out.with_extension("ckpt.json"))
+fn ckpt(out: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+    (out.with_extension("ckpt"), out.with_extension("ckpt.json"), out.with_extension("ckpt.opt"))
 }
 
 /// Run (or continue) the job. Returns a JSON summary; `log` gets progress lines.
@@ -174,7 +177,7 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
     let examples: Vec<_> = train.iter().map(|c| example(&e.tok, &prompt_of(e, c), &c.2)).collect();
 
     // continue from a checkpoint, or start: score the model without an adapter first
-    let (ck, ck_meta) = ckpt(&job.out);
+    let (ck, ck_meta, ck_opt) = ckpt(&job.out);
     let meta: Option<Value> = std::fs::read_to_string(&ck_meta).ok().and_then(|s| serde_json::from_str(&s).ok());
     let resumed = meta
         .as_ref()
@@ -193,38 +196,40 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
         }
     };
     e.set_adapter(None);
-    let mut opt = AdamW::new(job.lr);
+    // the optimizer's moments come back too, so a resumed job continues exactly
+    let mut opt = match AdamW::load(&ck_opt, job.lr, &ad) {
+        Ok(o) if start > 0 => o,
+        Ok(_) | Err(_) => {
+            if start > 0 {
+                log("optimizer state missing or stale: moments restart");
+            }
+            AdamW::new(job.lr)
+        }
+    };
     let mut last_loss = f32::NAN;
     let mut step = start;
-    let save = |ad: &Adapter, step: usize| -> Result<(), String> {
+    let save = |ad: &Adapter, opt: &AdamW, step: usize| -> Result<(), String> {
         ad.save(&ck)?;
+        opt.save(&ck_opt)?;
         std::fs::write(&ck_meta, json!({"step": step, "base": base}).to_string()).map_err(|e| e.to_string())
     };
     while step < job.steps {
         if job.max_secs.is_some_and(|s| t0.elapsed().as_secs() >= s) {
-            save(&ad, step)?;
+            save(&ad, &opt, step)?;
             return Ok(json!({"done": false, "step": step, "steps": job.steps, "loss": last_loss}));
         }
-        let tr = Trainer::new(&e.model);
-        let mut acc: Option<Grads> = None;
-        let mut total = 0.0;
+        let mut tr = Trainer::new(&e.model);
+        tr.budget = job.memory;
         let b = job.batch.max(1).min(examples.len());
-        for k in 0..b {
-            let (tokens, mask) = &examples[(step * b + k) % examples.len()];
-            let (l, g) = tr.loss(&ad, tokens, mask, true);
-            total += l;
-            match acc.as_mut() {
-                Some(a) => a.add(&g.unwrap()),
-                None => acc = g,
-            }
-        }
-        opt.step(&mut ad, &acc.unwrap());
-        last_loss = total / b as f32;
+        // the batch in one pass: the system prompt the examples share is computed once
+        let batch: Vec<(Vec<u32>, Vec<bool>)> = (0..b).map(|k| examples[(step * b + k) % examples.len()].clone()).collect();
+        let (losses, g) = tr.loss_batch(&ad, &batch, true);
+        opt.step(&mut ad, &g.unwrap());
+        last_loss = losses.iter().sum::<f32>() / b as f32;
         step += 1;
         log(&format!("step {step}/{} loss {last_loss:.4}", job.steps));
-        if step % 10 == 0 {
-            save(&ad, step)?;
-        }
+        // every step: a step takes minutes on a phone, the adapter a few hundred KB to write
+        save(&ad, &opt, step)?;
     }
     e.set_adapter(Some(ad.clone()));
     let tuned = judge(e, &held, &job.grammar)?;
@@ -235,6 +240,7 @@ pub fn run(e: &mut Engine, job: &Job, log: &mut dyn FnMut(&str)) -> Result<Value
     }
     let _ = std::fs::remove_file(&ck);
     let _ = std::fs::remove_file(&ck_meta);
+    let _ = std::fs::remove_file(&ck_opt);
     log(&format!(
         "with the adapter: {:.0}% (was {:.0}%): {}",
         tuned * 100.0,

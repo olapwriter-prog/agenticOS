@@ -31,6 +31,8 @@ pub struct Config {
     pub power_dir: Option<PathBuf>,
     /// Use the real cgroup and cpufreq trees. False writes to a simulated tree under data_dir.
     pub real_hardware: bool,
+    /// Offer the demo messenger, which sends nothing and only records. Off on a real phone.
+    pub demo_connectors: bool,
     /// Vault key-derivation memory in MiB. Raise it on the phone; tests use 1.
     pub kdf_mib: u32,
     /// "sim" keeps a simulated phone in memory; "modemmanager" drives the real modem, Wi-Fi,
@@ -40,8 +42,23 @@ pub struct Config {
     pub leds_dir: PathBuf,
     /// How often to look for incoming calls and texts.
     pub phone_poll_secs: u64,
+    /// Watch ModemManager's D-Bus signals (with this dbus-monitor) so calls and texts are seen
+    /// as they arrive; polling then only backs it up, every `phone_signal_poll_secs`.
+    /// Used with phone = "modemmanager". Unset: poll only.
+    pub dbus_monitor: Option<PathBuf>,
+    /// The user whose session runs callaudiod, feedbackd and PipeWire (the agentd-session
+    /// service). Unset: those tools run as agentd's own user.
+    pub session_user: Option<String>,
+    pub phone_signal_poll_secs: u64,
     /// The control socket. Defaults to control.sock in data_dir.
     pub control_socket: Option<PathBuf>,
+    /// The approval key: the input device of a hardware button (e.g.
+    /// /dev/input/by-path/platform-gpio-keys-event). Unset: approve with `agentd ctl press N`.
+    pub approval_key: Option<PathBuf>,
+    /// Which key on that device (Linux key code; 114 = volume down).
+    pub approval_keycode: u16,
+    /// How long the key must be held to approve.
+    pub approval_hold_ms: u64,
 
     /// llama.cpp's server binary. agentd starts one per configured model.
     pub llama_server: PathBuf,
@@ -83,6 +100,130 @@ pub struct Config {
     /// A retail store's profile (TOML). When set, the phone audits the store's bills and keeps
     /// its GST and income-tax books (crates/retail).
     pub store_profile: Option<PathBuf>,
+    /// Train every night on the charger on what was confirmed that day, even if fewer than
+    /// train_min_new: the model follows the person day by day.
+    pub train_nightly: bool,
+    /// The business partner and personal assistant (`[partner]` table): channels, invoices
+    /// and GST, payments, shopping, news and bookings. Absent: not offered.
+    pub partner: Option<agentos_partner::Config>,
+    /// The skill library built by scripts/fetch-skills.sh (index.json and skills/). Defaults to
+    /// skills/ in data_dir; without one, the skill tools are not offered.
+    pub skills_dir: Option<PathBuf>,
+    /// Tokens a skill excerpt may take: about a sixth of a 4B model's context.
+    pub skill_budget: usize,
+    /// Where Word, Excel, PowerPoint and PDF files are read from. Defaults to documents/ in
+    /// data_dir.
+    pub documents_dir: Option<PathBuf>,
+    /// The apps over public APIs (weather, maps, currency, ...): where each service is, and the
+    /// home place and country. `apps_enabled = false` leaves them out (a phone kept offline).
+    pub apps: agentos_apps::Config,
+    pub apps_enabled: bool,
+    /// Remote MCP servers ([[mcp_servers]]): each one's tools are offered as connectors, behind
+    /// the same tiers and approval key. A server that cannot be reached is skipped at boot.
+    pub mcp_servers: Vec<McpServer>,
+    /// Sign-in providers for `oauth begin` and `oauth finish` ([[oauth_providers]]).
+    pub oauth_providers: Vec<OauthProvider>,
+    /// The Android sandbox: "none", "sim" (in memory), "waydroid" (Linux) or "emulator" (the
+    /// Android Emulator with a Google Play image: a Mac or any desktop).
+    pub android: String,
+    /// android = "emulator": the Android SDK (default: $ANDROID_HOME, else ~/Library/Android/sdk).
+    pub android_sdk: Option<PathBuf>,
+    /// android = "emulator": the virtual device made by scripts/mac/setup.sh.
+    pub android_avd: String,
+    /// android = "emulator": adb's name for it.
+    pub android_serial: String,
+    /// android = "emulator": show its window (false runs it headless).
+    pub android_window: bool,
+    /// The user who owns the Wayland session; Waydroid runs as this user.
+    pub android_user: String,
+    /// The environment for Waydroid's commands.
+    pub android_env: String,
+    /// Close the sandbox when less than this much memory is free (MiB).
+    pub android_min_free_mib: u64,
+    /// Close the sandbox when memory pressure (some avg10, percent) is above this.
+    pub android_max_psi: f32,
+    /// Close the sandbox in the deep power stage.
+    pub android_stop_in_deep: bool,
+    /// How often the governor looks, in seconds.
+    pub android_check_secs: u64,
+    /// The proc filesystem, for meminfo and the pressure files.
+    pub proc_root: PathBuf,
+    /// Move the screen's workspace with the sandbox (sway): the Android window on workspace 2.
+    pub android_sway: bool,
+    /// The store's catalogue (TOML). Missing: an empty store.
+    pub catalog: PathBuf,
+    /// Where `store refresh` fetches a signed catalogue from (catalog.toml, catalog.json, catalog.sig).
+    pub catalog_url: Option<String>,
+    /// The owner's public key for those catalogues, as 64 hex digits.
+    pub catalog_pubkey: Option<String>,
+    /// The camera: "none", "sim" (a drawn scene) or "command" (camera_command takes the picture).
+    pub camera: String,
+    /// The command that writes one picture to {path}, for camera = "command".
+    pub camera_command: String,
+    /// An OpenAI-style chat endpoint that takes images, to say what is in a photo. None: the
+    /// photo is described from its pixels only.
+    pub vision_url: Option<String>,
+    /// Pause (freeze) the Android sandbox after this many seconds with nothing needing it and
+    /// its screen not showing. 0 never pauses.
+    pub android_idle_pause_secs: u64,
+    /// The predictive cache: the model server keeps prompt states it is likely to need, managed
+    /// by agentd from the owner's routine (and empties itself under memory pressure).
+    pub predictive_cache: bool,
+    /// The most the cache may use, MiB, on the charger; less on battery.
+    pub cache_budget_mb: u64,
+    /// Read prompts ahead of time when a request is predicted (else only manage what is there).
+    pub cache_warm: bool,
+    /// How often the cache manager looks, seconds.
+    pub cache_tick_secs: u64,
+    /// The Android bridge: "none", "sim" (in-memory, for tests and `agentctl bridge sim`) or
+    /// "spool" (bridge_dir is shared with the Android side).
+    pub bridge: String,
+    /// The spool folder for bridge = "spool".
+    pub bridge_dir: Option<PathBuf>,
+    /// How often the bridge's events are read, in seconds.
+    pub bridge_poll_secs: u64,
+}
+
+/// An OAuth provider the owner registered (for example a Google client of type Desktop app).
+/// Its client secret, if any, stays in this file; tokens go to the vault.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OauthProvider {
+    pub name: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+    pub auth_url: String,
+    pub token_url: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    #[serde(default = "default_redirect")]
+    pub redirect: String,
+}
+
+fn default_redirect() -> String {
+    "http://127.0.0.1:8765/oauth/callback".into()
+}
+
+/// One remote MCP server. `secret` names a vault entry (conn.<name>) holding its bearer token.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpServer {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// The tier of its tools: "low", "medium" or "high". Anything else is High.
+    #[serde(default = "high_tier")]
+    pub tier: String,
+    /// Believe its readOnlyHint and destructiveHint annotations.
+    #[serde(default)]
+    pub trust_hints: bool,
+    /// When not empty, only these remote tools are offered.
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+fn high_tier() -> String {
+    "high".into()
 }
 
 impl Default for Config {
@@ -104,11 +245,18 @@ impl Default for Config {
             daily_budget: 5,
             power_dir: None,
             real_hardware: false,
+            demo_connectors: true,
             kdf_mib: 32,
             phone: "sim".into(),
             leds_dir: PathBuf::from("/sys/class/leds"),
             phone_poll_secs: 2,
+            dbus_monitor: None,
+            session_user: None,
+            phone_signal_poll_secs: 60,
             control_socket: None,
+            approval_key: None,
+            approval_keycode: crate::button::KEY_VOLUMEDOWN,
+            approval_hold_ms: 2000,
             llama_server: PathBuf::from("/usr/bin/llama-server"),
             models_dir: None,
             models: vec![],
@@ -128,6 +276,42 @@ impl Default for Config {
             train_chunk_secs: 1800,
             business_profile: None,
             store_profile: None,
+            train_nightly: true,
+            partner: None,
+            skills_dir: None,
+            skill_budget: 700,
+            documents_dir: None,
+            apps: agentos_apps::Config::default(),
+            apps_enabled: true,
+            mcp_servers: Vec::new(),
+            oauth_providers: Vec::new(),
+            android: "none".into(),
+            android_sdk: None,
+            android_avd: "AgenticPhone".into(),
+            android_serial: "emulator-5554".into(),
+            android_window: true,
+            android_user: "user".into(),
+            android_env: "XDG_RUNTIME_DIR=/run/user/10000 WAYLAND_DISPLAY=wayland-1".into(),
+            android_min_free_mib: 1024,
+            android_max_psi: 10.0,
+            android_stop_in_deep: true,
+            android_check_secs: 5,
+            proc_root: PathBuf::from("/proc"),
+            android_sway: true,
+            catalog: PathBuf::from("/usr/share/agentd/catalog.toml"),
+            catalog_url: None,
+            catalog_pubkey: None,
+            camera: "sim".into(),
+            camera_command: "gst-launch-1.0 -q libcamerasrc num-buffers=1 ! videoconvert ! jpegenc ! filesink location={path}".into(),
+            vision_url: None,
+            android_idle_pause_secs: 60,
+            predictive_cache: true,
+            cache_budget_mb: 512,
+            cache_warm: true,
+            cache_tick_secs: 60,
+            bridge: "sim".into(),
+            bridge_dir: None,
+            bridge_poll_secs: 2,
         }
     }
 }
@@ -187,10 +371,35 @@ mod tests {
         assert_eq!(c.models_path(), PathBuf::from("./agentd-data/models"));
     }
     #[test]
+    fn the_virtual_phone_config_parses_once_filled_in() {
+        let t = include_str!("../../../os/virtual-phone/agentd.toml")
+            .replace("@USER@", "asha")
+            .replace("@UID@", "501")
+            .replace("@HOME@", "/home/asha.linux");
+        let c = Config::from_toml(&t).unwrap();
+        assert_eq!(
+            (c.phone.as_str(), c.android.as_str(), c.bridge.as_str()),
+            ("sim", "waydroid", "spool")
+        );
+        assert_eq!(c.android_user, "asha");
+        assert!(c.android_env.contains("/run/user/501"));
+        assert!(c
+            .bridge_dir
+            .unwrap()
+            .ends_with("Android/media/os.agentic.bridge"));
+        assert!(c.predictive_cache && c.cache_budget_mb == 512);
+        assert_eq!(c.models.len(), 1);
+        assert_eq!(c.models[0].gpu_layers, 0);
+    }
+    #[test]
     fn the_shipped_phone_config_parses() {
         let c = Config::from_toml(include_str!("../../../os/postmarketos/agentd.toml")).unwrap();
         assert_eq!(c.phone, "modemmanager");
         assert!(c.real_hardware);
+        assert!(
+            !c.demo_connectors,
+            "a real phone must not offer a messenger that sends nothing"
+        );
         assert_eq!(c.models.len(), 2);
         assert!(c
             .models

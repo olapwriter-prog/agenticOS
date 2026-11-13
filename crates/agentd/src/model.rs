@@ -23,6 +23,21 @@ pub fn describe(tool: &str) -> &'static str {
         "list_calls" => "recent and missed calls",
         "send_sms" => "send a text message (SMS) to a person or number",
         "read_messages" => "read the latest text messages",
+        "android_inbox" => {
+            "messages that arrived from Android apps (WhatsApp, Telegram...), by conversation"
+        }
+        "android_messages_from" => "read the messages from one conversation in an Android app",
+        "android_reply" => "reply to a conversation in an Android app (Medium tier)",
+        "android_files" => "files that arrived from Android apps",
+        "android_share" => "send a document to an Android app (High tier, needs the approval key)",
+        "android_bridge_status" => "whether the Android bridge is connected and what it may do",
+        "android_show" => "open Android's own full screen in the sandbox (its launcher and apps)",
+        "android_hide" => "go back from Android to Agentic OS; Android pauses when nothing needs it",
+        "android_pause" => "pause the Android sandbox now (apps keep their state, use no CPU)",
+        "android_resume" => "resume the paused Android sandbox",
+        "android_play_setup" => "install the Google Play image in the Android sandbox (High tier, needs the approval key)",
+        "android_device_id" => "the device id to register with Google so Play sign-in works",
+        "android_play_status" => "whether the Play Store is installed, and the device id",
         "all_messages" => "every text message (for analysis)",
         "call_log" => "every call (for analysis)",
         "messages_from" => "read text messages from one person",
@@ -42,10 +57,17 @@ pub fn describe(tool: &str) -> &'static str {
         "rollback_function" => "go back to an earlier installed version of a function",
         "remove_function" => "stop using a function",
         "run_function" => "run an installed function; args like a=1; b=2",
-        other => match agentos_business::tools::describe(other) {
-            "" => agentos_retail::tools::describe(other),
-            d => d,
-        },
+        other => [
+            agentos_business::tools::describe(other),
+            agentos_retail::tools::describe(other),
+            agentos_skillpack::tools::describe(other),
+            agentos_docs::describe(other),
+            agentos_apps::describe(other),
+            agentos_partner::describe(other),
+        ]
+        .into_iter()
+        .find(|d| !d.is_empty())
+        .unwrap_or(""),
     }
 }
 
@@ -120,6 +142,9 @@ pub fn system_prompt(tools: &[agentos_action::Tool]) -> String {
 pub struct Local {
     pub intents: IntentTable,
     pub host: Option<LlamaHost>,
+    /// Every tool's argument names: a phrase that leaves an argument out ("news", "suggest
+    /// something") gets it empty, which the tool reads as its default.
+    pub tools: Vec<agentos_action::Tool>,
 }
 
 pub fn action_json(a: &Action) -> String {
@@ -134,7 +159,44 @@ pub fn action_json(a: &Action) -> String {
 /// The phrases the phone understands without a model. Specific patterns first.
 pub fn default_intents() -> IntentTable {
     let mut t = IntentTable::new();
+    add_default_intents(&mut t);
+    t
+}
+
+fn add_default_intents(t: &mut IntentTable) {
     t.add("remind me to {text} at {when}", "set_reminder");
+    // the camera and photos
+    t.add("take a photo", "camera_take");
+    t.add("take a picture", "camera_take");
+    t.add("edit photo {photo} {edit}", "photo_edit");
+    t.add("show photo {photo}", "photo_show");
+    // the Android bridge: messages from apps, replies, files (before the generic SMS phrases)
+    t.add("android inbox", "android_inbox");
+    t.add("android messages", "android_inbox");
+    t.add("whatsapp messages", "android_inbox");
+    t.add(
+        "android messages from {conversation}",
+        "android_messages_from",
+    );
+    t.add(
+        "reply on android to {conversation} saying {text}",
+        "android_reply",
+    );
+    t.add("received files", "android_files");
+    t.add("files from android", "android_files");
+    t.add("share {name} to android app {app}", "android_share");
+    t.add("bridge status", "android_bridge_status");
+    t.add("open android", "android_show");
+    t.add("show android", "android_show");
+    t.add("back to agentic os", "android_hide");
+    t.add("close android", "android_hide");
+    t.add("pause android", "android_pause");
+    t.add("resume android", "android_resume");
+    t.add("set up play store", "android_play_setup");
+    t.add("android device id", "android_device_id");
+    t.add("play store status", "android_play_status");
+    t.add("my photos", "photo_list");
+    t.add("photos", "photo_list");
     t.add("add {title} to my calendar on {day}", "add_event");
     t.add("what's on {day}", "read_calendar");
     t.add("what is on {day}", "read_calendar");
@@ -164,6 +226,101 @@ pub fn default_intents() -> IntentTable {
     t.add("torch {on}", "flashlight");
     t.add("volume {percent}", "set_volume");
     t.add("find my phone", "ring_phone");
+    // the business partner (with a [partner] table) — specific patterns before general ones
+    t.add("inbox", "inbox");
+    t.add("business inbox", "inbox");
+    t.add("whatsapp", "inbox");
+    t.add("who is waiting for a reply", "inbox");
+    t.add("show chat with {who}", "read_thread");
+    t.add("open {who}'s chat", "read_thread");
+    t.add("thread {who}", "read_thread");
+    t.add("reply to {to}: {text}", "reply");
+    t.add("reply to {to} saying {text}", "reply");
+    t.add(
+        "add customer {name} gstin {gstin} phone {phone}",
+        "add_customer",
+    );
+    t.add("add customer {name} phone {phone}", "add_customer");
+    t.add("add item {name} at {price} gst {gst}", "add_item");
+    t.add("add item {name} at {price}", "add_item");
+    t.add("invoice {customer} for {items}", "invoice");
+    t.add("send invoice {number}", "send_invoice");
+    t.add("mark {number} paid", "mark_paid");
+    t.add("invoices", "invoices");
+    t.add("show invoices", "invoices");
+    t.add("who owes me", "invoices");
+    t.add("gst for {period}", "gst_summary");
+    t.add("gst summary for {period}", "gst_summary");
+    t.add("file {form} for {period}", "file_gst");
+    t.add("bills", "bills");
+    t.add("show bills", "bills");
+    t.add("what bills are due", "bills");
+    t.add("pay bill {id}", "pay_bill");
+    t.add("expenses for {period}", "expenses");
+    t.add("wallet", "wallet");
+    t.add("wallet balance", "wallet");
+    t.add("pay {amount} to {to} for {note}", "pay");
+    t.add("my orders", "orders");
+    t.add("order history", "orders");
+    t.add("what do i usually buy", "orders");
+    t.add("best price for {item}", "best_price");
+    t.add("compare {item}", "best_price");
+    t.add("buy {option}", "buy");
+    t.add("news about {topic}", "news");
+    t.add("news", "news");
+    t.add("my interests", "interests");
+    t.add("i like {topic}", "like");
+    t.add("suggest {kind}", "suggest");
+    t.add("what should i do this weekend", "suggest");
+    t.add("book {event} for {qty}", "book");
+    t.add("book {event}", "book");
+    // skill guides (with a skill library)
+    t.add("skills about {topic}", "skills");
+    t.add("skills for {topic}", "skills");
+    t.add("find a skill for {topic}", "skills");
+    t.add("skill {name}: {question}", "skill");
+    t.add("read skill {name}", "skill");
+    t.add("skill sources", "skill_sources");
+    // documents
+    t.add("documents", "documents");
+    t.add("my documents", "documents");
+    t.add("what does {name} say about {question}", "read_document");
+    t.add("read document {name}", "read_document");
+    // apps over public APIs (after everything else: their phrases are the broadest)
+    t.add("weather in {place}", "weather");
+    t.add("what's the weather in {place}", "weather");
+    t.add("will it rain in {place}", "weather");
+    t.add("weather", "weather");
+    t.add("air quality in {place}", "air_quality");
+    t.add("air quality", "air_quality");
+    t.add("what time is it in {place}", "time_in");
+    t.add("time in {place}", "time_in");
+    t.add("directions from {from} to {to}", "directions");
+    t.add("how do i get to {to}", "directions");
+    t.add("route to {to}", "directions");
+    t.add("find {query} nearby", "places");
+    t.add("places {query}", "places");
+    t.add("convert {amount} {from} to {to}", "convert_currency");
+    t.add("tell me about {topic}", "wiki");
+    t.add("wiki {topic}", "wiki");
+    t.add("define {word}", "define");
+    t.add("meaning of {word}", "define");
+    t.add("what does {word} mean", "define");
+    t.add("public holidays in {country}", "holidays");
+    t.add("holidays in {country}", "holidays");
+    t.add("holidays", "holidays");
+    t.add("books by {query}", "books");
+    t.add("books about {query}", "books");
+    t.add("play {query} radio", "radio");
+    t.add("radio {query}", "radio");
+    t.add("podcasts about {query}", "podcasts");
+    t.add("podcasts on {query}", "podcasts");
+    t.add("recipe for {dish}", "recipe");
+    t.add("how to make {dish}", "recipe");
+    t.add("translate {text} from {from} to {to}", "translate");
+    t.add("translate {text} to {to}", "translate");
+    t.add("price of {coin}", "crypto");
+    t.add("{coin} price", "crypto");
     // functions the agent wrote
     t.add("list functions", "list_functions");
     t.add("my functions", "list_functions");
@@ -175,12 +332,13 @@ pub fn default_intents() -> IntentTable {
     t.add("roll back {name} to version {version}", "rollback_function");
     t.add("remove function {name}", "remove_function");
     t.add("run {name} with {args}", "run_function");
-    t
 }
 
 /// The phrase table, with the phrases of the business and of the store the phone runs, if any.
+/// Theirs come first: the first match wins, and theirs are the specific ones ("file store gst
+/// for {period}" before the general "file {form} for {period}").
 pub fn intents(business: bool, store: bool) -> IntentTable {
-    let mut t = default_intents();
+    let mut t = IntentTable::new();
     if business {
         for (pattern, tool) in agentos_business::tools::INTENTS {
             t.add(pattern, tool);
@@ -191,6 +349,7 @@ pub fn intents(business: bool, store: bool) -> IntentTable {
             t.add(pattern, tool);
         }
     }
+    add_default_intents(&mut t);
     t
 }
 
@@ -199,7 +358,14 @@ impl Model for Local {
         // The fast path is for local brains. A commercial call has already been redacted and
         // rewritten by the engine, so it is not matched against phrases.
         if brain != Brain::Commercial {
-            if let Some(a) = self.intents.resolve(prompt) {
+            if let Some(mut a) = self.intents.resolve(prompt) {
+                if let Some(t) = self.tools.iter().find(|t| t.name == a.tool) {
+                    for name in t.args {
+                        if !a.args.iter().any(|(k, _)| k == name) {
+                            a.args.push((name.to_string(), String::new()));
+                        }
+                    }
+                }
                 return action_json(&a);
             }
         }
@@ -218,6 +384,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         let out = m.complete(Brain::LocalSmall, "Remind me to call mum at 6pm");
         assert!(out.contains("set_reminder") && out.contains("call mum"));
@@ -227,6 +394,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         assert_eq!(m.complete(Brain::LocalSmall, "write me a poem"), "");
     }
@@ -258,6 +426,7 @@ mod tests {
         let mut m = Local {
             intents: default_intents(),
             host: None,
+            tools: vec![],
         };
         assert_eq!(m.complete(Brain::Commercial, "what's on friday"), "");
     }

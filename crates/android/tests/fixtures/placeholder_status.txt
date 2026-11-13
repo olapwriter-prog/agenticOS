@@ -1,0 +1,3 @@
+Session:	RUNNING
+Container:	RUNNING
+Vendor:	placeholder

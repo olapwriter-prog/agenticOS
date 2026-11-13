@@ -1,155 +1,115 @@
-#!/usr/bin/env bash
-# A virtual agenticOS phone on this Mac: agentd with the simulated phone (no modem, no VM), its
-# MCP endpoint, and the agentos-ui window attached to it. For the real service in an Alpine VM,
-# see scripts/vm-test.sh.
+#!/bin/sh
+# A virtual Agentic OS phone on a Mac with Apple Silicon: a Linux VM (Ubuntu 24.04, arm64, Apple's
+# Virtualization framework) in a phone-shaped window, running the whole phone: agentd, the local
+# model, the Agentic OS screen, and Android (Waydroid, with Google Play) inside it.
 #
-#   scripts/mac/virtual-phone.sh up              build, start agentd, open the window
-#   scripts/mac/virtual-phone.sh down            stop agentd and the window
-#   scripts/mac/virtual-phone.sh status          is it running, stage, phone, pending approvals
-#   scripts/mac/virtual-phone.sh chat "call mum" say something to the phone
-#   scripts/mac/virtual-phone.sh press 1         the approval key
-#   scripts/mac/virtual-phone.sh sms +919876543210 "dinner at 8?"   the network delivers a text
-#   scripts/mac/virtual-phone.sh call +919876543210                 ... or a call
-#   scripts/mac/virtual-phone.sh ctl <anything>  any agentd ctl command (pending, phone, prio, ...)
-#   scripts/mac/virtual-phone.sh token           the MCP bearer token
-#   scripts/mac/virtual-phone.sh logs            follow agentd's log
-#   scripts/mac/virtual-phone.sh ui              open the window again
-#   scripts/mac/virtual-phone.sh reset           stop and delete the phone's data (vault, ledger, contacts)
+#   scripts/mac/virtual-phone.sh up [--model file.gguf]   create (first time), build, start
+#   scripts/mac/virtual-phone.sh rebuild                  build and install the current code again
+#   scripts/mac/virtual-phone.sh ctl <command>            talk to agentd (e.g. ctl "chat weather")
+#   scripts/mac/virtual-phone.sh sms "Mum|Are you coming?"   a text arrives
+#   scripts/mac/virtual-phone.sh call +919845012345       a call rings
+#   scripts/mac/virtual-phone.sh android                  set up Android with Google Play (once)
+#   scripts/mac/virtual-phone.sh shell | status | down | destroy
 #
-# Settings (environment variables):
-#   PHONE_DIR=target/virtual-phone   data, config, log, pid files (target/ is git-ignored)
-#   PORT=8765                        MCP endpoint on 127.0.0.1
-#   AGENTD_PASSPHRASE=dev            vault passphrase (a dev phone; not for real secrets)
-#   SMALL_URL=http://127.0.0.1:8080  a llama-server already running for the model (default: none,
-#                                    so only fixed phrases work; free-form requests need a model)
-#   NO_UI=1                          do not open the window
-set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$ROOT"
-DIR="${PHONE_DIR:-$ROOT/target/virtual-phone}"
-mkdir -p "$DIR"; DIR="$(cd "$DIR" && pwd)"
-PORT="${PORT:-8765}"
-export AGENTD_PASSPHRASE="${AGENTD_PASSPHRASE:-dev}"
-CFG="$DIR/agentd.toml"; LOG="$DIR/agentd.log"; PID="$DIR/agentd.pid"; UIPID="$DIR/ui.pid"
-SOCK="$DIR/control.sock"
-AGENTD="$ROOT/target/release/agentd"
-UI="$ROOT/ui/target/release/agentos-ui"
+# Needs: macOS 13 or later on Apple Silicon, Homebrew (https://brew.sh). Installs Lima.
+# Sizes: CPUS (default 6), MEMORY in GiB (default 8), DISK in GiB (default 60).
+set -eu
+cd "$(dirname "$0")/../.."
+repo=$(pwd)
+vm=agentos-phone
+share="$HOME/.lima-share/agentos-phone"     # Lima shares the home folder with the VM
+CPUS=${CPUS:-6}
+MEMORY=${MEMORY:-8}
+DISK=${DISK:-60}
 
-say() { printf '== %s\n' "$*"; }
-die() { echo "virtual-phone: $*" >&2; exit 1; }
-alive() { [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null; }
-ctl() { "$AGENTD" ctl -c "$CFG" "$@"; }
-need_up() { alive "$PID" || die "not running (start it: scripts/mac/virtual-phone.sh up)"; }
+say() { printf '\n== %s\n' "$*"; }
+die() { printf 'virtual-phone: %s\n' "$*" >&2; exit 1; }
 
-write_config() {
-	cat >"$CFG" <<EOF
-# written by scripts/mac/virtual-phone.sh; edit agentd.example.toml for the meaning of each key
-data_dir = "$DIR/data"
-listen = "127.0.0.1:$PORT"
-control_socket = "$SOCK"
-phone = "sim"
-real_hardware = false
-commercial_enabled = false
-online = true
-kdf_mib = 8
-EOF
-	[[ -n "${SMALL_URL:-}" ]] && echo "small_url = \"$SMALL_URL\"" >>"$CFG"
-	return 0
+[ "$(uname -s)" = Darwin ] || die "run this on the Mac"
+[ "$(uname -m)" = arm64 ] || die "needs a Mac with Apple Silicon (M1 or later)"
+
+need_lima() {
+	command -v limactl >/dev/null 2>&1 && return
+	command -v brew >/dev/null 2>&1 || die "install Homebrew first: https://brew.sh"
+	say "installing Lima (runs Linux VMs on the Mac)"
+	brew install lima
 }
 
-open_ui() {
-	[[ -n "${NO_UI:-}" ]] && return 0
-	alive "$UIPID" && { echo "window already open"; return 0; }
-	say "building agentos-ui"
-	(cd ui && cargo build --release -q) || die "agentos-ui did not build"
-	AGENTD_SOCK="$SOCK" nohup "$UI" >"$DIR/ui.log" 2>&1 &
-	echo $! >"$UIPID"
-	echo "window open (log: $DIR/ui.log)"
+running() { limactl list "$vm" 2>/dev/null | grep -q Running; }
+exists() { limactl list -q 2>/dev/null | grep -qx "$vm"; }
+inside() { limactl shell --workdir / "$vm" "$@"; }
+
+pack() {
+	say "packing the source for the VM"
+	rm -rf "$share" && mkdir -p "$share"
+	# the working tree as it is, without build output
+	tar -C "$repo" --exclude ./target --exclude ./ui/target --exclude ./.git -czf "$share/src.tar.gz" .
 }
 
-up() {
-	if alive "$PID"; then
-		echo "already running (pid $(cat "$PID"))"
-		open_ui
-		return
+provision() {
+	pack
+	model=${1:-}
+	if [ -n "$model" ]; then
+		[ -f "$model" ] || die "no such model file: $model"
+		cp "$model" "$share/model.gguf"
 	fi
-	if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-		die "port $PORT is in use by another program (pick another: PORT=8766 scripts/mac/virtual-phone.sh up)"
-	fi
-	say "building agentd"
-	cargo build --release -q -p agentd || die "agentd did not build"
-	write_config
-	# creates the vault the first time; afterwards it opens it and prints the same token
-	"$AGENTD" init -c "$CFG" | tail -1 >"$DIR/token"
-	chmod 600 "$DIR/token"
-	rm -f "$SOCK"
-	say "starting agentd (simulated phone)"
-	nohup "$AGENTD" run -c "$CFG" >>"$LOG" 2>&1 &
-	echo $! >"$PID"
-	for _ in $(seq 1 50); do
-		ctl stage >/dev/null 2>&1 && break
-		alive "$PID" || { tail -20 "$LOG"; die "agentd stopped while starting"; }
-		sleep 0.2
-	done
-	ctl stage >/dev/null 2>&1 || { tail -20 "$LOG"; die "agentd did not answer on $SOCK"; }
-	open_ui
-	cat <<EOF
-
-The virtual phone is up.
-  MCP:     http://127.0.0.1:$PORT/mcp   (bearer token: scripts/mac/virtual-phone.sh token)
-  control: $SOCK
-  stage:   $(ctl stage)
-Try:
-  scripts/mac/virtual-phone.sh chat "save Mum as +919876543210"
-  scripts/mac/virtual-phone.sh chat "call mum"     # waits for the approval key
-  scripts/mac/virtual-phone.sh press 1
-  scripts/mac/virtual-phone.sh sms +919876543210 "dinner at 8?"
-  scripts/mac/virtual-phone.sh chat "read my messages"
-Stop it: scripts/mac/virtual-phone.sh down
-EOF
+	say "setting up the phone inside the VM (the first time takes 20 to 40 minutes)"
+	inside sudo env SHARE="$share" PHONE_USER="$(inside whoami)" sh -c 'mkdir -p /opt/agentos-src && tar -C /opt/agentos-src -xzf "$SHARE/src.tar.gz" && sh /opt/agentos-src/os/virtual-phone/provision.sh'
 }
 
-stop_pid() {
-	local f="$1" name="$2"
-	if alive "$f"; then
-		local p; p="$(cat "$f")"
-		kill "$p" 2>/dev/null || true
-		for _ in $(seq 1 50); do kill -0 "$p" 2>/dev/null || break; sleep 0.1; done
-		kill -0 "$p" 2>/dev/null && kill -9 "$p" 2>/dev/null || true
-		echo "$name stopped"
-	fi
-	rm -f "$f"
-}
-
-down() {
-	stop_pid "$UIPID" "window"
-	stop_pid "$PID" "agentd"
-	rm -f "$SOCK"
-}
-
-status() {
-	if ! alive "$PID"; then echo "virtual phone: down"; return 1; fi
-	echo "virtual phone: up (agentd pid $(cat "$PID"); window: $(alive "$UIPID" && echo open || echo closed))"
-	echo "MCP: http://127.0.0.1:$PORT/mcp"
-	echo "stage: $(ctl stage)"
-	echo "-- phone";   ctl phone
-	echo "-- pending"; ctl pending
-}
-
-[[ "$(uname -s)" == "Darwin" ]] || echo "note: written for macOS; it should work on Linux too" >&2
-cmd="${1:-up}"; shift || true
+cmd=${1:-up}
+[ $# -gt 0 ] && shift
 case "$cmd" in
-	up) up ;;
-	down|stop) down ;;
-	status) status ;;
-	chat) need_up; ctl chat "$*" ;;
-	press) need_up; ctl press "${1:?which pending action? see: scripts/mac/virtual-phone.sh ctl pending}" ;;
-	sms) need_up; [[ $# -ge 2 ]] || die "usage: sms FROM TEXT"; from="$1"; shift; ctl "sim-sms $from|$*" ;;
-	call) need_up; ctl sim-call "${1:?usage: call FROM}" ;;
-	ctl) need_up; ctl "$@" ;;
-	token) [[ -f "$DIR/token" ]] && cat "$DIR/token" || die "no token yet (run: up)" ;;
-	logs) exec tail -f "$LOG" ;;
-	ui) need_up; open_ui ;;
-	reset) down; rm -rf "$DIR"; echo "deleted $DIR" ;;
-	*) die "unknown command: $cmd (up | down | status | chat | press | sms | call | ctl | token | logs | ui | reset)" ;;
+up)
+	need_lima
+	model=""
+	if [ "${1:-}" = --model ]; then model=${2:-}; fi
+	if ! exists; then
+		say "creating the VM: $CPUS CPUs, ${MEMORY} GiB, ${DISK} GiB disk, with a screen"
+		limactl create --name="$vm" --vm-type=vz --cpus="$CPUS" --memory="$MEMORY" --disk="$DISK" \
+			--set '.video.display = "default"' --tty=false template:ubuntu-24.04
+		limactl start "$vm"
+		provision "$model"
+		say "restarting so the phone boots into its screen"
+		limactl stop "$vm"
+	fi
+	running || limactl start "$vm"
+	say "the phone is up: its window shows the Agentic OS screen"
+	echo "   Try: scripts/mac/virtual-phone.sh ctl \"chat weather\""
+	echo "        scripts/mac/virtual-phone.sh sms \"Mum|Are you coming for dinner?\""
+	echo "        scripts/mac/virtual-phone.sh android      (Google Play, once)"
+	;;
+rebuild)
+	running || die "start it first: scripts/mac/virtual-phone.sh up"
+	provision "${2:-}"
+	inside sudo systemctl restart agentd
+	inside sudo pkill -f agentos-ui || true   # sway starts it again
+	;;
+ctl)
+	inside sudo /usr/local/bin/agentd ctl -c /etc/agentd/agentd.toml "$*"
+	;;
+sms)
+	inside sudo /usr/local/bin/agentd ctl -c /etc/agentd/agentd.toml "sim-sms $*"
+	;;
+call)
+	inside sudo /usr/local/bin/agentd ctl -c /etc/agentd/agentd.toml "sim-call $*"
+	;;
+android)
+	inside sudo sh /opt/agentos-src/os/virtual-phone/android.sh
+	;;
+shell) limactl shell "$vm" ;;
+status)
+	limactl list "$vm"
+	if running; then
+		inside sudo /usr/local/bin/agentd ctl -c /etc/agentd/agentd.toml "cache status" || true
+		inside sudo /usr/local/bin/agentd ctl -c /etc/agentd/agentd.toml "bridge status" || true
+	fi
+	;;
+down) limactl stop "$vm" ;;
+destroy)
+	printf 'Delete the virtual phone and everything on it? [y/N] '
+	read -r yes
+	[ "$yes" = y ] && limactl delete -f "$vm" && rm -rf "$share"
+	;;
+*) die "unknown command $cmd (up, rebuild, ctl, sms, call, android, shell, status, down, destroy)" ;;
 esac

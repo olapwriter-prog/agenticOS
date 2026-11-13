@@ -67,6 +67,14 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
     let token = secrets.gateway_token.clone();
     let origins = cfg.allowed_origins.clone();
     let ctl_path2 = ctl_path.clone();
+    let watch = cfg
+        .dbus_monitor
+        .clone()
+        .filter(|_| cfg.phone == "modemmanager");
+    let key = cfg
+        .approval_key
+        .clone()
+        .map(|d| (d, cfg.approval_keycode, cfg.approval_hold_ms));
 
     let listener = TcpListener::bind(&listen)
         .map_err(|e| BootError::Other(format!("cannot listen on {listen}: {e}")))?;
@@ -119,6 +127,40 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
                 });
             }
         });
+        if let Some(program) = watch {
+            let txw = tx_core.clone();
+            agentos_phone::watch::spawn(program, move |sig| {
+                use agentos_phone::watch::Signal;
+                let what = match sig {
+                    Signal::Up => "up",
+                    Signal::Down => "down",
+                    Signal::Wake(w) => w,
+                };
+                let (rt, rr) = channel();
+                if txw
+                    .send(Cmd::Ctl(format!("phone-signal {what}"), rt))
+                    .is_ok()
+                {
+                    // what arrived, for the log (a headless phone's only record besides the ledger)
+                    if let Ok(said) = rr.recv() {
+                        if said != "nothing new" {
+                            eprintln!("agentd: phone ({what}): {}", said.replace('\n', "; "));
+                        }
+                    }
+                }
+            });
+        }
+        if let Some((device, code, hold_ms)) = key {
+            let txk = tx_core.clone();
+            crate::button::spawn(device, code, hold_ms, move || {
+                let (rt, rr) = channel();
+                if txk.send(Cmd::Ctl("key".into(), rt)).is_ok() {
+                    if let Ok(ans) = rr.recv() {
+                        eprintln!("agentd: approval key: {ans}");
+                    }
+                }
+            });
+        }
         let _ = ready_tx.send(Ok(()));
         let txh = tx_core.clone();
         std::thread::spawn(move || {
@@ -137,18 +179,25 @@ pub fn start(cfg: Config, secrets: Secrets, clock: Arc<dyn Clock>) -> Result<Run
             }
         });
         // the core loop
+        // tick once a second by the clock, not only when the channel is idle: steady traffic
+        // must not starve the governor, the phone poll or the learning
+        let mut last_tick = std::time::Instant::now();
         loop {
             if STOP.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            match rx.recv_timeout(Duration::from_secs(1)) {
+            match rx.recv_timeout(Duration::from_millis(200)) {
                 Ok(Cmd::Mcp(b, r)) => {
                     let _ = r.send(core.mcp(&b));
                 }
                 Ok(Cmd::Ctl(l, r)) => core.ctl_reply(&l, r),
                 Ok(Cmd::Stop) => break,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => core.tick(),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(_) => break,
+            }
+            if last_tick.elapsed() >= Duration::from_secs(1) {
+                core.tick();
+                last_tick = std::time::Instant::now();
             }
             core.poll_jobs();
         }

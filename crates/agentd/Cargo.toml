@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+agentos-mcpc = { path = "../mcpc" }
+agentos-services = { path = "../services" }
+agentos-android = { path = "../android" }
+agentos-catalog = { path = "../catalog" }
+agentos-vision = { path = "../vision" }
+agentos-bridge = { path = "../bridge" }
+agentos-skills = { path = "../skills" }
 agentos-ledger = { path = "../ledger" }
 agentos-hal = { path = "../hal" }
 agentos-stage = { path = "../stage" }
@@ -30,7 +37,13 @@ agentos-phone = { path = "../phone" }
 agentos-prio = { path = "../prio" }
 agentos-models = { path = "../models" }
 agentos-functions = { path = "../functions" }
+agentos-partner = { path = "../partner" }
+agentos-screen = { path = "../screen" }
+agentos-skillpack = { path = "../skillpack" }
+agentos-docs = { path = "../docs" }
+agentos-apps = { path = "../apps" }
 agentos-learn = { path = "../learn" }
+ureq = { version = "2", features = ["json"] }
 agentos-understand = { path = "../understand" }
 agentos-business = { path = "../business" }
 agentos-retail = { path = "../retail" }
@@ -45,3 +58,6 @@ libc = "0.2"
 name = "agentd-fake-llama"
 path = "tests/support/fake_llama.rs"
 test = false
+
+[dev-dependencies]
+ed25519-dalek = "2"

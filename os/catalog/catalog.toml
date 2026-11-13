@@ -1,0 +1,410 @@
+# The store's seed catalogue: every row of the app matrix in docs/ and five agents.
+# kind: native (built in), android (an app in the sandbox), connector (an MCP endpoint), agent,
+# skill, function, planned (listed, not installable yet). Android packages marked CHECK are not
+# confirmed on a phone yet (task C4); their items are planned until they are.
+
+# ---- built in
+[[item]]
+id = "calls-sms"
+name = "Calls, SMS, contacts, USSD"
+kind = "native"
+publisher = "agenticOS"
+category = "Phone"
+summary = "Calls, texts, contacts and USSD codes through the modem. No RCS."
+mode = "Built in"
+
+[[item]]
+id = "wifi-mobile-data"
+name = "Wi-Fi, mobile data, airplane mode, torch, volume, location"
+kind = "native"
+publisher = "agenticOS"
+category = "Phone"
+summary = "Network switches, torch, volume and where_am_i."
+mode = "Built in"
+
+[[item]]
+id = "calendar-reminders"
+name = "Calendar and reminders"
+kind = "native"
+publisher = "agenticOS"
+category = "Organiser"
+summary = "Local events and reminders, kept across restarts. Synced only when a Google account is signed in."
+mode = "Built in"
+
+[[item]]
+id = "notes"
+name = "Notes"
+kind = "planned"
+publisher = "agenticOS"
+category = "Organiser"
+summary = "Short notes. The agent can write this as a function; not written yet."
+mode = "Built in"
+
+[[item]]
+id = "calculator"
+name = "Calculator"
+kind = "planned"
+publisher = "agenticOS"
+category = "Tools"
+summary = "Arithmetic. The agent can write this as a function; not written yet."
+mode = "Built in"
+
+[[item]]
+id = "unit-conversion"
+name = "Unit conversion"
+kind = "planned"
+publisher = "agenticOS"
+category = "Tools"
+summary = "Length, weight and money conversions. Currency is already an app."
+mode = "Built in"
+
+[[item]]
+id = "bill-split"
+name = "Bill split"
+kind = "planned"
+publisher = "agenticOS"
+category = "Tools"
+summary = "Split a bill between people. The agent can write this as a function; not written yet."
+mode = "Built in"
+
+[[item]]
+id = "camera"
+name = "Camera and gallery"
+kind = "planned"
+publisher = "agenticOS"
+category = "Photos"
+summary = "Not planned in this version: nothing captures photos yet."
+mode = "Not planned"
+
+# ---- headless: Google and the messengers
+[[item]]
+id = "gmail"
+name = "Gmail"
+kind = "native"
+publisher = "Google"
+category = "Mail"
+summary = "Read unread mail and send mail through your own Google OAuth client. Sign in with oauth begin google."
+mode = "Headless"
+
+[[item]]
+id = "google-calendar"
+name = "Google Calendar"
+kind = "native"
+publisher = "Google"
+category = "Organiser"
+summary = "Read and add events on your Google calendar, with the same sign-in as Gmail."
+mode = "Headless"
+
+[[item]]
+id = "outlook"
+name = "Outlook and Microsoft 365"
+kind = "planned"
+publisher = "Microsoft"
+category = "Mail"
+summary = "Same pattern as Gmail against Microsoft Graph. Not specified in this version."
+mode = "Headless"
+
+[[item]]
+id = "telegram"
+name = "Telegram"
+kind = "native"
+publisher = "Telegram"
+category = "Messaging"
+summary = "A Telegram bot: send to chats that have messaged it first, and read its updates. A personal client needs TDLib and is out of scope."
+mode = "Headless"
+
+[[item]]
+id = "slack"
+name = "Slack"
+kind = "planned"
+publisher = "Slack"
+category = "Messaging"
+summary = "Official Slack MCP server. Endpoint and workspace approval to confirm."
+mode = "Headless"
+
+[[item]]
+id = "notion"
+name = "Notion"
+kind = "planned"
+publisher = "Notion"
+category = "Notes"
+summary = "Official Notion MCP server. Endpoint to confirm."
+mode = "Headless"
+
+[[item]]
+id = "zomato"
+name = "Zomato"
+kind = "planned"
+publisher = "Zomato"
+category = "Food delivery"
+summary = "Order food. Official MCP server; its sign-in accepts one fixed redirect address."
+mode = "Headless"
+
+[[item]]
+id = "swiggy"
+name = "Swiggy"
+kind = "planned"
+publisher = "Swiggy"
+category = "Food delivery"
+summary = "Order food. Official MCP server; sign-in rules differ from Zomato's."
+mode = "Headless"
+
+[[item]]
+id = "news"
+name = "News"
+kind = "planned"
+publisher = "various"
+category = "News"
+summary = "Headlines from a public news API."
+mode = "Headless"
+
+[[item]]
+id = "youtube"
+name = "YouTube"
+kind = "planned"
+publisher = "Google"
+category = "Media"
+summary = "Search and control through the web API with sign-in."
+mode = "Headless"
+
+[[item]]
+id = "spotify"
+name = "Spotify"
+kind = "planned"
+publisher = "Spotify"
+category = "Music"
+summary = "Search and control through the web API. Control needs Premium."
+mode = "Headless"
+
+# ---- sandbox: apps with no usable API (packages to confirm on the phone, see C4)
+[[item]]
+id = "whatsapp"
+name = "WhatsApp"
+kind = "android"
+publisher = "Meta"
+category = "Messaging"
+summary = "No personal-account API. Messages do not arrive while the sandbox is closed."
+mode = "Sandbox"
+package = "com.whatsapp"
+
+[[item]]
+id = "instagram"
+name = "Instagram"
+kind = "android"
+publisher = "Meta"
+category = "Social"
+summary = "No consumer API."
+mode = "Sandbox"
+package = "com.instagram.android"
+
+[[item]]
+id = "facebook"
+name = "Facebook"
+kind = "android"
+publisher = "Meta"
+category = "Social"
+summary = "No consumer API."
+mode = "Sandbox"
+package = "com.facebook.katana"
+
+[[item]]
+id = "x"
+name = "X"
+kind = "android"
+publisher = "X Corp"
+category = "Social"
+summary = "No consumer API."
+mode = "Sandbox"
+package = "com.twitter.android"
+
+[[item]]
+id = "uber"
+name = "Uber"
+kind = "android"
+publisher = "Uber"
+category = "Rides"
+summary = "No consumer booking API."
+mode = "Sandbox"
+package = "com.ubercab"
+
+[[item]]
+id = "ola"
+name = "Ola"
+kind = "android"
+publisher = "Ola"
+category = "Rides"
+summary = "No consumer booking API."
+mode = "Sandbox"
+package = "com.olacabs.customer"
+
+[[item]]
+id = "rapido"
+name = "Rapido"
+kind = "android"
+publisher = "Rapido"
+category = "Rides"
+summary = "No consumer booking API."
+mode = "Sandbox"
+package = "com.rapido.passenger"
+
+[[item]]
+id = "amazon"
+name = "Amazon"
+kind = "android"
+publisher = "Amazon"
+category = "Shopping"
+summary = "No consumer ordering API."
+mode = "Sandbox"
+package = "in.amazon.mShop.android.shopping"
+
+[[item]]
+id = "flipkart"
+name = "Flipkart"
+kind = "android"
+publisher = "Flipkart"
+category = "Shopping"
+summary = "No consumer ordering API."
+mode = "Sandbox"
+package = "com.flipkart.android"
+
+[[item]]
+id = "google-maps"
+name = "Google Maps navigation"
+kind = "android"
+publisher = "Google"
+category = "Maps"
+summary = "Turn-by-turn navigation in the sandbox. Route search is already built in as directions."
+mode = "Sandbox"
+package = "com.google.android.apps.maps"
+
+[[item]]
+id = "netflix"
+name = "Netflix"
+kind = "android"
+publisher = "Netflix"
+category = "Video"
+summary = "May not play: the DRM level in Waydroid may block playback."
+mode = "Sandbox, may not play"
+package = "com.netflix.mediaclient"
+
+[[item]]
+id = "prime-video"
+name = "Prime Video"
+kind = "android"
+publisher = "Amazon"
+category = "Video"
+summary = "May not play: the DRM level in Waydroid may block playback."
+mode = "Sandbox, may not play"
+package = "com.amazon.avod.thirdpartyclient"
+
+[[item]]
+id = "hotstar"
+name = "Hotstar"
+kind = "android"
+publisher = "Disney"
+category = "Video"
+summary = "May not play: the DRM level in Waydroid may block playback."
+mode = "Sandbox, may not play"
+package = "in.startv.hotstar"
+
+[[item]]
+id = "digilocker"
+name = "DigiLocker"
+kind = "planned"
+publisher = "Government of India"
+category = "Documents"
+summary = "Sandbox, untested: may refuse to run. Package to confirm on the phone (CHECK)."
+mode = "Sandbox, untested"
+
+[[item]]
+id = "maadhaar"
+name = "mAadhaar"
+kind = "planned"
+publisher = "UIDAI"
+category = "Documents"
+summary = "Sandbox, untested: may refuse to run. Package to confirm on the phone (CHECK)."
+mode = "Sandbox, untested"
+
+[[item]]
+id = "irctc"
+name = "IRCTC"
+kind = "planned"
+publisher = "IRCTC"
+category = "Travel"
+summary = "Sandbox, untested: may refuse to run. Package to confirm on the phone (CHECK)."
+mode = "Sandbox, untested"
+
+[[item]]
+id = "web-browser"
+name = "Web browser"
+kind = "planned"
+publisher = "various"
+category = "Web"
+summary = "A browser inside the sandbox for now. A native browser is a later task."
+mode = "Sandbox for now"
+
+# ---- not expected to work in the sandbox: keep them on a stock Android phone
+[[item]]
+id = "upi-banking"
+name = "UPI and bank apps (Paytm, PhonePe, GPay, bank apps)"
+kind = "planned"
+publisher = "various"
+category = "Payments"
+summary = "They check Play Integrity and are not expected to run in the sandbox. Keep them on a stock Android phone."
+mode = "Not expected to work"
+
+# ---- agents: a named set of instructions with the tools it may use
+[[item]]
+id = "trip-planner"
+name = "Trip planner"
+kind = "agent"
+publisher = "agenticOS"
+category = "Agents"
+summary = "Plans a trip: weather, directions, and events and reminders for the days."
+mode = "Agent"
+instructions = "You plan trips for the owner. Check the weather for the days, suggest the route, and add the days to the calendar. Ask before anything is booked."
+tools = ["weather", "directions", "add_event", "set_reminder"]
+
+[[item]]
+id = "message-drafter"
+name = "Message drafter"
+kind = "agent"
+publisher = "agenticOS"
+category = "Agents"
+summary = "Drafts replies to customers and family; sends only after the owner's approval."
+mode = "Agent"
+instructions = "You draft short, polite replies. Never send without the owner's approval; a send always waits for the key."
+tools = ["send_message"]
+
+[[item]]
+id = "sms-expense-summary"
+name = "Expense summary from SMS"
+kind = "agent"
+publisher = "agenticOS"
+category = "Agents"
+summary = "Totals the payments and bills found in the texts of the last month."
+mode = "Agent"
+instructions = "You read the owner's texts and summarise money spent: payments, bills and card debits, with totals by week."
+tools = ["all_messages"]
+
+[[item]]
+id = "daily-digest"
+name = "Daily digest"
+kind = "agent"
+publisher = "agenticOS"
+category = "Agents"
+summary = "A morning summary: the weather, today's events and the unread texts."
+mode = "Agent"
+instructions = "Each morning, summarise the weather, the day's events and the messages waiting. Keep it to ten lines."
+tools = ["weather", "read_calendar", "read_messages"]
+
+[[item]]
+id = "bill-splitter"
+name = "Bill splitter"
+kind = "agent"
+publisher = "agenticOS"
+category = "Agents"
+summary = "Splits a bill between people, in any currency."
+mode = "Agent"
+instructions = "Split the bill as the owner asks. Convert currencies at the current rate, and show each person's share."
+tools = ["convert_currency"]

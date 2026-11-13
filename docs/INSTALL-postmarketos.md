@@ -35,7 +35,7 @@ When `init` asks:
 - **Channel**: `edge` or the latest stable `v2x.yy`
 - **Vendor / device**: your phone
 - **User interface**: `none`  ← headless; this is the whole point
-- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,callaudiod,wireplumber`
+- **Extra packages**: `modemmanager,networkmanager,networkmanager-cli,networkmanager-wifi,networkmanager-wwan,feedbackd,feedbackd-udev,callaudiod,callaudiocli,wireplumber,pipewire-pulse,evtest`
   (the agentd package also pulls in `llama-server`, `libggml-cpu` and `libggml-vulkan` on aarch64)
 
 Build and add the agentd package from this repository:
@@ -57,6 +57,7 @@ Enable the services once you are logged in over SSH (`ssh user@172.16.42.1` over
 ```bash
 sudo rc-update add modemmanager default
 sudo rc-update add networkmanager default
+sudo rc-update add agentd-session default   # call audio, vibration, volume
 sudo rc-update add agentd default
 sudo rc-service agentd start
 sudo cat /etc/agentd/gateway-token      # bearer token for the MCP endpoint
@@ -80,6 +81,40 @@ Find the battery directory and put it in `/etc/agentd/agentd.toml` as `power_dir
 ls /sys/class/power_supply/
 ```
 
+## Bring-up on a new phone (Phase 5)
+
+Two scripts, installed with the package in `/usr/share/agentd/`, take a phone from "installed" to
+"known to work". Over SSH, as root:
+
+1. **Preflight**: checks the tools, services, cgroup v2, the modem and SIM, the audio session and
+   its user's groups, finds the input device with the volume-down key and the vibration motor
+   (and its permissions), the flash LED and the battery, and prints the `agentd.toml` lines for
+   this phone. Fix every FAIL, copy the suggested lines into `/etc/agentd/agentd.toml`, then
+   `rc-service agentd restart` and run it again until it is clean.
+   ```bash
+   sudo sh /usr/share/agentd/phone-preflight.sh
+   ```
+2. **The guided run**, with a second phone in hand: it tells you when to text or call this phone,
+   answer or hang up on the other one, and hold volume-down; it asks what only a person can tell
+   (did it vibrate, can both sides hear each other) and checks the rest itself: texts (one over
+   160 characters), calls in, answered and missed, calls and texts out with the key, volume,
+   torch, USSD, Wi-Fi, mobile data, airplane mode and getting back on the network, location, and
+   restarts of the audio session and of agentd. About 20 minutes.
+   ```bash
+   sudo USSD_CODE='*123#' WIFI_SSID=HomeNet WIFI_PASS=... \
+     sh /usr/share/agentd/phone-scenarios.sh +91XXXXXXXXXX     # the other phone's number
+   ```
+   It writes `phase5-report.md` (and the preflight output beside it): paste it back to Claude.
+   `phone-scenarios.sh --sim NUMBER` runs the same steps on the simulated phone (`crates/phonesim`).
+3. **Speed**: how fast the engine reads a prompt and answers with each of its ARM kernels (i8mm,
+   SDOT, portable), so what each gains is measured on this phone. A few minutes; stop agentd first
+   on a phone short of RAM.
+   ```bash
+   sudo rc-service agentd stop
+   sh /usr/share/agentd/phone-bench.sh /var/lib/agentd/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+   sudo rc-service agentd start
+   ```
+
 ## Using it
 
 ```bash
@@ -87,7 +122,7 @@ sudo agentd ctl -c /etc/agentd/agentd.toml phone            # operator, signal, 
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "save Mum as +91 98765 43210"
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "call mum"  # High: needs the key
 sudo agentd ctl -c /etc/agentd/agentd.toml pending
-sudo agentd ctl -c /etc/agentd/agentd.toml press 1          # the approval key
+sudo agentd ctl -c /etc/agentd/agentd.toml press 1          # or hold volume-down for 2 s
 sudo agentd ctl -c /etc/agentd/agentd.toml chat "call mum"  # now it dials, once
 ```
 A Claude client can drive the same tools. Forward the port over SSH, then point the client at
@@ -97,6 +132,19 @@ ssh -L 8765:127.0.0.1:8765 user@172.16.42.1
 ```
 
 ## Faster development loop
+
+Before a phone, run agentd's real hardware backend on the simulated phone (`crates/phonesim`):
+fake `mmcli`, `nmcli`, `callaudiocli`, `fbcli` and `wpctl` on one phone state, ModemManager's
+signals on a private D-Bus daemon, a volume-down key device and a flash LED. The script starts
+the audio session as the `agentd-session` user and agentd with `phone = "modemmanager"`, and runs
+every phone scenario: status, contacts, texts in and out (including one arriving in parts), calls
+in, out, waiting, declined and missed, the approval key, USSD, Wi-Fi, mobile data, airplane mode,
+no service, location, torch, volume, MCP clients, the watcher, modem, NetworkManager or audio
+session going away, a restart, quiet hours and the alert budget (Linux, as root, with
+dbus-daemon, dbus-monitor, dbus-send and setpriv):
+```bash
+sudo scripts/phonesim-scenarios.sh       # 145 checks; -v prints each reply; logs in /tmp/agentd-phonesim
+```
 
 Rebuild only the binary on your Mac and push it over USB networking:
 ```bash
@@ -171,10 +219,13 @@ llama.cpp can use on these phones.
   With the code-first layer (no LLM): tool choice 10/10, questions 9/9, never-seen phrasings 11/12.
   The misses are the model's reasoning (an EMI formula, reading "calls Ravi made to me" as text to
   match); every wrong function or answer was caught or is visible, and nothing acted without the key.
-- **The screen (agentos-ui) on a phone is not packaged yet.** It builds on Alpine aarch64 and its
-  tests pass, but rendering with Mesa's software Vulkan driver (lavapipe) in the VM crashes, and it
-  has not run on a phone GPU (Turnip on Adreno, PanVK on Mali). The plan: run it full screen under
-  the `cage` kiosk compositor (`apk add cage seatd mesa-vulkan-freedreno`), as a client of agentd.
+- **The screen (agentos-ui)** is packaged apart from agentd (`os/postmarketos-ui`), so the headless
+  image never pulls in a GPU stack: `cage` runs it full screen, `seatd` gives cage the display and
+  input, and `/etc/init.d/agentos-ui` starts it after agentd, as a client of `/run/agentd.sock`.
+  Add your GPU's Vulkan driver to the image (`mesa-vulkan-freedreno` for Adreno,
+  `mesa-vulkan-panfrost` for Mali), then `rc-update add seatd default` and
+  `rc-update add agentos-ui default`. The package and service are written but not yet built or
+  run on a phone: rendering with lavapipe in the VM crashes, and no phone GPU has been tried.
 - **Own engine speed.** On an Apple M-series CPU, Qwen3.5-4B Q4_K_M: agentos-llm generates
   ~10 tokens/s and reads prompts at ~17 tokens/s; llama.cpp on the same CPU does ~22 and ~42.
   agentd's requests take 2 to 3 s once the system prompt is cached (it is read once, at start).
@@ -192,15 +243,20 @@ llama.cpp can use on these phones.
   unseen phrasings. Every wrong choice failed safely: calls and texts still waited for the key.
   The 3B model on the charger and Phase 3 (learning from approvals) are the fixes.
 
-- **Call audio, vibration and volume.** callaudiod, feedbackd and PipeWire run inside a *user session*
-  on postmarketOS. On a `ui=none` image no session starts, so `callaudiocli`, `fbcli` and `wpctl` fail
-  softly. Calls still connect and SMS still works, but the earpiece may not be routed. Next step: start
-  a session for a dedicated user at boot and run those daemons there.
-- **Polling, not signals.** Incoming calls and texts are found by polling `mmcli` every
-  `phone_poll_secs`. Subscribing to ModemManager's D-Bus signals would save battery and is the next
-  change.
-- **The approval key** is `agentd ctl press N` over SSH. On the phone it should be a hardware button
-  (for example volume-down held for two seconds) read from `/dev/input`.
+- **Call audio, vibration and volume** run in a user session that the `agentd-session` service
+  starts at boot for the `agentd-session` user (made when the package is installed): a session bus,
+  PipeWire, WirePlumber, pipewire-pulse, callaudiod and feedbackd. agentd runs `callaudiocli`,
+  `fbcli` and `wpctl` as that user inside it (`session_user` in agentd.toml). Tested with stand-in
+  programs only; on a real phone check `/var/log/agentd-session.log`, and set `FEEDBACKD` or
+  `CALLAUDIOD` in the service's environment if those daemons live elsewhere on your image.
+- **Calls and texts are seen as they arrive**, from ModemManager's D-Bus signals (CallAdded,
+  Messaging Added, call StateChanged) through `dbus-monitor`. A signal makes agentd look at once,
+  through `mmcli` as before; polling stays as a backup every `phone_signal_poll_secs` (60 s), and
+  goes back to every `phone_poll_secs` if the monitor stops. Not yet run against a real modem.
+- **The approval key** is volume-down held for two seconds (`approval_key` in agentd.toml; find the
+  device with `evtest`). It approves the waiting action only when exactly one is waiting: without a
+  screen you could not tell which of several you approved, so then use `agentd ctl press N`. A short
+  press is left to the volume. Tested with recorded key events, not yet on a phone's buttons.
 - **Untested on a phone.** The package and service pass `scripts/vm-test.sh` on Alpine 3.24 aarch64
   (kernel 6.18), with a real model. The ModemManager backend is only unit-tested against recorded
   `mmcli` and `nmcli` output, and has not yet run on a real modem.
