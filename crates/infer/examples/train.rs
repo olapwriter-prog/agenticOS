@@ -47,7 +47,15 @@ fn main() {
 }
 
 fn gradcheck(m: &Model, tok: &Tokenizer) {
-    let (tokens, train) = example(tok, &chat("call mum"), "dial Mum");
+    // LONG=1: a prompt past the DeltaNet checkpoint interval (64 tokens), so the backward pass
+    // replays the recurrence across chunks
+    let prompt = if std::env::var("LONG").is_ok() {
+        chat(&"please call mum on her mobile when you get the chance, thank you. ".repeat(8))
+    } else {
+        chat("call mum")
+    };
+    let (tokens, train) = example(tok, &prompt, "dial Mum");
+    println!("{} tokens", tokens.len());
     let mut tr = Trainer::new(m);
     tr.exact = true;
     // forward agrees with the inference engine (adapter zero)

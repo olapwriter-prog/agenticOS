@@ -24,12 +24,13 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 
 | Milestone | Status | Measured |
 |---|---|---|
-| Backpropagation, dense Qwen2 + LoRA, gradient check | in progress | |
+| Backpropagation, dense Qwen2 + LoRA, gradient check | done | worst 5% (h=0.05), Qwen2.5-0.5B |
+| Qwen3 (per-head q/k norm) backward | done | gradient check on Qwen3-4B-Instruct-2507: 15/16 entries within 7% |
+| Qwen3.5 gated attention + Gated DeltaNet backward | done | gradient check on Qwen3.5-4B, short and multi-chunk prompts: all but tiny (<5e-3) entries within 7% |
 | Training loop (AdamW, answer-only loss) | pending | |
 | Adapter save / load in agentos-llm | pending | |
 | Improvement on held-out requests (eval gate) | pending | |
 | agentd: overnight on the charger, swap or roll back | pending | |
-| Qwen3.5 DeltaNet backward | pending | |
 
 ## Trainer update (2026-11-09, Qwen2.5-0.5B, Mac CPU)
 - Backward pass verified against finite differences: worst relative error 5% (h=0.05), most entries ≤1%.
@@ -39,3 +40,20 @@ Kept up to date during development. Numbers are measured unless marked otherwise
 - Real prompt (743 tokens): forward 14 s, forward+backward 30 s per example. The forward runs at the engine's own prompt speed (~50 tok/s), so the engine's prompt reading is the limit, not the trainer.
 - Base 0.5B on 10 held-out tool requests: 60%. The full run to measure trained accuracy has not finished yet.
 - Open: activation memory (2 GB at 743 tokens for 0.5B) needs checkpointing for 4B; Qwen3.5 DeltaNet backward is not written yet.
+
+## Trainer update (2026-11-13, Qwen3 and Qwen3.5)
+- The trainer now covers every architecture the engine runs: Qwen2/2.5, Qwen3 (per-head RMSNorm on
+  q and k, backward through it) and the Qwen3.5 hybrid (Qwen3.5's sigmoid output gate on attention, and an
+  exact backward pass through the Gated DeltaNet: causal conv, SiLU, L2-normalized q/k, the
+  delta-rule recurrence, the gated RMSNorm, and the beta/alpha/decay gates).
+- DeltaNet memory: the state (32 heads x 128 x 128 per layer on the 4B) is saved every 64 tokens
+  and the steps between are replayed in the backward pass, so a 743-token example keeps ~0.6 GB of
+  states instead of ~37 GB.
+- Adapters: q, k, v, o on attention layers; on Qwen3.5's DeltaNet layers, the output projection
+  (`ssm_out`, saved as target `o`), so all 32 layers learn, not only the 8 attention layers. The
+  engine applies that adapter too, and `AGLORA1` files are unchanged.
+- Gradient checks (`cargo run --release -p agentos-infer --example train -- gradcheck MODEL`,
+  `LONG=1` for a prompt past one checkpoint interval), f32 matmuls, h=0.01:
+  Qwen3-4B forward 10.69 vs engine 10.54 (the engine's 8-bit activations and f16 cache);
+  Qwen3.5-4B forward 7.668 vs engine 7.639. Every gradient above 5e-3 agrees within 7%; the
+  outliers are entries near 1e-4, where an f32 central difference is mostly noise.

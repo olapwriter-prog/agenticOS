@@ -14,7 +14,7 @@ to refresh them.
 | T3 | Simulator behaviour tests | `npm test` (phonesim) | Node ≥ 18 | every commit, GitHub Actions |
 | T4 | Simulator vs. agentd drift | read `crates/agentd/src/{core,trainer}.rs` against `src/os/agentic.js` | — | after each agentd phase |
 | T5 | Package + OpenRC service in an Alpine aarch64 VM | `scripts/vm-test.sh <model.gguf>` | lima, ~3 GB model | before a release |
-| T6 | Trainer accuracy (Phase 3 eval gate) | `agentos-llm train` on Qwen2.5-0.5B, held-out score | the 0.5B GGUF, hours of CPU | when the trainer changes |
+| T6 | Trainer: gradient checks and the eval gate | `cargo run --release -p agentos-infer --example train -- gradcheck MODEL` (`LONG=1` too), then `agentos-llm train` | a Qwen2/3/3.5 GGUF, hours of CPU | when the trainer changes |
 | T7 | On a phone | install guide, then calls, SMS, audio, the key, suspend | a postmarketOS phone with a modem | not yet possible here |
 
 ## Status (2026-11-13, commit 56d0ef7 "Phase-3")
@@ -26,7 +26,7 @@ to refresh them.
 | T3 | 60/60 pass | was 59; one stale test replaced by two (see T4) |
 | T4 | 1 drift fixed, 1 bug still open | below |
 | T5 | 22/22 checks pass | Alpine aarch64 VM, Qwen3.5-4B Q4_K_M (sha256 matches agentd.toml); package tests pass inside abuild |
-| T6 | blocked | the Qwen2.5-0.5B GGUF the 2026-11-09 run used is no longer on this Mac |
+| T6 | pass | Qwen3 and Qwen3.5 trainer support added and gradient-checked; a Qwen3-4B run completed and the eval gate behaved correctly (below) |
 | T7 | open | no phone attached; see INSTALL-postmarketos.md, "Untested on a phone" |
 
 ### T4: simulator vs. agentd
@@ -49,3 +49,19 @@ to refresh them.
 - The approval key as a hardware button read from `/dev/input`.
 - System suspend and wake on ring or SMS, once agentd acts on `may_suspend()`.
 - Thermal behaviour and model speeds on the phone's own CPU.
+
+### T6: trainer on Qwen3 and Qwen3.5 (2026-11-13)
+
+- Gradient checks (f32, h=0.01): Qwen3-4B-Instruct-2507, Qwen3.5-4B, and Qwen3.5-4B with a prompt
+  past one DeltaNet checkpoint interval. Every gradient above 5e-3 agrees with finite differences
+  within 7%; the few outliers are entries near 1e-4 (f32 noise). The trainer's forward pass
+  matches the engine (Qwen3.5: 7.668 vs 7.639).
+- Training run: Qwen3-4B-Instruct-2507 Q4_K_M, agentd's real system prompt (~750 tokens) and tool
+  grammar, 30 confirmed requests (24 train, 6 held out), 16 steps x batch 2, rank 8, lr 1e-3.
+  Loss fell to ~0.002; held-out score 75% without the adapter, 67% with it, so the adapter was
+  **discarded**, as the gate should. 1 h 52 min on the Mac's CPU (~3 min per example pass,
+  close to what phonesim assumes for a 4B step).
+- Read: a 4B instruct model already handles these phrasings; 24 examples overfit. A gain needs
+  more confirmed requests (the 20-request trigger is a floor, not a target) or fewer steps.
+- Known flaky: `e2e::the_door_needs_the_token` failed once in a parallel run (empty HTTP reply),
+  passed 3/3 alone. Unrelated to the trainer change.
